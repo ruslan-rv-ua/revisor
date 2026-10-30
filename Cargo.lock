@@ -844,6 +844,9 @@ dependencies = [
 [[package]]
 name = "revisor-core"
 version = "0.1.0"
+dependencies = [
+ "windows-sys",
+]
 
 [[package]]
 name = "rustc-hash"
