@@ -1,9 +1,11 @@
 ---
 id: TASK-2
 title: Нативні контроли wxDragon працюють з NVDA
-status: To Do
-assignee: []
+status: In Progress
+assignee:
+  - '@claude'
 created_date: '2026-10-30 17:37'
+updated_date: '2026-10-30 18:32'
 labels: []
 milestone: m-0
 dependencies:
@@ -45,3 +47,28 @@ ordinal: 2000
 - [ ] #4 Нотатки виконання й підсумок задачі заповнено
 - [ ] #5 Бриф і ADR чи README оновлено (якщо задача змінила поведінку чи рішення)
 <!-- DOD:END -->
+
+## Implementation Plan
+
+<!-- SECTION:PLAN:BEGIN -->
+Узгоджено з користувачем 2026-10-30 (по одному питанню).
+
+1. Гілка `feature/task-2-nvda-controls` від `develop`.
+2. Приклад `crates/revisor/examples/nvda_controls.rs` (запуск `cargo run --example nvda_controls`, release — `cargo run --release --example nvda_controls`). У застосунок код не переносимо. Написи англійською.
+3. Одне вікно з меню; порядок Tab: підпис + віртуальний ListCtrl → підпис + TreeCtrl → кнопка Start → смуга прогресу (Gauge) і текст стану → кнопка Cancel. Кожен контрол має підпис (StaticText перед ним), щоб NVDA читав назву.
+4. Віртуальний ListCtrl (`ListCtrlStyle::Report | Virtual | SingleSel`): 1 000 000 синтетичних рядків, колонки Path, Change, Size, Modified; текст генерується з номера рядка в колбеку `set_virtual_text_callback`.
+5. TreeCtrl із синтетичними теками: вузли до 5 рівнів, діти додаються в `ItemExpanding` (до розгортання вузол має «плюс» через `set_item_has_children`).
+6. Меню з гарячими клавішами (через `\t` у назві пункту): File → Exit (Ctrl+Q); View → Go to list (Ctrl+1), Go to tree (Ctrl+2), Go to row… (Ctrl+G, діалог номера рядка); Work → Start (F5), Cancel (Shift+F5); Help → About (F1).
+7. Фонова робота: потік ~20 с, прогрес в `Arc<AtomicU32>`, скасування через `Arc<AtomicBool>`; UI опитує стан таймером (~100 мс) і оновлює Gauge та текст стану. Список і дерево під час роботи доступні.
+8. Перевірки: `cargo build --example nvda_controls`, clippy (`--all-targets`), fmt, тести workspace.
+9. Покрокові інструкції для користувача (NVDA) по кожному критерію; його відгуки, проблеми й обхідні шляхи — у нотатки задачі. Критерії NVDA відмічаю лише після його підтвердження.
+10. Рев'ю, підсумок, коміти англійською; злиття в `develop` і пуш — лише за згодою користувача.
+
+Уточнення під час реалізації: смуга прогресу (Gauge) не є зупинкою Tab, тому стан роботи дублюється в полі «Job status» (TextCtrl лише для читання) — до нього можна дійти Tab і прочитати. Коли кнопку Start чи Cancel вимикаємо, а фокус був на ній, фокус переходить на другу кнопку, щоб не загубитися.
+<!-- SECTION:PLAN:END -->
+
+## Implementation Notes
+
+<!-- SECTION:NOTES:BEGIN -->
+Приклад `crates/revisor/examples/nvda_controls.rs` зібрано без додаткових фіч wxdragon (`default-features = false` вистачає для ListCtrl, TreeCtrl, Gauge, меню, діалогів, Timer). Release-exe прикладу — 4,3 МБ. Фонову роботу UI опитує таймером (100 мс): `wxdragon::call_after` вимагає `Send`, а віджети не `Send`, тож атомарні змінні + таймер простіші.
+<!-- SECTION:NOTES:END -->
