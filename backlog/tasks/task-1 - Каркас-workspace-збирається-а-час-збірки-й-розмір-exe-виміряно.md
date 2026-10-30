@@ -1,9 +1,11 @@
 ---
 id: TASK-1
 title: 'Каркас workspace збирається, а час збірки й розмір exe виміряно'
-status: To Do
-assignee: []
+status: In Progress
+assignee:
+  - '@claude'
 created_date: '2026-10-30 17:37'
+updated_date: '2026-10-30 17:52'
 labels: []
 milestone: m-0
 dependencies: []
@@ -44,3 +46,16 @@ ordinal: 1000
 - [ ] #4 Нотатки виконання й підсумок задачі заповнено
 - [ ] #5 Бриф і ADR чи README оновлено (якщо задача змінила поведінку чи рішення)
 <!-- DOD:END -->
+
+## Implementation Plan
+
+<!-- SECTION:PLAN:BEGIN -->
+1. Гілка `feature/task-1-workspace` від `develop`.
+2. Cargo workspace (resolver 3, edition 2024): `crates/revisor-core` (бібліотека без залежностей, заглушка з тестом) і `crates/revisor` (bin `revisor.exe` на `wxdragon` 0.9.x, порожнє вікно, `windows_subsystem = "windows"` у release, маніфест через `embed-manifest` у build.rs).
+3. `.cargo/config.toml`: `+crt-static` для `x86_64-pc-windows-msvc` — wxdragon-sys тоді збирає wxWidgets з `/MT`, і exe не потребує бібліотек Visual C++.
+4. Профіль release на малий розмір: `opt-level = "z"`, `lto = true`, `codegen-units = 1`, `panic = "abort"`, `strip = true`.
+5. Перевірити: `cargo test -p revisor-core` не збирає wxWidgets; clippy і fmt чисті.
+6. Виміряти: холодна збірка (debug і release), інкрементальна після зміни в ядрі й після зміни в застосунку; розмір release exe з типовими фічами wxdragon і з `default-features = false`. У каркасі залишити мінімальний набір, якщо він збирається й вікно відкривається.
+7. Перевірити залежності exe (`dumpbin /dependents`) — лише системні DLL Windows. Запуск у Windows Sandbox — вручну користувачем.
+8. Записати цифри в нотатки задачі.
+<!-- SECTION:PLAN:END -->
