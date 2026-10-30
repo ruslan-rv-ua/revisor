@@ -1,6 +1,7 @@
 //! Core of revisor: snapshots, storage and comparison. Knows nothing about the GUI.
 
 pub mod scan;
+pub mod store;
 
 /// Version of revisor, shared by every front end.
 pub fn version() -> &'static str {

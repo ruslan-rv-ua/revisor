@@ -275,3 +275,22 @@ fn verbatim_paths() {
         Path::new(r"\\?\C:\x")
     );
 }
+
+#[test]
+fn synthetic_tree_has_requested_size_and_valid_parents() {
+    for count in [1, 2, 11, 1000] {
+        let entries = synthetic(count);
+        assert_eq!(entries.len(), count);
+        assert_eq!(entries[0].parent, None);
+        assert_eq!(entries[0].kind, EntryKind::Dir);
+        for (i, e) in entries.iter().enumerate().skip(1) {
+            let parent = e.parent.expect("only the root has no parent") as usize;
+            assert!(parent < i, "entry {i} has parent {parent}");
+            assert_eq!(entries[parent].kind, EntryKind::Dir);
+        }
+    }
+    let entries = synthetic(1000);
+    assert!(entries.iter().any(|e| e.kind == EntryKind::File));
+    assert!(entries[1..].iter().any(|e| e.kind == EntryKind::Dir));
+    assert!(entries.iter().any(|e| e.version.is_some()));
+}

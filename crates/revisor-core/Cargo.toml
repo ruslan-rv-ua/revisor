@@ -5,6 +5,7 @@ edition.workspace = true
 license.workspace = true
 
 [dependencies]
+rusqlite = { version = "0.41", features = ["bundled"] }
 windows-sys = { version = "0.61", features = [
     "Win32_Foundation",
     "Win32_Storage_FileSystem",
