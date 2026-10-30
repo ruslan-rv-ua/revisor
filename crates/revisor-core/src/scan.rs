@@ -17,6 +17,7 @@ use std::sync::{Condvar, Mutex};
 use std::thread;
 use std::time::{Duration, Instant};
 
+const FILE_ATTRIBUTE_ARCHIVE: u32 = 0x20;
 const FILE_ATTRIBUTE_DIRECTORY: u32 = 0x10;
 const FILE_ATTRIBUTE_REPARSE_POINT: u32 = 0x400;
 /// How often idle workers wake up to notice cancellation.
@@ -203,6 +204,81 @@ fn verbatim(path: &Path) -> io::Result<PathBuf> {
         r"\\?\".encode_utf16().chain(wide.iter().copied()).collect()
     };
     Ok(PathBuf::from(OsString::from_wide(&out)))
+}
+
+/// Builds a made-up tree of `count` entries laid out like a [`scan`] result, without
+/// touching the disk; for tests and benchmarks. Every folder gets 2 subfolders and
+/// 10 files until the count is reached, which is about the folder share of a real drive.
+pub fn synthetic(count: usize) -> Vec<Entry> {
+    const SUBDIRS: usize = 2;
+    const CHILDREN: usize = 12;
+    const EXTENSIONS: [&str; 6] = ["txt", "dat", "dll", "jpg", "exe", "log"];
+    /// 2026-01-01 as FILETIME.
+    const BASE_TIME: i64 = 134_116_992_000_000_000;
+
+    // xorshift64: deterministic, so repeated runs produce the same tree.
+    let mut state = 0x2545_F491_4F6C_DD1D_u64;
+    let mut random = move || {
+        state ^= state << 13;
+        state ^= state >> 7;
+        state ^= state << 17;
+        state
+    };
+    let mut make = |i: usize, parent: Option<u32>, kind: EntryKind| {
+        let (name, attributes, size, version) = match kind {
+            EntryKind::Dir => (format!("folder {i:06}"), FILE_ATTRIBUTE_DIRECTORY, 0, None),
+            _ => {
+                let ext = EXTENSIONS[i % EXTENSIONS.len()];
+                let version = matches!(ext, "dll" | "exe").then(|| [10, 0, (i % 30_000) as u16, 1]);
+                (
+                    format!("file {i:06}.{ext}"),
+                    FILE_ATTRIBUTE_ARCHIVE,
+                    random() % 10_000_000,
+                    version,
+                )
+            }
+        };
+        let created = BASE_TIME + (random() % 10_000_000_000) as i64;
+        let mut file_id = [0; 16];
+        file_id[..8].copy_from_slice(&(i as u64).to_le_bytes());
+        Entry {
+            parent,
+            name: OsString::from(name).into_boxed_os_str(),
+            kind,
+            inaccessible: false,
+            attributes,
+            size,
+            created,
+            modified: created + (random() % 10_000_000_000) as i64,
+            file_id: FileId(file_id),
+            version,
+            link_target: None,
+        }
+    };
+
+    let mut entries = Vec::with_capacity(count);
+    if count == 0 {
+        return entries;
+    }
+    let mut root = make(0, None, EntryKind::Dir);
+    root.name = OsStr::new(r"C:\synthetic").into();
+    entries.push(root);
+    let mut dir = 0;
+    while entries.len() < count {
+        for k in 0..CHILDREN.min(count - entries.len()) {
+            let kind = if k < SUBDIRS {
+                EntryKind::Dir
+            } else {
+                EntryKind::File
+            };
+            entries.push(make(entries.len(), Some(dir as u32), kind));
+        }
+        dir += 1;
+        while dir < entries.len() && entries[dir].kind != EntryKind::Dir {
+            dir += 1;
+        }
+    }
+    entries
 }
 
 struct Job {
