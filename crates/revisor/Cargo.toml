@@ -1,0 +1,12 @@
+[package]
+name = "revisor"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[dependencies]
+revisor-core = { path = "../revisor-core" }
+wxdragon = { version = "0.9.24", default-features = false }
+
+[build-dependencies]
+embed-manifest = "1.4"

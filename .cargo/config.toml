@@ -1,0 +1,4 @@
+# Link the C runtime statically so revisor.exe runs without the Visual C++ redistributable.
+# wxdragon-sys picks this up and builds wxWidgets with /MT as well.
+[target.x86_64-pc-windows-msvc]
+rustflags = ["-C", "target-feature=+crt-static"]
