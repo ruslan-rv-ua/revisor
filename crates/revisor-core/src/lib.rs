@@ -1,5 +1,7 @@
 //! Core of revisor: snapshots, storage and comparison. Knows nothing about the GUI.
 
+pub mod scan;
+
 /// Version of revisor, shared by every front end.
 pub fn version() -> &'static str {
     env!("CARGO_PKG_VERSION")
