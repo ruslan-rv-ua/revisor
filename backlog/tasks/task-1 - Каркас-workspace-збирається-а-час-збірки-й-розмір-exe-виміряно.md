@@ -5,7 +5,7 @@ status: In Progress
 assignee:
   - '@claude'
 created_date: '2026-10-30 17:37'
-updated_date: '2026-10-30 17:52'
+updated_date: '2026-10-30 18:09'
 labels: []
 milestone: m-0
 dependencies: []
@@ -31,18 +31,18 @@ ordinal: 1000
 
 ## Acceptance Criteria
 <!-- AC:BEGIN -->
-- [ ] #1 Workspace містить крейт ядра без залежності від wxDragon і крейт застосунку на wxDragon, який відкриває порожнє вікно.
-- [ ] #2 Проєкт збирається тулчейном MSVC, а тести ядра запускаються без збирання wxWidgets.
-- [ ] #3 Час холодної збірки й інкрементальної збірки після зміни в ядрі та після зміни в застосунку виміряно й записано в нотатках задачі.
-- [ ] #4 Розмір релізного exe з налаштуваннями на малий розмір виміряно й записано в нотатках задачі.
+- [x] #1 Workspace містить крейт ядра без залежності від wxDragon і крейт застосунку на wxDragon, який відкриває порожнє вікно.
+- [x] #2 Проєкт збирається тулчейном MSVC, а тести ядра запускаються без збирання wxWidgets.
+- [x] #3 Час холодної збірки й інкрементальної збірки після зміни в ядрі та після зміни в застосунку виміряно й записано в нотатках задачі.
+- [x] #4 Розмір релізного exe з налаштуваннями на малий розмір виміряно й записано в нотатках задачі.
 - [ ] #5 Релізний exe — один файл без DLL і запускається на чистій Windows без бібліотек Visual C++ (наприклад, у Windows Sandbox).
 <!-- AC:END -->
 
 ## Definition of Done
 <!-- DOD:BEGIN -->
-- [ ] #1 Тести (cargo test) проходять
-- [ ] #2 cargo clippy і cargo fmt --check без зауважень
-- [ ] #3 Зміни інтерфейсу перевірено вручну з NVDA (якщо задача їх містить)
+- [x] #1 Тести (cargo test) проходять
+- [x] #2 cargo clippy і cargo fmt --check без зауважень
+- [x] #3 Зміни інтерфейсу перевірено вручну з NVDA (якщо задача їх містить)
 - [ ] #4 Нотатки виконання й підсумок задачі заповнено
 - [ ] #5 Бриф і ADR чи README оновлено (якщо задача змінила поведінку чи рішення)
 <!-- DOD:END -->
@@ -59,3 +59,19 @@ ordinal: 1000
 7. Перевірити залежності exe (`dumpbin /dependents`) — лише системні DLL Windows. Запуск у Windows Sandbox — вручну користувачем.
 8. Записати цифри в нотатки задачі.
 <!-- SECTION:PLAN:END -->
+
+## Implementation Notes
+
+<!-- SECTION:NOTES:BEGIN -->
+- Тулчейн: Rust 1.99.1 MSVC, VS Build Tools 2026, CMake + Ninja. wxdragon 0.9.24 не завантажує готові бібліотеки, а збирає wxWidgets 3.3.4 із сирців (968 кроків Ninja).
+- Холодна збірка (крейти вже завантажено): debug 2 хв 11 с; release 1 хв 59 с з типовими фічами wxdragon, 1 хв 10 с із `default-features = false`.
+- Інкрементальна збірка після зміни в ядрі: debug 2,2 с, release 3,3 с.
+- Інкрементальна після зміни в застосунку: debug 1,9 с, release 3,3 с.
+- Інкрементальні збірки міряно після правки коментаря, а не коду.
+- Розмір релізного exe (opt-level "z", LTO, codegen-units 1, panic abort, strip): 6,1 МБ з типовими фічами wxdragon, 4,0 МБ із `default-features = false`. У каркасі залишено мінімальний набір, вікно відкривається з заголовком «revisor 0.1.0».
+- `+crt-static` у `.cargo/config.toml`. `dumpbin /dependents` показує лише системні DLL Windows (KERNEL32, USER32, GDI32, gdiplus, MSIMG32, COMDLG32, SHELL32, SHLWAPI, COMCTL32, ole32, OLEAUT32, ADVAPI32, OLEACC, UxTheme, bcryptprimitives, ntdll), без VCRUNTIME, MSVCP і ucrt.
+- `cargo test -p revisor-core` не збирає wxWidgets. `cargo test --workspace`, `cargo clippy --workspace --all-targets -- -D warnings` і `cargo fmt --check` чисті.
+- Рев'ю (стандарти + відповідність задачі) виправлено: тест версії не прив'язаний до номера, помилка запуску GUI не ковтається (`expect`), вікно центрується до показу, build.rs перевіряє `CARGO_CFG_TARGET_OS`.
+- DoD #3 не стосується: інтерфейсу з контролами в каркасі немає, лише порожнє вікно.
+- Запуск у Windows Sandbox ще не перевірено — робить користувач вручну.
+<!-- SECTION:NOTES:END -->
