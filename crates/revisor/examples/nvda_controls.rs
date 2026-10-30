@@ -33,7 +33,7 @@ const CHANGES: [&str; 3] = ["Added", "Modified", "Removed"];
 fn cell_text(row: i64, col: i32) -> String {
     match col {
         0 => format!(r"C:\data\folder {:04}\file {:07}.txt", row / 1000, row + 1),
-        1 => CHANGES[(row % 3) as usize].to_string(),
+        1 => CHANGES[row as usize % CHANGES.len()].to_string(),
         2 => format!("{} bytes", (row * 7919) % 10_000_000),
         3 => format!(
             "2026-10-{:02} {:02}:{:02}",
@@ -67,7 +67,7 @@ fn main() {
 
         // A static text right before a control becomes its accessible name.
         let list_label = StaticText::builder(&panel)
-            .with_label("&Changes (1,000,000 rows):")
+            .with_label(&format!("&Changes ({ROW_COUNT} rows):"))
             .build();
         let list = ListCtrl::builder(&panel)
             .with_style(ListCtrlStyle::Report | ListCtrlStyle::Virtual | ListCtrlStyle::SingleSel)
@@ -177,6 +177,7 @@ fn main() {
         };
         let job_ui = Rc::new(job_ui);
         {
+            // The tick handler keeps `JobUi` and so the timer alive for the whole run.
             let ui = job_ui.clone();
             job_ui.timer.on_tick(move |_| ui.poll());
         }
@@ -296,9 +297,13 @@ fn go_to_row(frame: &Frame, list: &ListCtrl) {
         .and_then(|value| value.trim().replace([',', ' '], "").parse::<i64>().ok())
         .filter(|row| (1..=ROW_COUNT).contains(row))
     else {
-        MessageDialog::builder(frame, "Enter a number from 1 to 1000000.", "Go to row")
-            .build()
-            .show_modal();
+        MessageDialog::builder(
+            frame,
+            &format!("Enter a number from 1 to {ROW_COUNT}."),
+            "Go to row",
+        )
+        .build()
+        .show_modal();
         return;
     };
     let index = row - 1;
@@ -344,12 +349,7 @@ impl JobUi {
         self.job.set(Some(job));
         self.gauge.set_value(0);
         self.status.set_value("Running: 0%");
-        let move_focus = self.start.has_focus();
-        self.cancel.enable(true);
-        self.start.enable(false);
-        if move_focus {
-            self.cancel.set_focus();
-        }
+        swap_enabled(&self.start, &self.cancel);
         self.timer.start(POLL_INTERVAL_MS, false);
     }
 
@@ -365,10 +365,12 @@ impl JobUi {
             self.timer.stop();
             return;
         };
+        // Read `finished` before `progress`: the Acquire load then guarantees the final step.
+        let finished = job.finished.load(Ordering::Acquire);
         let step = job.progress.load(Ordering::Relaxed);
         let percent = step * 100 / JOB_STEPS;
         self.gauge.set_value(step as i32);
-        if !job.finished.load(Ordering::Acquire) {
+        if !finished {
             if !job.cancel.load(Ordering::Relaxed) {
                 self.status.set_value(&format!("Running: {percent}%"));
             }
@@ -376,18 +378,23 @@ impl JobUi {
         }
         self.timer.stop();
         self.job.set(None);
-        let done = if job.cancel.load(Ordering::Relaxed) {
+        let summary = if step < JOB_STEPS {
             format!("Cancelled at {percent}%")
         } else {
             "Finished: 100%".to_string()
         };
-        self.status.set_value(&done);
-        // Disabling the focused button would leave the keyboard focus nowhere.
-        let move_focus = self.cancel.has_focus();
-        self.start.enable(true);
-        self.cancel.enable(false);
-        if move_focus {
-            self.start.set_focus();
-        }
+        self.status.set_value(&summary);
+        swap_enabled(&self.cancel, &self.start);
+    }
+}
+
+/// Disables `from` and enables `to`, moving the keyboard focus along if `from` had it;
+/// a disabled focused button would leave the focus nowhere.
+fn swap_enabled(from: &Button, to: &Button) {
+    let move_focus = from.has_focus();
+    to.enable(true);
+    from.enable(false);
+    if move_focus {
+        to.set_focus();
     }
 }
