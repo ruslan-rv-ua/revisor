@@ -1,5 +1,6 @@
 //! Core of revisor: snapshots, storage and comparison. Knows nothing about the GUI.
 
+pub mod diff;
 pub mod scan;
 pub mod store;
 
