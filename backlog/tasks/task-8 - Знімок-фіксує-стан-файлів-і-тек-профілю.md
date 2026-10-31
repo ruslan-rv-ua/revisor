@@ -4,10 +4,11 @@ title: Знімок фіксує стан файлів і тек профілю
 status: To Do
 assignee: []
 created_date: '2026-10-30 15:10'
-updated_date: '2026-10-31 22:06'
+updated_date: '2026-10-31 22:58'
 labels: []
 milestone: m-1
-dependencies: []
+dependencies:
+  - TASK-7
 references:
   - 'https://learn.microsoft.com/en-us/windows/win32/secauthz/privilege-constants'
   - >-
@@ -33,6 +34,7 @@ documentation:
   - backlog/docs/adr/doc-4 - ADR-0003-Знімок-як-дерево-записів-від-джерел.md
   - backlog/docs/adr/doc-7 - ADR-0005-Ядро-без-GUI-і-застосунок-на-wxDragon.md
 type: feature
+ordinal: 8000
 ---
 
 ## Description

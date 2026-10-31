@@ -4,10 +4,12 @@ title: 'Знімки профілю показано в переліку, а н�
 status: To Do
 assignee: []
 created_date: '2026-10-30 15:19'
-updated_date: '2026-10-31 21:20'
+updated_date: '2026-10-31 22:58'
 labels: []
 milestone: m-1
-dependencies: []
+dependencies:
+  - TASK-7
+  - TASK-8
 references:
   - 'https://restic.readthedocs.io/en/stable/075_scripting.html'
   - 'https://borgbackup.readthedocs.io/en/stable/usage/list.html'
@@ -87,6 +89,7 @@ documentation:
     backlog/docs/adr/doc-10 -
     ADR-0007-Загальні-налаштування-програми-—-в-окремій-базі-SQLite.md
 type: feature
+ordinal: 9000
 ---
 
 ## Description

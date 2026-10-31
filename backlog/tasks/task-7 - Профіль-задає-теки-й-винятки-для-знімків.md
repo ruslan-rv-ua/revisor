@@ -92,6 +92,7 @@ documentation:
     backlog/docs/adr/doc-9 -
     ADR-0006-Налаштування-профілю-—-у-його-базі-SQLite.md
 type: feature
+ordinal: 7000
 ---
 
 ## Description
