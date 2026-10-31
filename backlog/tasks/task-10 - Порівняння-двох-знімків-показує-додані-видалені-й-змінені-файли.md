@@ -4,10 +4,12 @@ title: 'Порівняння двох знімків показує додані
 status: To Do
 assignee: []
 created_date: '2026-10-30 15:10'
-updated_date: '2026-10-31 22:42'
+updated_date: '2026-10-31 22:56'
 labels: []
 milestone: m-1
-dependencies: []
+dependencies:
+  - TASK-7
+  - TASK-8
 references:
   - 'https://manual.winmerge.org/en/Filters.html'
   - 'https://scootersoftware.com/v5help/sessiondirnamefilter.html'
@@ -29,6 +31,7 @@ documentation:
   - backlog/docs/adr/doc-4 - ADR-0003-Знімок-як-дерево-записів-від-джерел.md
   - backlog/docs/adr/doc-7 - ADR-0005-Ядро-без-GUI-і-застосунок-на-wxDragon.md
 type: feature
+ordinal: 10000
 ---
 
 ## Description
