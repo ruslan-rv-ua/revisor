@@ -33,8 +33,14 @@ jobs:
           persist-credentials: false
 
       # wxdragon-sys requires the Ninja CMake generator for x64 MSVC.
-      - name: Install Ninja
-        run: choco install ninja --no-progress -y
+      # Pinned like everything else here. `upgrade --allow-downgrade` moves whatever version the
+      # image ships to this one; `install` would leave a different preinstalled version alone.
+      - name: Install Ninja 1.13.2
+        run: |
+          choco upgrade ninja --version 1.13.2 --allow-downgrade --no-progress -y
+          if ($LASTEXITCODE) { exit $LASTEXITCODE }
+          $version = ninja --version
+          if ($version -ne '1.13.2') { throw "expected Ninja 1.13.2, got $version" }
 
       - name: Install the pinned Rust toolchain
         run: rustup toolchain install
