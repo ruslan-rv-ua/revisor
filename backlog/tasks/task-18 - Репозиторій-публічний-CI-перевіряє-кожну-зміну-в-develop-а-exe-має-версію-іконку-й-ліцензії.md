@@ -1,0 +1,98 @@
+---
+id: TASK-18
+title: >-
+  Репозиторій публічний, CI перевіряє кожну зміну в develop, а exe має версію,
+  іконку й ліцензії
+status: To Do
+assignee: []
+created_date: '2026-11-01 19:44'
+labels: []
+milestone: m-1
+dependencies: []
+references:
+  - >-
+    https://github.com/ruslan-rv-ua/pathmaster/blob/develop/.github/workflows/ci.yml
+  - 'https://github.com/ruslan-rv-ua/pathmaster/blob/develop/rust-toolchain.toml'
+  - 'https://docs.github.com/en/billing/concepts/product-billing/github-actions'
+  - 'https://docs.github.com/en/billing/reference/actions-runner-pricing'
+  - 'https://docs.github.com/en/actions/reference/runners/github-hosted-runners'
+  - >-
+    https://docs.github.com/en/repositories/managing-your-repositorys-settings-and-features/managing-repository-settings/setting-repository-visibility
+  - >-
+    https://docs.github.com/en/pull-requests/collaborating-with-pull-requests/working-with-forks/what-happens-to-forks-when-a-repository-is-deleted-or-changes-visibility
+  - >-
+    https://docs.github.com/en/pull-requests/collaborating-with-pull-requests/proposing-changes-to-your-work-with-pull-requests/about-branches
+  - >-
+    https://docs.github.com/en/actions/reference/workflows-and-actions/events-that-trigger-workflows
+  - 'https://docs.github.com/en/actions/reference/security/secure-use'
+  - >-
+    https://github.com/actions/runner-images/blob/main/images/windows/Windows2025-VS2026-Readme.md
+  - 'https://opensource.org/license/mit'
+  - 'https://www.apache.org/licenses/LICENSE-2.0.txt'
+  - 'https://www.wxwidgets.org/about/licence/'
+  - 'https://wiki.wxwidgets.org/License_Gotchas'
+  - 'https://sqlite.org/copyright.html'
+  - 'https://github.com/EmbarkStudios/cargo-about'
+  - 'https://learn.microsoft.com/en-us/windows/win32/menurc/versioninfo-resource'
+  - >-
+    https://learn.microsoft.com/en-us/cpp/error-messages/tool-errors/cvtres-fatal-error-cvt1100
+  - 'https://docs.rs/embed-manifest/latest/embed_manifest/'
+documentation:
+  - backlog/docs/doc-2 - Бриф-продукту.md
+  - >-
+    backlog/docs/adr/doc-14 -
+    ADR-0010-Випуск-—-GitHub-Actions-за-тегом-публікує-exe-з-.sha256-а-scoop-оновлює-Excavator.md
+  - backlog/docs/doc-8 - Результати-прототипу.md
+type: chore
+ordinal: 6250
+---
+
+## Description
+
+<!-- SECTION:DESCRIPTION:BEGIN -->
+revisor розробляємо відкрито, а помилки має ловити CI ще до релізу. Ця задача — основа випуску, і її виконують першою в MVP, до TASK-15: вона публікує репозиторій, запускає перевірки кожної зміни й дає exe ідентичність і ліцензії сторонніх компонентів. Решту випуску — релізний воркфлоу, маніфест scoop і сам 0.1.0 — робить TASK-19 «Релізи збираються й публікуються автоматично» наприкінці MVP. Рішення ухвалено 2026-11-01 в обговоренні DRAFT-13 (ADR-0010). Зразок — pathmaster автора, застосунок на тому самому стеку (Rust, wxdragon, `+crt-static`).
+
+**Публікація.** Репозиторій ruslan-rv-ua/revisor стає публічним ще до CI. У публічному репозиторії стандартні раннери безплатні й без ліміту, а Windows-раннер має 4 vCPU і 16 ГБ. У приватному на GitHub Free — $12 на місяць (≈ 1 200 хвилин Windows) на 2 vCPU, а після ліміту запуски блокуються. Реліз із приватного репозиторію scoop однаково не завантажить. Перед публікацією додаємо:
+- LICENSE — звичайна MIT, «Copyright (c) 2026 Ruslan Iskov», як у pathmaster і tapir;
+- README.md англійською й README.uk.md українською з посиланнями одне на одне. Поки програма не готова, вони короткі: що таке revisor, позначка «у розробці, релізу ще немає», як зібрати із сирців, ліцензія. Повні README пише TASK-19.
+
+Типова гілка на GitHub — develop, назавжди: main порожня до першого релізу, а кнопка «Run workflow» бачить лише воркфлоу з типової гілки. Email у комітах лишаємо як є: адреса вже публічна в історії marka. Аудит історії 2026-11-01 не знайшов ключів, токенів, паролів чи бінарних файлів. Публікацію практично не скасувати: якщо знову зробити репозиторій приватним, публічні форки лишаться, а логи Actions уже були публічними.
+
+**CI.** Воркфлоу запускається на кожен push і PR у develop, як у pathmaster. Перевірки ті самі, що в DoD: форматування (першим, бо воно не потребує збірки й падає за секунди), тести й clippy з `-D warnings`, усе з `--locked`. Коміт, який `git flow release finish` створює в main, цей CI не бачить, тож TASK-19 проганяє ті самі перевірки на тегу. Збірку закріплено, щоб вона не змінювалася сама собою:
+- точна версія Rust у `rust-toolchain.toml` разом із clippy, rustfmt і ціллю x86_64-pc-windows-msvc;
+- раннер `windows-2025` (з 2026-07-06 це образ із Visual Studio 2026), а не `windows-latest`;
+- дії — повним SHA з тегом у коментарі, бо пересунутий тег дав би сторонньому коду доступ до воркфлоу;
+- мінімальні `permissions`.
+
+Dependabot не вмикаємо: його PR зливалися б на GitHub повз `git flow feature finish`. Версії оновлюємо руками у feature-гілках.
+
+wxWidgets збирається із сирців під час `cargo build`, і pathmaster натрапив тут на три пастки раннера. wxdragon-sys вимагає генератора Ninja для x64 MSVC; bindgen у wxdragon-sys не знаходить libclang.dll без `LIBCLANG_PATH`; глибокий шлях до теки збірки ламає збірку wxWidgets через MAX_PATH (там узяли `CARGO_TARGET_DIR` = `C:\t`). Час холодної збірки визначають статичні бібліотеки wxWidgets, тож кеш тримає все дерево збірки з ключем від `Cargo.lock` і `rust-toolchain.toml`. Прототип міряв збірку лише локально, тож час запусків CI записуємо в нотатках.
+
+**VERSIONINFO та іконка.** Exe не підписано (ADR-0010), тож ресурс версії — єдине, що exe каже про себе; Провідник показує його у властивостях файлу. Знімки revisor записують версії exe, тож оновлення самого revisor теж видно в них як зміну версії. Версія ресурсу береться з Cargo.toml, CompanyName — «Ruslan Iskov», ProductName — «revisor». Маніфест Windows лишається в embed-manifest (`build.rs`): другий маніфест у `.rc` дав би помилку дубліката ресурсу. Іконка проста, на 16–256 px, її вигляд погоджує автор. Головне вікно TASK-15 бере її звідси.
+
+**Ліцензії сторонніх компонентів.** Exe вкомпільовує понад сотню крейтів (MIT, Apache-2.0 тощо), wxWidgets і SQLite. MIT вимагає включати текст ліцензії в усі копії, а Apache-2.0 — давати копію ліцензії й NOTICE і в бінарній формі. Реліз — окремий exe без архіву, тож ці тексти мають бути в самому exe. cargo-about генерує файл ліцензій усіх крейтів; файл лежить у репозиторії, а CI перевіряє, що він актуальний. Частин на C і C++ cargo-about не бачить, тож wxWidgets і бібліотеки, які він вкомпільовує, дописуємо вручну. Перед цим перевіряємо, які з них потрапляють у збірку з `default-features = false`. Виняток wxWindows Licence дозволяє поширювати бінарні версії wxWidgets на власних умовах. SQLite — суспільне надбання, але rusqlite має ліцензію MIT. Вікно «Про revisor» (TASK-15) показує цей файл полем лише для читання. cargo-deny не беремо.
+
+Джерела — у полі references.
+<!-- SECTION:DESCRIPTION:END -->
+
+## Acceptance Criteria
+<!-- AC:BEGIN -->
+- [ ] #1 Перед публікацією в репозиторії є LICENSE (MIT, «Copyright (c) 2026 Ruslan Iskov») і README.md англійською й README.uk.md українською з посиланнями одне на одне: що таке revisor, позначка «у розробці, релізу ще немає», як зібрати із сирців, ліцензія.
+- [ ] #2 Репозиторій ruslan-rv-ua/revisor публічний, а його типова гілка на GitHub — develop.
+- [ ] #3 На кожен push і PR у develop GitHub Actions на раннері windows-2025 перевіряють форматування (cargo fmt --check, ще до збірки), а тоді запускають cargo test --workspace --locked і cargo clippy --workspace --all-targets --locked -- -D warnings; невдала перевірка робить запуск червоним.
+- [ ] #4 Збірку закріплено: точна версія Rust у rust-toolchain.toml (clippy, rustfmt, ціль x86_64-pc-windows-msvc), дії — повним SHA з тегом у коментарі, мінімальні permissions; Dependabot не ввімкнено.
+- [ ] #5 wxWidgets збирається на раннері, а кеш дерева збірки з ключем від Cargo.lock і rust-toolchain.toml скорочує повторний запуск; час холодного й повторного запуску записано в нотатках задачі.
+- [ ] #6 Exe має VERSIONINFO з версією з Cargo.toml, CompanyName «Ruslan Iskov» і ProductName «revisor», і Провідник показує їх у властивостях файлу; тест перевіряє, що версія ресурсу збігається з версією крейта. Маніфест Windows в exe лишається один.
+- [ ] #7 Exe має іконку на 16–256 px, вигляд якої погодив автор; її показують Провідник і головне вікно.
+- [ ] #8 Файл ліцензій сторонніх компонентів генерує cargo-about, і він лежить у репозиторії; CI падає, якщо файл не відповідає Cargo.lock. wxWidgets і вкомпільовані в нього бібліотеки дописано вручну.
+<!-- AC:END -->
+
+## Definition of Done
+<!-- DOD:BEGIN -->
+- [ ] #1 Тести (cargo test) проходять
+- [ ] #2 cargo clippy і cargo fmt --check без зауважень
+- [ ] #3 Зміни інтерфейсу перевірено вручну з NVDA в українському інтерфейсі (якщо задача їх містить)
+- [ ] #4 Нотатки виконання й підсумок задачі заповнено
+- [ ] #5 Бриф і ADR чи README оновлено (якщо задача змінила поведінку чи рішення)
+- [ ] #6 Нові вікна й контроли мають клавіші доступу за документом «Клавіатура й меню» (якщо задача їх додає)
+<!-- DOD:END -->
