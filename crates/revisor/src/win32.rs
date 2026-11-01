@@ -155,18 +155,20 @@ pub fn make_live_region(hwnd: *mut c_void) {
     }
 }
 
-/// Tells screen readers that a live region now says `text`. NVDA reads the object's
-/// name on this event, so the name is set to the text first; the event is raised even
-/// when the text is the same as before, so a repeated message is read again.
-pub fn announce(hwnd: *mut c_void, text: &str) {
-    set_accessible_name(hwnd, text);
+/// Tells screen readers that a status bar's first field has changed. NVDA reads the name
+/// of the object the event names, and the field's name is its text; the status bar's own
+/// name stays empty, or NVDA+End would read the message twice, as the bar's name and as
+/// the field's. The event is raised even when the text is the same as before, so a
+/// repeated message is read again.
+pub fn announce_status(status_bar: *mut c_void) {
+    const FIRST_FIELD: i32 = 1;
     // SAFETY: a live window; the call only queues an accessibility event.
     unsafe {
         NotifyWinEvent(
             EVENT_OBJECT_LIVEREGIONCHANGED,
-            hwnd,
+            status_bar,
             OBJID_CLIENT,
-            CHILDID_SELF as i32,
+            FIRST_FIELD,
         )
     };
 }

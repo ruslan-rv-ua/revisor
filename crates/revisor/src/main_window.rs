@@ -235,7 +235,7 @@ impl MainWindow {
     /// Shows a message in the status bar; screen readers read it without the focus moving.
     pub fn say(&self, text: &str) {
         self.status.set_status_text(text, 0);
-        win32::announce(self.status.get_handle(), text);
+        win32::announce_status(self.status.get_handle());
     }
 
     fn run(&self, id: CommandId) {
