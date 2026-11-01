@@ -7,7 +7,7 @@ status: In Progress
 assignee:
   - '@claude'
 created_date: '2026-11-01 19:44'
-updated_date: '2026-11-01 20:38'
+updated_date: '2026-11-01 20:40'
 labels: []
 milestone: m-1
 dependencies: []
@@ -79,8 +79,8 @@ wxWidgets збирається із сирців під час `cargo build`, і
 
 ## Acceptance Criteria
 <!-- AC:BEGIN -->
-- [ ] #1 Перед публікацією в репозиторії є LICENSE (MIT, «Copyright (c) 2026 Ruslan Iskov») і README.md англійською й README.uk.md українською з посиланнями одне на одне: що таке revisor, позначка «у розробці, релізу ще немає», як зібрати із сирців, ліцензія.
-- [ ] #2 Репозиторій ruslan-rv-ua/revisor публічний, а його типова гілка на GitHub — develop.
+- [x] #1 Перед публікацією в репозиторії є LICENSE (MIT, «Copyright (c) 2026 Ruslan Iskov») і README.md англійською й README.uk.md українською з посиланнями одне на одне: що таке revisor, позначка «у розробці, релізу ще немає», як зібрати із сирців, ліцензія.
+- [x] #2 Репозиторій ruslan-rv-ua/revisor публічний, а його типова гілка на GitHub — develop.
 - [ ] #3 На кожен push і PR у develop GitHub Actions на раннері windows-2025 перевіряють форматування (cargo fmt --check, ще до збірки), а тоді запускають cargo test --workspace --locked і cargo clippy --workspace --all-targets --locked -- -D warnings; невдала перевірка робить запуск червоним.
 - [ ] #4 Збірку закріплено: точна версія Rust у rust-toolchain.toml (clippy, rustfmt, ціль x86_64-pc-windows-msvc), дії — повним SHA з тегом у коментарі, мінімальні permissions; Dependabot не ввімкнено.
 - [ ] #5 wxWidgets збирається на раннері, а кеш дерева збірки з ключем від Cargo.lock і rust-toolchain.toml скорочує повторний запуск; час холодного й повторного запуску записано в нотатках задачі.
@@ -125,4 +125,6 @@ wxWidgets збирається із сирців під час `cargo build`, і
 Рішення автора 2026-11-01: іконка — варіант B «два знімки» (темно-бірюзовий заокруглений квадрат #0F4C45, задній квадрат контуром #5DCAA5, передній суцільний #E1F5EE); CI отримує cargo-about 0.9.3 готовим архівом релізу з перевіркою SHA-256, записаного у воркфлоу; файл ліцензій — один crates/revisor/THIRD-PARTY-LICENSES.txt, ручний розділ C/C++ — у шаблоні cargo-about поруч.
 
 У збірці з default-features = false wxWidgets 3.3.4 вкомпільовує (CMakeCache wxdragon_sys_cmake_build): zlib, libpng, expat і nanosvg — builtin; libjpeg, libtiff, regex, libwebp, lunasvg, xpm вимкнено. Лінкуються wxpng, wxzlib, wxexpat (вивід build-скрипта wxdragon-sys).
+
+2026-11-01: LICENSE (MIT, Copyright (c) 2026 Ruslan Iskov), README.md і README.uk.md влито в develop (feature/license-readme) і відправлено в origin, поки репозиторій був приватним і без воркфлоу. Після згоди автора `gh repo edit --visibility public` і `--default-branch develop`: `gh repo view` показує PUBLIC і develop; форків на момент публікації — 0.
 <!-- SECTION:NOTES:END -->
