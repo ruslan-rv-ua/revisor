@@ -4,12 +4,20 @@ title: Усі дії доступні з клавіатури через гар�
 status: Draft
 assignee: []
 created_date: '2026-10-30 15:56'
-updated_date: '2026-11-01 01:22'
+updated_date: '2026-11-01 14:34'
 labels: []
 milestone: m-1
 dependencies: []
 references:
   - 'https://learn.microsoft.com/en-us/windows/win32/uxguide/cmd-menus'
+  - >-
+    https://learn.microsoft.com/en-us/windows/win32/menurc/about-keyboard-accelerators
+  - 'https://learn.microsoft.com/en-us/windows/win32/uxguide/ctrl-command-buttons'
+  - >-
+    https://github.com/wxWidgets/wxWidgets/blob/v3.3.4/src/common/framecmn.cpp#L345-L372
+  - >-
+    https://github.com/wxWidgets/wxWidgets/blob/v3.3.4/interface/wx/event.h#L1733-L1833
+  - 'https://docs.rs/wxdragon/0.9.24/src/wxdragon/widgets/frame.rs.html'
 documentation:
   - backlog/docs/doc-2 - Бриф-продукту.md
 type: feature
@@ -21,6 +29,8 @@ type: feature
 revisor має бути зручним і швидким для роботи з клавіатури та зі скрінрідером, тож кожна дія викликається гарячою клавішею. Гарячі клавіші діють лише в активному вікні revisor. Так немає конфліктів зі скрінрідером та іншими програмами, а повернутися в revisor після інсталятора можна через Alt+Tab.
 
 Команда, яку зараз не можна виконати, у меню неактивна, як радять настанови Microsoft для меню, а її гаряча клавіша не мовчить: revisor каже, чому дію зараз не виконати, і NVDA читає це без перенесення фокуса (вирішено 2026-11-01 у задачі TASK-11 «Поточний знімок можна порівняти з попереднім чи вибраним, і порівняння йде у фоні»). Інакше користувач скрінрідера не відрізнив би відмову від промаху. Так поводяться всі команди revisor: наприклад, знімок, поки триває інший (задача TASK-8 «Знімок фіксує стан файлів і тек профілю»), чи видалення знімків під час стискання бази (задача TASK-9 «Знімки профілю показано в переліку, а новий знімок отримує фокус»).
+
+Windows і wxWidgets мовчки відкидають клавішу неактивного пункту меню, тож revisor перехоплює її сам (підтверджено 2026-11-01, хоч Microsoft цього й не вимагає). У wxDragon 0.9.24 для цього є лише обробник клавіш вікна `on_char_hook`, який бачить кожну клавішу першим. Таблиця команд каже, якій команді належить клавіша і чи доступна команда зараз. Обробник забирає клавішу лише тоді, коли її команда недоступна, і не чіпає клавіш, якими користується контрол у фокусі. Подію wxWidgets 3.3.4, створену саме для цього (`wxEVT_ACCELERATOR_KEY`), wxDragon не виставляє.
 
 Ще не вирішено:
 - конкретні комбінації клавіш;
