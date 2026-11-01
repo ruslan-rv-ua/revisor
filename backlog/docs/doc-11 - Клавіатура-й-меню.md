@@ -3,7 +3,7 @@ id: doc-11
 title: Клавіатура й меню
 type: specification
 created_date: '2026-11-01 14:54'
-updated_date: '2026-11-01 16:46'
+updated_date: '2026-11-01 18:37'
 ---
 # Клавіатура й меню
 
@@ -30,6 +30,16 @@ updated_date: '2026-11-01 16:46'
 - Посібник Microsoft для української радить кирилицю й не дозволяє латиниці в дужках. Від нього відходимо свідомо: так жодна клавіша не залежить від розкладки.
 
 Джерела: настанови Microsoft щодо [клавіатури](https://learn.microsoft.com/en-us/windows/win32/uxguide/inter-keyboard) і [меню](https://learn.microsoft.com/en-us/windows/win32/uxguide/cmd-menus), [Microsoft Ukrainian Style Guide](https://download.microsoft.com/download/6/4/a/64a8b98e-e69f-47c9-96dd-f8bc55c176c6/ukr-ukr-StyleGuide.pdf) (с. 138–140), [WM_MENUCHAR](https://learn.microsoft.com/en-us/windows/win32/menurc/wm-menuchar), [Firefox, вада 399939](https://bugzilla.mozilla.org/show_bug.cgi?id=399939), [клавіші доступу в діалогах](https://learn.microsoft.com/en-us/windows/win32/dlgbox/dlgbox-programming-considerations).
+
+## Назви клавіш
+
+В англійському інтерфейсі клавіші називаємо так, як їх підписано на клавіатурі. В українському — за посібником Microsoft для української (вирішено 2026-11-01 у DRAFT-14):
+- назви, підписані на більшості клавіатур, лишаються англійськими й пишуться з великої літери: Ctrl, Shift, Alt, Enter, Esc, Delete, Backspace, Home, End, Page Up, Page Down, F1…F12;
+- решту перекладено: «ПРОБІЛ» (усі літери великі), «Стрілка вгору», «Стрілка вниз», «Стрілка вліво», «Стрілка вправо», «Клавіша контекстного меню», «Клавіша Windows»;
+- сполучення пишемо через «+» без пробілів (Ctrl+F5, Shift+F10), а сполучення зі стрілкою — зі словом «клавіші» й пробілами навколо «+» («клавіші Ctrl + стрілка вниз»);
+- у реченні перед назвою стоїть слово «клавіша»: «Клавіша Delete видаляє знімки лише в переліку знімків».
+
+Так клавіші названо в меню, у вікні «Гарячі клавіші» (F1) і в повідомленнях рядка стану. Джерело — [Microsoft Ukrainian Style Guide](https://download.microsoft.com/download/6/4/a/64a8b98e-e69f-47c9-96dd-f8bc55c176c6/ukr-ukr-StyleGuide.pdf), с. 136–137 і 145–146.
 
 ## Меню й команди
 
