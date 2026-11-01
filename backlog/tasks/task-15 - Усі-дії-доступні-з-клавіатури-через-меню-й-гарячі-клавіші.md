@@ -54,6 +54,7 @@ documentation:
   - backlog/docs/adr/doc-5 - ADR-0004-Лише-нативні-контроли-Windows.md
   - backlog/docs/adr/doc-7 - ADR-0005-Ядро-без-GUI-і-застосунок-на-wxDragon.md
 type: feature
+ordinal: 6500
 ---
 
 ## Description
