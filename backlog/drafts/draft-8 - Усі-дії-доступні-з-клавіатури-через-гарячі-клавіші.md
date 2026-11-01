@@ -4,7 +4,7 @@ title: Усі дії доступні з клавіатури через гар�
 status: Draft
 assignee: []
 created_date: '2026-10-30 15:56'
-updated_date: '2026-11-01 16:26'
+updated_date: '2026-11-01 16:36'
 labels: []
 milestone: m-1
 dependencies: []
@@ -48,6 +48,11 @@ references:
 documentation:
   - backlog/docs/doc-2 - Бриф-продукту.md
   - backlog/docs/doc-11 - Клавіатура-й-меню.md
+  - >-
+    backlog/docs/adr/doc-12 -
+    ADR-0008-Команди-—-в-одній-таблиці-а-клавіші-revisor-обробляє-сам.md
+  - backlog/docs/adr/doc-5 - ADR-0004-Лише-нативні-контроли-Windows.md
+  - backlog/docs/adr/doc-7 - ADR-0005-Ядро-без-GUI-і-застосунок-на-wxDragon.md
 type: feature
 ---
 
