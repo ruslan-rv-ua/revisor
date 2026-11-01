@@ -9,6 +9,7 @@
 
 const RC: &str = include_str!("../../revisor/resources/app.rc");
 const BIN_MANIFEST: &str = include_str!("../../revisor/Cargo.toml");
+const CORE_MANIFEST: &str = include_str!("../Cargo.toml");
 
 /// The workspace version, which every crate here inherits.
 const VERSION: &str = env!("CARGO_PKG_VERSION");
@@ -47,13 +48,18 @@ fn binary_version(statement_name: &str) -> String {
 }
 
 #[test]
-fn the_binary_takes_the_workspace_version() {
-    assert!(
-        BIN_MANIFEST
-            .lines()
-            .any(|line| line.trim() == "version.workspace = true"),
-        "crates/revisor/Cargo.toml must inherit the workspace version"
-    );
+fn both_crates_take_the_workspace_version() {
+    for (path, manifest) in [
+        ("crates/revisor/Cargo.toml", BIN_MANIFEST),
+        ("crates/revisor-core/Cargo.toml", CORE_MANIFEST),
+    ] {
+        assert!(
+            manifest
+                .lines()
+                .any(|line| line.trim() == "version.workspace = true"),
+            "{path} must inherit the workspace version"
+        );
+    }
 }
 
 #[test]

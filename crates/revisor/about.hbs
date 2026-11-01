@@ -5,7 +5,8 @@
     cargo fetch --locked
     cargo about generate --frozen -m crates/revisor/Cargo.toml -c crates/revisor/about.toml crates/revisor/about.hbs -o crates/revisor/THIRD-PARTY-LICENSES.txt
 
-  CI regenerates the file the same way and fails if it differs from the committed one.
+  CI runs the same commands (adding --fail, which turns an unidentified licence into an
+  error) and fails if the result differs from the committed file.
 
   cargo-about sees only Rust crates. The C and C++ code that wxdragon-sys compiles into the
   exe is listed by hand below; keep it in step with wxdragon-sys. With wxdragon's default

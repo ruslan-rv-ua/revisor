@@ -40,7 +40,12 @@ fn embed_resources() {
         .arg(&res)
         .arg(resources.join("app.rc"))
         .status()
-        .unwrap_or_else(|e| panic!("{} could not be run: {e}", compiler.display()));
+        .unwrap_or_else(|e| {
+            panic!(
+                "{} could not be run: {e}; set LIBCLANG_PATH to LLVM's bin folder",
+                compiler.display()
+            )
+        });
     assert!(status.success(), "{} failed: {status}", compiler.display());
 
     println!("cargo:rustc-link-arg-bins={}", res.display());

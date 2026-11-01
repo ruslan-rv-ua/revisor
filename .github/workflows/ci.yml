@@ -28,6 +28,9 @@ jobs:
       # Actions are pinned by commit, with the tag in the comment: a moved tag would hand
       # this workflow to someone else's code.
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          # Nothing here pushes, so the token is not left behind in .git/config.
+          persist-credentials: false
 
       # wxdragon-sys requires the Ninja CMake generator for x64 MSVC.
       - name: Install Ninja
@@ -41,11 +44,12 @@ jobs:
         run: cargo fmt --all -- --check
 
       # The wxWidgets static libraries dominate a cold build, so the whole build tree is
-      # cached, keyed on everything that changes what gets built.
+      # cached, keyed on the crate versions and the Rust toolchain. Cargo's own fingerprints
+      # rebuild whatever else changed (rustflags, the image's compilers).
       - name: Cache build tree
         uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
         with:
-          path: C:\t
+          path: ${{ env.CARGO_TARGET_DIR }}
           key: build-${{ hashFiles('Cargo.lock', 'rust-toolchain.toml') }}
 
       - name: Test
@@ -64,6 +68,7 @@ jobs:
             throw "cargo-about archive SHA-256 mismatch: $hash"
           }
           tar -xzf $archive -C $env:RUNNER_TEMP
+          if ($LASTEXITCODE) { exit $LASTEXITCODE }
           Add-Content $env:GITHUB_PATH (Join-Path $env:RUNNER_TEMP 'cargo-about-0.9.3-x86_64-pc-windows-msvc')
 
       # The committed licence file must be exactly what Cargo.lock produces. cargo metadata
