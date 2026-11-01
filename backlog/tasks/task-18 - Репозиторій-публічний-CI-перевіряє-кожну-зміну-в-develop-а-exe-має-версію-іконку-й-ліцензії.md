@@ -3,9 +3,11 @@ id: TASK-18
 title: >-
   Репозиторій публічний, CI перевіряє кожну зміну в develop, а exe має версію,
   іконку й ліцензії
-status: To Do
-assignee: []
+status: In Progress
+assignee:
+  - '@claude'
 created_date: '2026-11-01 19:44'
+updated_date: '2026-11-01 20:38'
 labels: []
 milestone: m-1
 dependencies: []
@@ -96,3 +98,31 @@ wxWidgets збирається із сирців під час `cargo build`, і
 - [ ] #5 Бриф і ADR чи README оновлено (якщо задача змінила поведінку чи рішення)
 - [ ] #6 Нові вікна й контроли мають клавіші доступу за документом «Клавіатура й меню» (якщо задача їх додає)
 <!-- DOD:END -->
+
+## Implementation Plan
+
+<!-- SECTION:PLAN:BEGIN -->
+Порядок продиктовано вимогою «публічний ще до CI»: воркфлоу не має потрапити в origin, поки репозиторій приватний.
+
+1. feature/license-readme: LICENSE (MIT, Copyright (c) 2026 Ruslan Iskov), README.md (англ.) і README.uk.md (укр.) з посиланнями одне на одне: що таке revisor, «у розробці, релізу ще немає», збірка із сирців (VS Build Tools, CMake, Ninja, LLVM + LIBCLANG_PATH), ліцензія. Finish → push develop (CI ще немає).
+2. Після підтвердження автора: `gh repo edit --visibility public`, типова гілка — develop.
+3. feature/ci-identity-licenses:
+   - rust-toolchain.toml: channel 1.99.1 (поточний локальний, на ньому міряв прототип), clippy, rustfmt, ціль x86_64-pc-windows-msvc.
+   - .github/workflows/ci.yml за зразком pathmaster: push/PR у develop, windows-2025, `permissions: contents: read`, дії повним SHA з тегом у коментарі, Ninja, LIBCLANG_PATH, CARGO_TARGET_DIR=C:\t, fmt → кеш C:\t (ключ — Cargo.lock + rust-toolchain.toml) → test → clippy → перевірка файлу ліцензій.
+   - crates/revisor/resources/app.rc (ICON + VERSIONINFO, без маніфесту), icon.svg + app.ico (16/24/32/48/256) і tools/make-icon.ps1; build.rs компілює .rc через llvm-rc (поруч із libclang) і передає .res лінкеру; маніфест лишається в embed-manifest.
+   - Головне вікно ставить іконку з того самого SVG (wxMSW не бере іконку exe для фрейму).
+   - Тест у crates/revisor-core/tests/versioninfo.rs: FILEVERSION/PRODUCTVERSION і рядки = версія крейта, CompanyName, ProductName (без лінкування wxWidgets).
+   - cargo-about: about.toml + шаблон, згенерований файл ліцензій у репозиторії; ручний розділ для wxWidgets і вкомпільованих бібліотек (у збірці з default-features = false: zlib, libpng, expat, nanosvg; jpeg/tiff/regex/webp/lunasvg вимкнено).
+4. Finish → push → заміряти холодний і повторний запуск CI (gh run rerun), записати в нотатки.
+5. Оновити бриф/ADR, якщо щось змінилося; DoD.
+
+Питання до автора: вигляд іконки; як CI отримує cargo-about; назва й місце файлу ліцензій.
+<!-- SECTION:PLAN:END -->
+
+## Implementation Notes
+
+<!-- SECTION:NOTES:BEGIN -->
+Рішення автора 2026-11-01: іконка — варіант B «два знімки» (темно-бірюзовий заокруглений квадрат #0F4C45, задній квадрат контуром #5DCAA5, передній суцільний #E1F5EE); CI отримує cargo-about 0.9.3 готовим архівом релізу з перевіркою SHA-256, записаного у воркфлоу; файл ліцензій — один crates/revisor/THIRD-PARTY-LICENSES.txt, ручний розділ C/C++ — у шаблоні cargo-about поруч.
+
+У збірці з default-features = false wxWidgets 3.3.4 вкомпільовує (CMakeCache wxdragon_sys_cmake_build): zlib, libpng, expat і nanosvg — builtin; libjpeg, libtiff, regex, libwebp, lunasvg, xpm вимкнено. Лінкуються wxpng, wxzlib, wxexpat (вивід build-скрипта wxdragon-sys).
+<!-- SECTION:NOTES:END -->
