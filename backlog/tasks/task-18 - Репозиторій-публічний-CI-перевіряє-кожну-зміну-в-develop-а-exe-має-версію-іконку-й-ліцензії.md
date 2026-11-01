@@ -3,11 +3,11 @@ id: TASK-18
 title: >-
   Репозиторій публічний, CI перевіряє кожну зміну в develop, а exe має версію,
   іконку й ліцензії
-status: In Progress
+status: Done
 assignee:
   - '@claude'
 created_date: '2026-11-01 19:44'
-updated_date: '2026-11-01 20:40'
+updated_date: '2026-11-01 21:08'
 labels: []
 milestone: m-1
 dependencies: []
@@ -81,22 +81,22 @@ wxWidgets збирається із сирців під час `cargo build`, і
 <!-- AC:BEGIN -->
 - [x] #1 Перед публікацією в репозиторії є LICENSE (MIT, «Copyright (c) 2026 Ruslan Iskov») і README.md англійською й README.uk.md українською з посиланнями одне на одне: що таке revisor, позначка «у розробці, релізу ще немає», як зібрати із сирців, ліцензія.
 - [x] #2 Репозиторій ruslan-rv-ua/revisor публічний, а його типова гілка на GitHub — develop.
-- [ ] #3 На кожен push і PR у develop GitHub Actions на раннері windows-2025 перевіряють форматування (cargo fmt --check, ще до збірки), а тоді запускають cargo test --workspace --locked і cargo clippy --workspace --all-targets --locked -- -D warnings; невдала перевірка робить запуск червоним.
-- [ ] #4 Збірку закріплено: точна версія Rust у rust-toolchain.toml (clippy, rustfmt, ціль x86_64-pc-windows-msvc), дії — повним SHA з тегом у коментарі, мінімальні permissions; Dependabot не ввімкнено.
-- [ ] #5 wxWidgets збирається на раннері, а кеш дерева збірки з ключем від Cargo.lock і rust-toolchain.toml скорочує повторний запуск; час холодного й повторного запуску записано в нотатках задачі.
-- [ ] #6 Exe має VERSIONINFO з версією з Cargo.toml, CompanyName «Ruslan Iskov» і ProductName «revisor», і Провідник показує їх у властивостях файлу; тест перевіряє, що версія ресурсу збігається з версією крейта. Маніфест Windows в exe лишається один.
-- [ ] #7 Exe має іконку на 16–256 px, вигляд якої погодив автор; її показують Провідник і головне вікно.
-- [ ] #8 Файл ліцензій сторонніх компонентів генерує cargo-about, і він лежить у репозиторії; CI падає, якщо файл не відповідає Cargo.lock. wxWidgets і вкомпільовані в нього бібліотеки дописано вручну.
+- [x] #3 На кожен push і PR у develop GitHub Actions на раннері windows-2025 перевіряють форматування (cargo fmt --check, ще до збірки), а тоді запускають cargo test --workspace --locked і cargo clippy --workspace --all-targets --locked -- -D warnings; невдала перевірка робить запуск червоним.
+- [x] #4 Збірку закріплено: точна версія Rust у rust-toolchain.toml (clippy, rustfmt, ціль x86_64-pc-windows-msvc), дії — повним SHA з тегом у коментарі, мінімальні permissions; Dependabot не ввімкнено.
+- [x] #5 wxWidgets збирається на раннері, а кеш дерева збірки з ключем від Cargo.lock і rust-toolchain.toml скорочує повторний запуск; час холодного й повторного запуску записано в нотатках задачі.
+- [x] #6 Exe має VERSIONINFO з версією з Cargo.toml, CompanyName «Ruslan Iskov» і ProductName «revisor», і Провідник показує їх у властивостях файлу; тест перевіряє, що версія ресурсу збігається з версією крейта. Маніфест Windows в exe лишається один.
+- [x] #7 Exe має іконку на 16–256 px, вигляд якої погодив автор; її показують Провідник і головне вікно.
+- [x] #8 Файл ліцензій сторонніх компонентів генерує cargo-about, і він лежить у репозиторії; CI падає, якщо файл не відповідає Cargo.lock. wxWidgets і вкомпільовані в нього бібліотеки дописано вручну.
 <!-- AC:END -->
 
 ## Definition of Done
 <!-- DOD:BEGIN -->
-- [ ] #1 Тести (cargo test) проходять
-- [ ] #2 cargo clippy і cargo fmt --check без зауважень
-- [ ] #3 Зміни інтерфейсу перевірено вручну з NVDA в українському інтерфейсі (якщо задача їх містить)
-- [ ] #4 Нотатки виконання й підсумок задачі заповнено
-- [ ] #5 Бриф і ADR чи README оновлено (якщо задача змінила поведінку чи рішення)
-- [ ] #6 Нові вікна й контроли мають клавіші доступу за документом «Клавіатура й меню» (якщо задача їх додає)
+- [x] #1 Тести (cargo test) проходять
+- [x] #2 cargo clippy і cargo fmt --check без зауважень
+- [x] #3 Зміни інтерфейсу перевірено вручну з NVDA в українському інтерфейсі (якщо задача їх містить)
+- [x] #4 Нотатки виконання й підсумок задачі заповнено
+- [x] #5 Бриф і ADR чи README оновлено (якщо задача змінила поведінку чи рішення)
+- [x] #6 Нові вікна й контроли мають клавіші доступу за документом «Клавіатура й меню» (якщо задача їх додає)
 <!-- DOD:END -->
 
 ## Implementation Plan
@@ -127,4 +127,36 @@ wxWidgets збирається із сирців під час `cargo build`, і
 У збірці з default-features = false wxWidgets 3.3.4 вкомпільовує (CMakeCache wxdragon_sys_cmake_build): zlib, libpng, expat і nanosvg — builtin; libjpeg, libtiff, regex, libwebp, lunasvg, xpm вимкнено. Лінкуються wxpng, wxzlib, wxexpat (вивід build-скрипта wxdragon-sys).
 
 2026-11-01: LICENSE (MIT, Copyright (c) 2026 Ruslan Iskov), README.md і README.uk.md влито в develop (feature/license-readme) і відправлено в origin, поки репозиторій був приватним і без воркфлоу. Після згоди автора `gh repo edit --visibility public` і `--default-branch develop`: `gh repo view` показує PUBLIC і develop; форків на момент публікації — 0.
+
+2026-11-01: feature/ci-identity-licenses влито в develop (коміти 138b752, 2b018fe, злиття 03764ee) і відправлено в origin.
+
+CI (`.github/workflows/ci.yml`), запуск 41348800352: холодний (спроба 1, без кешу) — 7 хв 58 с на job, з них крок Test (збірка wxWidgets + тести) — 6 хв 34 с, Clippy — 24 с, перевірка ліцензій — 11 с; повторний (спроба 2, `gh run rerun`, Cache hit) — 1 хв 56 с, з них відновлення кешу — 48 с, Test — 24 с. Обидва зелені. Червоний запуск від невдалої перевірки на практиці не демонстрували: кожен крок завершується з кодом команди, а багаторядкові кроки перевіряють `$LASTEXITCODE` явно.
+
+Закріплення: Rust 1.99.1 у `rust-toolchain.toml` (clippy, rustfmt, x86_64-pc-windows-msvc); actions/checkout v7.0.1 = 3d3c42e5aac5ba805825da76410c181273ba90b1, actions/cache v6.1.0 = 55cc8345863c7cc4c66a329aec7e433d2d1c52a9 (звірено з тегами); `permissions: contents: read`; `persist-credentials: false`; Dependabot немає. Ninja ставиться `choco install ninja` без версії, як у pathmaster, — єдине незакріплене.
+
+Кеш: увесь `C:\t` (CARGO_TARGET_DIR), ключ — `hashFiles('Cargo.lock', 'rust-toolchain.toml')`; зміни rustflags чи компіляторів образу перебудовують відбитки cargo.
+
+VERSIONINFO і іконка: `crates/revisor/resources/app.rc` (ICON + VERSIONINFO 0.1.0, CompanyName «Ruslan Iskov», ProductName «revisor», без маніфесту) компілює `llvm-rc` з теки `LIBCLANG_PATH` у `build.rs`, `.res` іде лінкеру; маніфест лишився в embed-manifest. llvm-readobj показує один MANIFEST, VERSIONINFO, GROUP_ICON. `(Get-Item revisor.exe).VersionInfo` показує ці поля. Тест `crates/revisor-core/tests/versioninfo.rs` звіряє FILEVERSION/PRODUCTVERSION і рядки з версією крейта (перевірено, що падає при розбіжності) і що обидва крейти успадковують версію workspace. Іконка — варіант B, `icon.svg` → `app.ico` (16/24/32/48/256) скриптом `tools/make-icon.ps1`; Провідник показує її (ExtractAssociatedIcon), вікно — теж (WM_GETICON повертає іконку, головне вікно ставить її з того самого SVG через `BitmapBundle::from_svg_data`).
+
+Ліцензії: `crates/revisor/THIRD-PARTY-LICENSES.txt` генерує cargo-about 0.9.3 з `about.toml` і шаблону `about.hbs`; 23 крейти; ручний розділ — wxWidgets 3.3.4, zlib 1.3.2, libpng 1.6.59, Expat 2.8.5, NanoSVG і примітка про SQLite. CI: `cargo fetch --locked`, `cargo about generate --frozen --fail`, `git diff --exit-code`. `--frozen` тримає вивід відтворюваним, а `cargo fetch` потрібен, бо `cargo metadata` вимагає крейти всіх цілей. Крейти revisor і revisor-core отримали `publish = false`, щоб `private.ignore` не вносив їх у файл. Вбудовування файлу в exe робить TASK-15 (#8, вікно «Про revisor»).
+
+Рев'ю (стандарти й специфікація) жорстких порушень не знайшло; виправлено: перевірка коду `tar`, `persist-credentials: false`, точніші коментарі кешу й about.hbs, повідомлення про `LIBCLANG_PATH` у build.rs.
 <!-- SECTION:NOTES:END -->
+
+## Final Summary
+
+<!-- SECTION:FINAL_SUMMARY:BEGIN -->
+Репозиторій ruslan-rv-ua/revisor публічний (типова гілка — develop), має LICENSE (MIT) і короткі README.md / README.uk.md.
+
+Що зроблено:
+- CI `.github/workflows/ci.yml` на кожен push і PR у develop (windows-2025): cargo fmt --check до збірки, cargo test і cargo clippy -D warnings з --locked, перевірка актуальності файлу ліцензій. Холодний запуск — 7 хв 58 с (збірка wxWidgets + тести — 6 хв 34 с), повторний із кешем `C:\t` — 1 хв 56 с; обидва зелені.
+- Закріплення: Rust 1.99.1 у rust-toolchain.toml, actions/checkout і actions/cache повним SHA з тегом у коментарі, `permissions: contents: read`, `persist-credentials: false`, без Dependabot.
+- VERSIONINFO (версія з Cargo.toml, CompanyName «Ruslan Iskov», ProductName «revisor») і іконка з `crates/revisor/resources/app.rc`, яку build.rs компілює llvm-rc; маніфест лишився один (embed-manifest). Тест versioninfo.rs звіряє версію ресурсу з версією крейта.
+- Іконка «два знімки» (16–256 px) з icon.svg через tools/make-icon.ps1; її показують Провідник і головне вікно.
+- `crates/revisor/THIRD-PARTY-LICENSES.txt` генерує cargo-about 0.9.3 (23 крейти) плюс ручний розділ wxWidgets, zlib, libpng, Expat, NanoSVG і примітка про SQLite; CI падає, якщо файл застарів.
+
+Свідомо лишилося:
+- Ninja ставиться `choco install ninja` без версії (як у pathmaster) — єдине незакріплене.
+- Червоний запуск від невдалої перевірки на практиці не демонстрували; кроки завершуються з кодом команди, багаторядкові перевіряють `$LASTEXITCODE`.
+- Вбудовування файлу ліцензій в exe і вікно «Про revisor» — TASK-15.
+<!-- SECTION:FINAL_SUMMARY:END -->
