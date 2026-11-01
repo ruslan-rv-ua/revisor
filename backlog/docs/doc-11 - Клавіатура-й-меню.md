@@ -3,7 +3,7 @@ id: doc-11
 title: Клавіатура й меню
 type: specification
 created_date: '2026-11-01 14:54'
-updated_date: '2026-11-01 15:22'
+updated_date: '2026-11-01 15:46'
 ---
 # Клавіатура й меню
 
@@ -59,14 +59,14 @@ updated_date: '2026-11-01 15:22'
 
 | Пункт | Англійською | Гаряча клавіша | Задача |
 |---|---|---|---|
-| Подробиці | Details | ? (а в списку різниці ще й Enter) | TASK-14 |
-| Показати в Провіднику | Show in File Explorer | ? | TASK-14 |
+| Подробиці | Details | Alt+Enter (а в списку різниці ще й Enter) | TASK-14 |
+| Показати в Провіднику | Show in File Explorer | Ctrl+Enter | TASK-14 |
 | — | | | |
-| Фільтрувати за текстом (переводить фокус у поле «Фільтр:») | Filter by text | ? | TASK-13 |
-| Додані (з позначкою) | Added | ? | TASK-13 |
-| Видалені (з позначкою) | Deleted | ? | TASK-13 |
-| Змінені (з позначкою) | Modified | ? | TASK-13 |
-| Недоступні (з позначкою) | Inaccessible | ? | TASK-13 |
+| Фільтрувати за текстом (переводить фокус у поле «Фільтр:») | Filter by text | Ctrl+F | TASK-13 |
+| Додані (з позначкою) | Added | Ctrl+1 | TASK-13 |
+| Видалені (з позначкою) | Deleted | Ctrl+2 | TASK-13 |
+| Змінені (з позначкою) | Modified | Ctrl+3 | TASK-13 |
+| Недоступні (з позначкою) | Inaccessible | Ctrl+4 | TASK-13 |
 | — | | | |
 | Сортувати за ▸ | Sort by ▸ | немає | TASK-13 |
 
@@ -85,6 +85,8 @@ updated_date: '2026-11-01 15:22'
 Знімок і порівняння мають F-клавіші за одним правилом: сама F-клавіша запускає дію, з Ctrl — розширений варіант, із Shift — скасування. F5 означає «оновити», а знімок саме перечитує стан диска: так само F5 перечитує теки й порівнює знову у WinMerge, Beyond Compare й TortoiseSVN, а у FreeFileSync F5 — «Порівняти». Shift+F5 зупиняє те, що запустила F5, як у Visual Studio. Знімок «до» має найпростішу клавішу, F5, а «знімок + порівняння» — її розширений варіант. Порівняння стоїть на F7, бо F6 — для переходів між частинами вікна, а F7–F9 Microsoft називає вільними. Джерела: [WinMerge](https://manual.winmerge.org/en/Shortcut_keys.html), [настанови Microsoft щодо клавіатури](https://learn.microsoft.com/en-us/windows/win32/uxguide/inter-keyboard).
 
 F2 у Windows перейменовує вибраний об'єкт, а Microsoft радить F-клавіші саме для дій над вибраним. Назва знімка — дата й час, і змінити можна лише коментар, тож F2 відкриває «Коментар…» для поточного знімка, звідки б її не натиснули.
+
+Клавіші різниці взято з подібних програм. Ctrl+F переводить у поле пошуку чи фільтра в Everything, Провіднику, Beyond Compare, FreeFileSync і TortoiseGit. Alt+Enter — «Властивості» в Провіднику, Everything і Total Commander, а «Подробиці» — властивості зміни. Ctrl+Enter відкриває теку запису в Everything («Open Path») і стоїть поруч з Enter, що відкриває подробиці. Типи у фільтрі мають Ctrl+1…Ctrl+4 у порядку прапорців: Ctrl+цифри Microsoft називає вільними. Поле «Фільтр:» цих клавіш собі не забирає, тож вони діють і з нього. Джерела: [Everything](https://www.voidtools.com/support/everything/keyboard_shortcuts/), [гарячі клавіші Windows](https://support.microsoft.com/en-us/windows/keyboard-shortcuts-in-windows-dcc61a57-8ff0-cffe-9796-cb9706c75eec).
 
 ## Клавіші, що діють лише в одному місці
 
