@@ -20,6 +20,11 @@ pub enum Key {
     Esc,
     Space,
     Tab,
+    Backspace,
+    Home,
+    End,
+    PageUp,
+    PageDown,
     Up,
     Down,
     Left,
@@ -76,6 +81,11 @@ impl Shortcut {
             WXK_ESCAPE => Key::Esc,
             WXK_SPACE => Key::Space,
             WXK_TAB => Key::Tab,
+            WXK_BACK => Key::Backspace,
+            WXK_HOME => Key::Home,
+            WXK_END => Key::End,
+            WXK_PAGEUP => Key::PageUp,
+            WXK_PAGEDOWN => Key::PageDown,
             WXK_UP => Key::Up,
             WXK_DOWN => Key::Down,
             WXK_LEFT => Key::Left,
@@ -147,6 +157,11 @@ impl Shortcut {
             Key::Delete => name.push_str("Delete"),
             Key::Esc => name.push_str("Esc"),
             Key::Tab => name.push_str("Tab"),
+            Key::Backspace => name.push_str("Backspace"),
+            Key::Home => name.push_str("Home"),
+            Key::End => name.push_str("End"),
+            Key::PageUp => name.push_str("Page Up"),
+            Key::PageDown => name.push_str("Page Down"),
             Key::Space => name.push_str(s.key_space()),
             Key::Up => name.push_str(s.key_up()),
             Key::Down => name.push_str(s.key_down()),
@@ -210,6 +225,8 @@ mod tests {
             (Shortcut::new(Key::F(4)).alt(), "Alt+F4"),
             (Shortcut::new(Key::Delete), "Delete"),
             (Shortcut::new(Key::Esc), "Esc"),
+            (Shortcut::new(Key::PageDown).ctrl(), "Ctrl+Page Down"),
+            (Shortcut::new(Key::Backspace), "Backspace"),
         ];
         for (shortcut, expected) in cases {
             assert_eq!(shortcut.name(&En), expected);
@@ -271,7 +288,8 @@ mod tests {
             Shortcut::new(Key::Other(WXK_INSERT)),
             Shortcut::new(Key::Other(WXK_NUMPAD5)).ctrl(),
             Shortcut::new(Key::Other(',' as i32)).ctrl(),
-            Shortcut::new(Key::Other(WXK_HOME)),
+            Shortcut::new(Key::Home),
+            Shortcut::new(Key::End).ctrl(),
         ];
         for letter in *b"ACVXZ" {
             assert!(

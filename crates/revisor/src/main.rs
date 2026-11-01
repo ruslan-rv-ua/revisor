@@ -29,8 +29,8 @@ fn main() {
         AppState::new()
     };
     wxdragon::main(move |_| {
-        // The window lives as long as the frame, which owns its event handlers.
-        std::mem::forget(MainWindow::open(strings, state));
+        // The frame's event handlers hold the window, so it lives as long as the frame.
+        MainWindow::open(strings, state);
     })
     .expect("failed to start the GUI");
 }

@@ -8,7 +8,7 @@ use std::rc::Rc;
 
 use wxdragon::prelude::*;
 
-use crate::commands::{COMMANDS, CommandId, ItemKind as CommandKind, MenuId, Pane, command};
+use crate::commands::{COMMANDS, CommandId, CommandKind, MenuId, Pane, command};
 use crate::help;
 use crate::i18n::Strings;
 use crate::keyboard::{Control, Focus, Route, route};
@@ -264,14 +264,11 @@ impl MainWindow {
     /// What the demo state does for a command: the filter and sort items keep their marks.
     fn demo_run(&self, id: CommandId) {
         let mut state = self.state.borrow_mut();
-        let shown = |change: ChangeType| change as usize;
         match id {
-            CommandId::ShowAdded => state.shown_types[shown(ChangeType::Added)] ^= true,
-            CommandId::ShowDeleted => state.shown_types[shown(ChangeType::Deleted)] ^= true,
-            CommandId::ShowModified => state.shown_types[shown(ChangeType::Modified)] ^= true,
-            CommandId::ShowInaccessible => {
-                state.shown_types[shown(ChangeType::Inaccessible)] ^= true
-            }
+            CommandId::ShowAdded => state.toggle_shown(ChangeType::Added),
+            CommandId::ShowDeleted => state.toggle_shown(ChangeType::Deleted),
+            CommandId::ShowModified => state.toggle_shown(ChangeType::Modified),
+            CommandId::ShowInaccessible => state.toggle_shown(ChangeType::Inaccessible),
             CommandId::SortByPath => state.sort = SortColumn::Path,
             CommandId::SortByName => state.sort = SortColumn::Name,
             CommandId::SortByChange => state.sort = SortColumn::Change,
@@ -412,5 +409,15 @@ fn set_frame_icon(frame: &Frame) {
         .and_then(|bundle| bundle.get_bitmap_for(frame))
     {
         frame.set_icon(&bitmap);
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn the_profile_label_takes_no_menu_letter() {
+        assert!(MenuId::ALL.iter().all(|m| m.access() != PROFILE_ACCESS));
     }
 }

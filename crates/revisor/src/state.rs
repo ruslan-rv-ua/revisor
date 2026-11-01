@@ -65,4 +65,8 @@ impl AppState {
     pub fn shows(&self, change: ChangeType) -> bool {
         self.shown_types[change as usize]
     }
+
+    pub fn toggle_shown(&mut self, change: ChangeType) {
+        self.shown_types[change as usize] ^= true;
+    }
 }

@@ -69,7 +69,7 @@ impl Strings for Uk {
         match reason {
             Reason::NoProfiles => "профілів ще немає",
             Reason::NoSnapshots => "знімків ще немає",
-            Reason::NoDifference => "різниці ще немає, спершу порівняйте знімки",
+            Reason::NoDifference => "різниці ще немає",
             Reason::SnapshotNotRunning => "знімок зараз не триває",
             Reason::ComparisonNotRunning => "порівняння зараз не триває",
             Reason::CompactionNotRunning => "стискання зараз не триває",

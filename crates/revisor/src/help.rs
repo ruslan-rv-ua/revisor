@@ -57,4 +57,6 @@ fn show_text(parent: &Frame, s: &'static dyn Strings, title: &str, text: &str) {
     dialog.centre();
     field.set_focus();
     dialog.show_modal();
+    // A plain wxDragon Dialog is not destroyed when dropped.
+    dialog.destroy();
 }

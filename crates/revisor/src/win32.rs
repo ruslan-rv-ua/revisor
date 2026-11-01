@@ -5,7 +5,6 @@
 
 use std::cell::Cell;
 use std::ffi::c_void;
-use std::sync::OnceLock;
 
 use windows_sys::Win32::Foundation::{HWND, LPARAM, LRESULT, POINT, RECT, WPARAM};
 use windows_sys::Win32::Globalization::GetUserDefaultUILanguage;
@@ -18,11 +17,11 @@ use windows_sys::Win32::UI::Controls::{
     LVIR_BOUNDS, LVM_GETITEMRECT, LVM_GETNEXTITEM, LVNI_FOCUSED,
 };
 use windows_sys::Win32::UI::Input::KeyboardAndMouse::{GetFocus, GetKeyboardLayout, VkKeyScanExW};
-use windows_sys::Win32::UI::Shell::{DefSubclassProc, SetWindowSubclass};
+use windows_sys::Win32::UI::Shell::{DefSubclassProc, RemoveWindowSubclass, SetWindowSubclass};
 use windows_sys::Win32::UI::WindowsAndMessaging::{
     CHILDID_SELF, EVENT_OBJECT_LIVEREGIONCHANGED, GetClassNameW, GetMenuItemCount, GetMenuStringW,
     HMENU, MF_BYPOSITION, MF_SYSMENU, MNC_EXECUTE, OBJID_CLIENT, SendMessageW, SetMenuDefaultItem,
-    WM_INITMENUPOPUP, WM_MENUCHAR,
+    WM_INITMENUPOPUP, WM_MENUCHAR, WM_NCDESTROY,
 };
 use windows_sys::core::{GUID, HRESULT};
 
@@ -66,35 +65,38 @@ struct Variant {
     padding: [u32; 3],
 }
 
+// The x64 VARIANT; revisor builds only for x86_64-pc-windows-msvc.
+const _: () = assert!(size_of::<Variant>() == 24);
+
 const IID_IACCPROPSERVICES: GUID = GUID::from_u128(0x6e26e776_04f0_495d_80e4_3330352e3169);
 const VT_I4: u16 = 3;
 
-/// The process's IAccPropServices, created on first use on the GUI thread, where wx has
-/// already initialised COM. It lives as long as the process, as its overrides must.
+/// The GUI thread's IAccPropServices, created on first use there, where wx has already
+/// initialised COM. It is never released: the overrides it holds must last as long as the
+/// windows they name.
 struct AccProps(*mut c_void);
 
-// SAFETY: only ever used from the GUI thread; the OnceLock just keeps one instance.
-unsafe impl Send for AccProps {}
-unsafe impl Sync for AccProps {}
+thread_local! {
+    static PROPS: &'static Option<AccProps> = Box::leak(Box::new(create_acc_props()));
+}
 
 fn acc_props() -> Option<&'static AccProps> {
-    static PROPS: OnceLock<Option<AccProps>> = OnceLock::new();
-    PROPS
-        .get_or_init(|| {
-            let mut ptr = std::ptr::null_mut();
-            // SAFETY: valid CLSID/IID and out pointer.
-            let hr = unsafe {
-                CoCreateInstance(
-                    &CLSID_AccPropServices,
-                    std::ptr::null_mut(),
-                    CLSCTX_INPROC_SERVER,
-                    &IID_IACCPROPSERVICES,
-                    &mut ptr,
-                )
-            };
-            (hr >= 0 && !ptr.is_null()).then_some(AccProps(ptr))
-        })
-        .as_ref()
+    PROPS.with(|props| props.as_ref())
+}
+
+fn create_acc_props() -> Option<AccProps> {
+    let mut ptr = std::ptr::null_mut();
+    // SAFETY: valid CLSID/IID and out pointer.
+    let hr = unsafe {
+        CoCreateInstance(
+            &CLSID_AccPropServices,
+            std::ptr::null_mut(),
+            CLSCTX_INPROC_SERVER,
+            &IID_IACCPROPSERVICES,
+            &mut ptr,
+        )
+    };
+    (hr >= 0 && !ptr.is_null()).then_some(AccProps(ptr))
 }
 
 impl AccProps {
@@ -256,10 +258,16 @@ unsafe extern "system" fn main_window_proc(
             }
         }
         WM_INITMENUPOPUP if BOLD_FIRST_ITEM.with(|b| b.replace(false)) => {
-            // SAFETY: wx sets the menu up first; then the first item becomes the default.
+            // SAFETY: wx sets the menu up first; then the first item of the menu Windows
+            // passed in becomes the default, by position.
             let result = unsafe { DefSubclassProc(hwnd, msg, wparam, lparam) };
             unsafe { SetMenuDefaultItem(wparam as HMENU, 0, 1) };
             return result;
+        }
+        WM_NCDESTROY => {
+            // SAFETY: the subclass installed in `subclass_main_window`, removed as the
+            // window goes, as the subclassing rules ask.
+            unsafe { RemoveWindowSubclass(hwnd, Some(main_window_proc), 1) };
         }
         _ => {}
     }
@@ -270,7 +278,7 @@ unsafe extern "system" fn main_window_proc(
 /// The menu item whose access key sits on the key that typed `ch` in the current layout:
 /// "а" in the Ukrainian layout is the F key, so it finds "Файл (&F)".
 fn menu_item_by_key_position(ch: u16, menu: HMENU) -> Option<usize> {
-    // SAFETY: plain calls on the current thread's layout and a menu Windows handed over.
+    // SAFETY: reads the current thread's keyboard layout.
     let scan = unsafe { VkKeyScanExW(ch, GetKeyboardLayout(0)) };
     if scan == -1 {
         return None;
@@ -279,10 +287,12 @@ fn menu_item_by_key_position(ch: u16, menu: HMENU) -> Option<usize> {
     if !vk.is_ascii_uppercase() {
         return None;
     }
+    // SAFETY: the menu Windows passed with WM_MENUCHAR, which is open now.
     let count = unsafe { GetMenuItemCount(menu) };
     let items: Vec<String> = (0..count.max(0) as u32)
         .map(|i| {
             let mut text = [0u16; 256];
+            // SAFETY: the same menu; the buffer length is passed.
             let len = unsafe {
                 GetMenuStringW(menu, i, text.as_mut_ptr(), text.len() as i32, MF_BYPOSITION)
             };

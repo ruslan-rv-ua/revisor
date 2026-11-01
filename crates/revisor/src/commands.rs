@@ -110,7 +110,7 @@ pub enum Reason {
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub enum ItemKind {
+pub enum CommandKind {
     Normal,
     /// A menu item with a check mark.
     Check,
@@ -142,7 +142,7 @@ pub struct Command {
     pub access: u8,
     /// Whether the label ends in "…": the command asks for more before it acts.
     pub ellipsis: bool,
-    pub kind: ItemKind,
+    pub kind: CommandKind,
     pub shortcut: Option<Shortcut>,
     /// The pane the shortcut is limited to. Elsewhere the key goes to the focused control,
     /// and when that control has no use for it, revisor says where the key works.
@@ -185,50 +185,34 @@ fn not_yet(state: &AppState) -> Result<(), Reason> {
     }
 }
 
+fn require(condition: bool, reason: Reason) -> Result<(), Reason> {
+    if condition { Ok(()) } else { Err(reason) }
+}
+
 fn has_profile(state: &AppState) -> Result<(), Reason> {
     state.profile.as_ref().map(|_| ()).ok_or(Reason::NoProfiles)
 }
 
 fn has_snapshots(state: &AppState) -> Result<(), Reason> {
     has_profile(state)?;
-    if state.snapshots > 0 {
-        Ok(())
-    } else {
-        Err(Reason::NoSnapshots)
-    }
+    require(state.snapshots > 0, Reason::NoSnapshots)
 }
 
 fn has_difference(state: &AppState) -> Result<(), Reason> {
     has_snapshots(state)?;
-    if state.has_difference {
-        Ok(())
-    } else {
-        Err(Reason::NoDifference)
-    }
+    require(state.has_difference, Reason::NoDifference)
 }
 
 fn snapshot_running(state: &AppState) -> Result<(), Reason> {
-    if state.snapshot_running {
-        Ok(())
-    } else {
-        Err(Reason::SnapshotNotRunning)
-    }
+    require(state.snapshot_running, Reason::SnapshotNotRunning)
 }
 
 fn comparison_running(state: &AppState) -> Result<(), Reason> {
-    if state.comparison_running {
-        Ok(())
-    } else {
-        Err(Reason::ComparisonNotRunning)
-    }
+    require(state.comparison_running, Reason::ComparisonNotRunning)
 }
 
 fn compaction_running(state: &AppState) -> Result<(), Reason> {
-    if state.compaction_running {
-        Ok(())
-    } else {
-        Err(Reason::CompactionNotRunning)
-    }
+    require(state.compaction_running, Reason::CompactionNotRunning)
 }
 
 const fn place(menu: MenuId, group: u8) -> Place {
@@ -258,7 +242,7 @@ const fn item(id: CommandId, place: Place, access: u8) -> Command {
         place,
         access,
         ellipsis: false,
-        kind: ItemKind::Normal,
+        kind: CommandKind::Normal,
         shortcut: None,
         scope: None,
         list_key: None,
@@ -270,10 +254,10 @@ const fn item(id: CommandId, place: Place, access: u8) -> Command {
 
 const fn shown_check(id: CommandId, access: u8, digit: u8) -> Command {
     Command {
-        kind: ItemKind::Check,
+        kind: CommandKind::Check,
         shortcut: Some(key(Key::Digit(digit)).ctrl()),
         available: has_difference,
-        ..item(id, place(MenuId::Difference, 2), access)
+        ..item(id, place(MenuId::Difference, 1), access)
     }
 }
 
@@ -284,7 +268,7 @@ const fn sort_radio(
     checked: fn(&AppState) -> bool,
 ) -> Command {
     Command {
-        kind: ItemKind::Radio,
+        kind: CommandKind::Radio,
         available: has_difference,
         checked: Some(checked),
         ..item(id, sort_place(group), access)
@@ -490,10 +474,10 @@ pub fn validate(table: &[Command], en: &dyn Strings) -> Vec<String> {
         if let Err(rule) = shortcut.check_rules() {
             problems.push(format!("{}: {key}: {rule}", c.name(en)));
         }
-        for other in &table[i + 1..] {
-            let clash = other.shortcut == Some(shortcut)
-                || other.list_key.is_some_and(|(_, k)| k == shortcut);
-            if clash {
+        for (j, other) in table.iter().enumerate() {
+            let same_shortcut = j > i && other.shortcut == Some(shortcut);
+            let same_as_list_key = j != i && other.list_key.is_some_and(|(_, k)| k == shortcut);
+            if same_shortcut || same_as_list_key {
                 problems.push(format!(
                     "{key} is used by both {} and {}",
                     c.name(en),
@@ -600,6 +584,34 @@ mod tests {
     #[test]
     fn the_command_table_follows_the_rules() {
         assert_eq!(validate(COMMANDS, &En), Vec::<String>::new());
+    }
+
+    #[test]
+    fn a_list_key_clashes_with_a_later_shortcut() {
+        let enter = key(Key::Enter);
+        let table = [
+            Command {
+                list_key: Some((Pane::Snapshots, enter.ctrl())),
+                ..item(
+                    CommandId::CompareWithPrevious,
+                    place(MenuId::Compare, 0),
+                    b'C',
+                )
+            },
+            Command {
+                shortcut: Some(enter.ctrl()),
+                ..item(
+                    CommandId::ShowInExplorer,
+                    place(MenuId::Difference, 0),
+                    b'E',
+                )
+            },
+        ];
+        let problems = validate(&table, &En);
+        assert!(
+            problems.iter().any(|p| p.contains("Ctrl+Enter")),
+            "{problems:#?}"
+        );
     }
 
     #[test]

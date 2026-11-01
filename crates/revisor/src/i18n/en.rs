@@ -68,7 +68,7 @@ impl Strings for En {
         match reason {
             Reason::NoProfiles => "there are no profiles yet",
             Reason::NoSnapshots => "there are no snapshots yet",
-            Reason::NoDifference => "there is no difference yet, compare snapshots first",
+            Reason::NoDifference => "there is no difference yet",
             Reason::SnapshotNotRunning => "no snapshot is being taken",
             Reason::ComparisonNotRunning => "no comparison is running",
             Reason::CompactionNotRunning => "no compaction is running",
