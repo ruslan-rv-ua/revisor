@@ -1,0 +1,46 @@
+// The exe's resources: its icon and its identity. build.rs compiles this file with llvm-rc.
+//
+// No manifest here: embed-manifest in build.rs supplies the one RT_MANIFEST, and a second
+// one would be a duplicate resource (CVT1100).
+//
+// Exactly one ICON statement, at the lowest id: the shell takes the first RT_GROUP_ICON in
+// the resource directory. app.ico is generated from icon.svg by tools/make-icon.ps1.
+//
+// VERSIONINFO is the whole of an unsigned binary's identity (ADR-0010): Explorer shows it
+// in the file's Properties, and revisor's own snapshots record it as the exe's version.
+// Keep this file ASCII: llvm-rc's input codepage is not the file's.
+//
+// The version fields must match the workspace version in Cargo.toml. The test
+// crates/revisor-core/tests/versioninfo.rs reads this file as text, so keep the
+// `VALUE "Field", "value"` shape, one statement per line, and keep prose about a field out
+// of the line that sets it.
+
+1 ICON "app.ico"
+
+1 VERSIONINFO
+FILEVERSION 0, 1, 0, 0
+PRODUCTVERSION 0, 1, 0, 0
+FILEOS 0x40004L      // VOS_NT_WINDOWS32
+FILETYPE 0x1L        // VFT_APP
+FILESUBTYPE 0x0L
+BEGIN
+    BLOCK "StringFileInfo"
+    BEGIN
+        // 0409 = en-US, 04B0 = 1200 = Unicode.
+        BLOCK "040904B0"
+        BEGIN
+            VALUE "CompanyName",      "Ruslan Iskov"
+            VALUE "FileDescription",  "revisor - file system snapshots and their differences"
+            VALUE "FileVersion",      "0.1.0"
+            VALUE "InternalName",     "revisor"
+            VALUE "LegalCopyright",   "Copyright (C) 2026 Ruslan Iskov. MIT License."
+            VALUE "OriginalFilename", "revisor.exe"
+            VALUE "ProductName",      "revisor"
+            VALUE "ProductVersion",   "0.1.0"
+        END
+    END
+    BLOCK "VarFileInfo"
+    BEGIN
+        VALUE "Translation", 0x409, 1200
+    END
+END

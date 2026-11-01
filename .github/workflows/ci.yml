@@ -1,0 +1,83 @@
+# Checks every push and PR to develop (ADR-0010): rustfmt, tests, clippy, and the
+# third-party licence file. A release re-runs these on its tag (TASK-19), because the
+# commit `git flow release finish` makes on main never reaches this workflow.
+name: CI
+
+on:
+  push:
+    branches: [develop]
+  pull_request:
+    branches: [develop]
+
+permissions:
+  contents: read
+
+jobs:
+  check:
+    name: fmt + test + clippy + licences
+    # Pinned image, not windows-latest: the toolchain under wxWidgets must not move on its own.
+    runs-on: windows-2025
+    env:
+      # A deep build path breaks the wxWidgets build on MAX_PATH, so the build tree sits at
+      # the drive root.
+      CARGO_TARGET_DIR: C:\t
+      # bindgen in wxdragon-sys does not find libclang.dll without this; build.rs takes
+      # llvm-rc from the same folder.
+      LIBCLANG_PATH: C:\Program Files\LLVM\bin
+    steps:
+      # Actions are pinned by commit, with the tag in the comment: a moved tag would hand
+      # this workflow to someone else's code.
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          # Nothing here pushes, so the token is not left behind in .git/config.
+          persist-credentials: false
+
+      # wxdragon-sys requires the Ninja CMake generator for x64 MSVC.
+      - name: Install Ninja
+        run: choco install ninja --no-progress -y
+
+      - name: Install the pinned Rust toolchain
+        run: rustup toolchain install
+
+      # Before the build: formatting needs no compilation, so it fails in seconds.
+      - name: Format
+        run: cargo fmt --all -- --check
+
+      # The wxWidgets static libraries dominate a cold build, so the whole build tree is
+      # cached, keyed on the crate versions and the Rust toolchain. Cargo's own fingerprints
+      # rebuild whatever else changed (rustflags, the image's compilers).
+      - name: Cache build tree
+        uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        with:
+          path: ${{ env.CARGO_TARGET_DIR }}
+          key: build-${{ hashFiles('Cargo.lock', 'rust-toolchain.toml') }}
+
+      - name: Test
+        run: cargo test --workspace --locked
+
+      - name: Clippy
+        run: cargo clippy --workspace --all-targets --locked -- -D warnings
+
+      # The release archive is pinned by its SHA-256, the same way the actions are pinned.
+      - name: Install cargo-about 0.9.3
+        run: |
+          $archive = Join-Path $env:RUNNER_TEMP 'cargo-about.tar.gz'
+          Invoke-WebRequest 'https://github.com/EmbarkStudios/cargo-about/releases/download/0.9.3/cargo-about-0.9.3-x86_64-pc-windows-msvc.tar.gz' -OutFile $archive
+          $hash = (Get-FileHash $archive -Algorithm SHA256).Hash.ToLowerInvariant()
+          if ($hash -ne '9e2942533ef1c592c4a70bdb384cae1550a3f5fc9ae40379b6662e3d2f16fe02') {
+            throw "cargo-about archive SHA-256 mismatch: $hash"
+          }
+          tar -xzf $archive -C $env:RUNNER_TEMP
+          if ($LASTEXITCODE) { exit $LASTEXITCODE }
+          Add-Content $env:GITHUB_PATH (Join-Path $env:RUNNER_TEMP 'cargo-about-0.9.3-x86_64-pc-windows-msvc')
+
+      # The committed licence file must be exactly what Cargo.lock produces. cargo metadata
+      # needs every locked crate, other targets' included, so fetch first; --frozen then
+      # keeps cargo-about off the network, which keeps its output reproducible.
+      - name: Licences are up to date
+        run: |
+          cargo fetch --locked
+          if ($LASTEXITCODE) { exit $LASTEXITCODE }
+          cargo about generate --frozen --fail -m crates/revisor/Cargo.toml -c crates/revisor/about.toml crates/revisor/about.hbs -o crates/revisor/THIRD-PARTY-LICENSES.txt
+          if ($LASTEXITCODE) { exit $LASTEXITCODE }
+          git diff --exit-code -- crates/revisor/THIRD-PARTY-LICENSES.txt
