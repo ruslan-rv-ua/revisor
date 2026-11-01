@@ -114,6 +114,44 @@ impl Strings for En {
         "Context menu"
     }
 
+    fn pane(&self, pane: Pane) -> &'static str {
+        match pane {
+            Pane::Snapshots => "Snapshots",
+            Pane::Difference => "Difference",
+        }
+    }
+
+    fn profile(&self) -> &'static str {
+        "Profile"
+    }
+
+    fn no_actions(&self) -> &'static str {
+        "No actions are available here now."
+    }
+
+    fn close(&self) -> &'static str {
+        "Close"
+    }
+
+    fn about(&self, version: &str) -> String {
+        format!(
+            "revisor {version}\nLicence: MIT\nhttps://github.com/ruslan-rv-ua/revisor\n\n\
+             Third-party components and their licences:\n"
+        )
+    }
+
+    fn demo_snapshot(&self, n: usize) -> String {
+        format!("Demo snapshot {n}")
+    }
+
+    fn demo_change(&self, n: usize) -> String {
+        format!("Demo change {n}")
+    }
+
+    fn demo_done(&self, command: &str) -> String {
+        format!("Done: {command}.")
+    }
+
     fn key_space(&self) -> &'static str {
         "Space"
     }

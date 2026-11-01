@@ -478,7 +478,8 @@ pub static COMMANDS: &[Command] = &[
 ];
 
 /// Checks a command table against the rules of the document «Клавіатура й меню»; each
-/// problem found is one line of the result.
+/// problem found is one line of the result. The test of the table runs it.
+#[cfg_attr(not(test), expect(dead_code))]
 pub fn validate(table: &[Command], en: &dyn Strings) -> Vec<String> {
     let mut problems = Vec::new();
 

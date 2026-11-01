@@ -43,6 +43,23 @@ pub trait Strings {
     fn switch_panes(&self) -> &'static str;
     fn context_menu(&self) -> &'static str;
 
+    // The main window.
+    /// A pane's main list, as screen readers name it.
+    fn pane(&self, pane: Pane) -> &'static str;
+    /// The label of the profile box, without access key or colon.
+    fn profile(&self) -> &'static str;
+    /// Said when a list's context menu would have no items.
+    fn no_actions(&self) -> &'static str;
+    /// Closes the «Help» windows; Esc does the same.
+    fn close(&self) -> &'static str;
+    /// The «About revisor» text above the third-party licences.
+    fn about(&self, version: &str) -> String;
+
+    // The debug-only demo state (REVISOR_DEMO=1).
+    fn demo_snapshot(&self, n: usize) -> String;
+    fn demo_change(&self, n: usize) -> String;
+    fn demo_done(&self, command: &str) -> String;
+
     // Key names that are not printed on most keyboards.
     fn key_space(&self) -> &'static str;
     fn key_up(&self) -> &'static str;

@@ -115,6 +115,44 @@ impl Strings for Uk {
         "Контекстне меню"
     }
 
+    fn pane(&self, pane: Pane) -> &'static str {
+        match pane {
+            Pane::Snapshots => "Знімки",
+            Pane::Difference => "Різниця",
+        }
+    }
+
+    fn profile(&self) -> &'static str {
+        "Профіль"
+    }
+
+    fn no_actions(&self) -> &'static str {
+        "Тут зараз немає доступних дій."
+    }
+
+    fn close(&self) -> &'static str {
+        "Закрити"
+    }
+
+    fn about(&self, version: &str) -> String {
+        format!(
+            "revisor {version}\nЛіцензія: MIT\nhttps://github.com/ruslan-rv-ua/revisor\n\n\
+             Сторонні компоненти та їхні ліцензії:\n"
+        )
+    }
+
+    fn demo_snapshot(&self, n: usize) -> String {
+        format!("Демо-знімок {n}")
+    }
+
+    fn demo_change(&self, n: usize) -> String {
+        format!("Демо-зміна {n}")
+    }
+
+    fn demo_done(&self, command: &str) -> String {
+        format!("Виконано: {command}.")
+    }
+
     fn key_space(&self) -> &'static str {
         "ПРОБІЛ"
     }

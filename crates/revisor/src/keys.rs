@@ -71,7 +71,7 @@ impl Shortcut {
             c @ 0x61..=0x7A => Key::Letter(c as u8 - 0x20),
             c @ 0x30..=0x39 => Key::Digit(c as u8 - 0x30),
             c @ WXK_F1..=WXK_F24 => Key::F((c - WXK_F1 + 1) as u8),
-            WXK_RETURN => Key::Enter,
+            WXK_RETURN | WXK_NUMPAD_ENTER => Key::Enter,
             WXK_DELETE => Key::Delete,
             WXK_ESCAPE => Key::Esc,
             WXK_SPACE => Key::Space,
@@ -92,7 +92,9 @@ impl Shortcut {
     }
 
     /// Whether a command may take this shortcut under the rules of the document
-    /// «Клавіатура й меню»; `Err` says which rule it breaks.
+    /// «Клавіатура й меню»; `Err` says which rule it breaks. The test of the command
+    /// table runs it.
+    #[cfg_attr(not(test), expect(dead_code))]
     pub fn check_rules(&self) -> Result<(), &'static str> {
         let Self {
             key,
@@ -177,6 +179,19 @@ mod tests {
         assert_eq!(
             Shortcut::from_wx(WXK_F5, false, true, false),
             Shortcut::new(Key::F(5)).shift()
+        );
+    }
+
+    #[test]
+    fn numpad_enter_is_enter_but_other_numpad_keys_are_not() {
+        assert_eq!(
+            Shortcut::from_wx(WXK_NUMPAD_ENTER, false, false, false),
+            Shortcut::new(Key::Enter)
+        );
+        // NVDA takes the numpad, Delete included, for its review keys.
+        assert_eq!(
+            Shortcut::from_wx(WXK_NUMPAD_DELETE, false, false, false),
+            Shortcut::new(Key::Other(WXK_NUMPAD_DELETE))
         );
     }
 

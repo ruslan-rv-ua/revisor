@@ -36,6 +36,11 @@ fn with_access(s: &dyn Strings, name: &str, access: u8, ellipsis: bool) -> Strin
     label
 }
 
+/// A label of the main window or a dialog: "P&rofile:" or "Профіль (&R):".
+pub fn field_label(s: &dyn Strings, name: &str, access: u8) -> String {
+    format!("{}:", with_access(s, name, access, false))
+}
+
 /// A menu bar item: name, access key, ellipsis and, after a tab, the shortcut.
 pub fn menu_label(s: &dyn Strings, c: &Command) -> String {
     let label = context_label(s, c);
@@ -277,6 +282,12 @@ mod tests {
         );
         assert_eq!(top_menu_label(&Uk, MenuId::File), "Файл (&F)");
         assert_eq!(submenu_label(&Uk, SubmenuId::SortBy), "Сортувати за (&S)");
+    }
+
+    #[test]
+    fn field_labels_end_in_a_colon() {
+        assert_eq!(field_label(&En, "Profile", b'R'), "P&rofile:");
+        assert_eq!(field_label(&Uk, "Профіль", b'R'), "Профіль (&R):");
     }
 
     #[test]

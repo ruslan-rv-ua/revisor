@@ -1,4 +1,7 @@
 //! CLDR plural categories for the interface languages (ADR-0009).
+//!
+//! The first strings with a number come with TASK-9 and TASK-13.
+#![cfg_attr(not(test), expect(dead_code))]
 
 use super::Lang;
 

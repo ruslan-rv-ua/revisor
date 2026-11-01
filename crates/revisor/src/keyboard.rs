@@ -32,6 +32,8 @@ pub enum Route {
     OnlyIn(Shortcut, Pane),
     /// F6: move the focus to this pane's main list.
     FocusPane(Pane),
+    /// Shift+F10 or the context menu key in a list: open that list's context menu.
+    ContextMenu(Pane),
     /// Alt with a label's access key: focus the control the label names.
     FocusLabel(usize),
     /// Not revisor's key: the focused control and Windows get it.
@@ -54,6 +56,14 @@ pub fn route(key: Shortcut, focus: Focus, state: &AppState, labels: &[u8]) -> Ro
             Some(Pane::Snapshots) => Route::FocusPane(Pane::Difference),
             Some(Pane::Difference) | None => Route::FocusPane(Pane::Snapshots),
         };
+    }
+    let context_menu_key =
+        key == Shortcut::new(Key::F(10)).shift() || key == Shortcut::new(Key::ContextMenu);
+    if context_menu_key
+        && focus.control == Control::MainList
+        && let Some(pane) = focus.part
+    {
+        return Route::ContextMenu(pane);
     }
     if let Key::Letter(letter) = key.key
         && key.alt
@@ -232,9 +242,27 @@ mod tests {
     }
 
     #[test]
+    fn the_context_menu_keys_open_the_lists_menu() {
+        let state = AppState::new();
+        for menu_key in [key(Key::F(10)).shift(), key(Key::ContextMenu)] {
+            assert_eq!(
+                route(menu_key, SNAPSHOT_LIST, &state, &[]),
+                Route::ContextMenu(Pane::Snapshots)
+            );
+            assert_eq!(
+                route(menu_key, DIFFERENCE_LIST, &state, &[]),
+                Route::ContextMenu(Pane::Difference)
+            );
+            // Text fields and other controls have their own context menus.
+            assert_eq!(route(menu_key, FILTER_FIELD, &state, &[]), Route::Pass);
+            assert_eq!(route(menu_key, PROFILE_BOX, &state, &[]), Route::Pass);
+        }
+    }
+
+    #[test]
     fn alt_with_a_labels_letter_focuses_its_control() {
         let state = AppState::new();
-        let labels = [b'R', b'L'];
+        let labels = *b"RL";
         let alt = |letter| key(Key::Letter(letter)).alt();
         assert_eq!(
             route(alt(b'L'), SNAPSHOT_LIST, &state, &labels),

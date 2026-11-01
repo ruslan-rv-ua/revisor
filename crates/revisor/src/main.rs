@@ -2,35 +2,35 @@
 #![cfg_attr(not(debug_assertions), windows_subsystem = "windows")]
 
 mod commands;
+mod help;
 mod i18n;
 mod keyboard;
 mod keys;
+mod main_window;
 mod menus;
 mod state;
+mod win32;
 
-use wxdragon::prelude::*;
+use i18n::{En, Lang, Strings, Uk};
+use main_window::MainWindow;
+use state::AppState;
 
 fn main() {
-    wxdragon::main(|_| {
-        let frame = Frame::builder()
-            .with_title(&format!("revisor {}", revisor_core::version()))
-            .with_size(Size::new(800, 600))
-            .build();
-        set_frame_icon(&frame);
-        frame.centre();
-        frame.show(true);
+    let strings: &'static dyn Strings = match win32::ui_language() {
+        Lang::Uk => &Uk,
+        Lang::En => &En,
+    };
+    // REVISOR_DEMO=1 in a debug build stands in for the state TASK-7…14 will bring, so
+    // the keyboard and the status bar can be checked with NVDA.
+    let demo = cfg!(debug_assertions) && std::env::var_os("REVISOR_DEMO").is_some_and(|v| v == "1");
+    let state = if demo {
+        AppState::demo()
+    } else {
+        AppState::new()
+    };
+    wxdragon::main(move |_| {
+        // The window lives as long as the frame, which owns its event handlers.
+        std::mem::forget(MainWindow::open(strings, state));
     })
     .expect("failed to start the GUI");
-}
-
-/// Gives the window the same icon Explorer shows for the exe. wxMSW does not adopt the
-/// exe's icon resource for a frame, so the frame takes it from the SVG that app.ico is
-/// generated from. A failure leaves the generic window icon, which is not worth failing over.
-fn set_frame_icon(frame: &Frame) {
-    const ICON: &[u8] = include_bytes!("../resources/icon.svg");
-    if let Some(bitmap) = BitmapBundle::from_svg_data(ICON, Size::new(32, 32))
-        .and_then(|bundle| bundle.get_bitmap_for(frame))
-    {
-        frame.set_icon(&bitmap);
-    }
 }
