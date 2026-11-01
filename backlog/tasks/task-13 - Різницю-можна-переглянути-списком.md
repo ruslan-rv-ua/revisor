@@ -4,10 +4,15 @@ title: Різницю можна переглянути списком
 status: To Do
 assignee: []
 created_date: '2026-10-30 15:43'
-updated_date: '2026-11-01 13:05'
+updated_date: '2026-11-01 13:13'
 labels: []
 milestone: m-1
-dependencies: []
+dependencies:
+  - TASK-7
+  - TASK-8
+  - TASK-9
+  - TASK-10
+  - TASK-11
 references:
   - 'https://manual.winmerge.org/en/Compare_dirs.html'
   - 'https://learn.microsoft.com/en-us/windows/win32/uxguide/ctrl-list-views'
@@ -47,6 +52,7 @@ documentation:
     ADR-0007-Загальні-налаштування-програми-—-в-окремій-базі-SQLite.md
   - backlog/docs/doc-8 - Результати-прототипу.md
 type: feature
+ordinal: 13000
 ---
 
 ## Description

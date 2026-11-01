@@ -6,10 +6,14 @@ title: >-
 status: To Do
 assignee: []
 created_date: '2026-11-01 12:06'
-updated_date: '2026-11-01 13:05'
+updated_date: '2026-11-01 13:13'
 labels: []
 milestone: m-1
-dependencies: []
+dependencies:
+  - TASK-8
+  - TASK-9
+  - TASK-10
+  - TASK-13
 references:
   - 'https://learn.microsoft.com/en-us/windows/win32/uxguide/win-property-win'
   - 'https://learn.microsoft.com/en-us/windows/win32/uxguide/win-dialog-box'
@@ -36,6 +40,7 @@ documentation:
     backlog/docs/adr/doc-10 -
     ADR-0007-Загальні-налаштування-програми-—-в-окремій-базі-SQLite.md
 type: feature
+ordinal: 14000
 ---
 
 ## Description
