@@ -284,6 +284,7 @@ pub static COMMANDS: &[Command] = &[
     Command {
         ellipsis: true,
         shortcut: Some(key(Key::Letter(b'N')).ctrl()),
+        available: always,
         ..item(CommandId::NewProfile, place(MenuId::File, 0), b'N')
     },
     Command {
@@ -306,7 +307,11 @@ pub static COMMANDS: &[Command] = &[
     // Snapshot
     Command {
         shortcut: Some(key(Key::F(5))),
-        available: has_profile,
+        // Needs a profile, and then the snapshot itself (TASK-8).
+        available: |s| {
+            has_profile(s)?;
+            not_yet(s)
+        },
         ..item(CommandId::TakeSnapshot, place(MenuId::Snapshot, 0), b'T')
     },
     Command {
@@ -584,6 +589,51 @@ mod tests {
     #[test]
     fn the_command_table_follows_the_rules() {
         assert_eq!(validate(COMMANDS, &En), Vec::<String>::new());
+    }
+
+    #[test]
+    fn outside_the_demo_only_the_commands_of_finished_tasks_run() {
+        let state = AppState {
+            profile: Some("Дім".into()),
+            ..AppState::new()
+        };
+        let finished = [
+            CommandId::NewProfile,
+            CommandId::EditProfile,
+            CommandId::DeleteProfile,
+            CommandId::Exit,
+            CommandId::KeyboardShortcuts,
+            CommandId::About,
+        ];
+        for c in COMMANDS {
+            let available = (c.available)(&state);
+            if finished.contains(&c.id) {
+                assert_eq!(available, Ok(()), "{:?}", c.id);
+            } else {
+                assert!(available.is_err(), "{:?} runs before its task", c.id);
+            }
+        }
+        let take = command(CommandId::TakeSnapshot).available;
+        assert_eq!(take(&state), Err(Reason::NotYet));
+        assert_eq!(take(&AppState::new()), Err(Reason::NoProfiles));
+    }
+
+    #[test]
+    fn profile_commands_need_a_profile_except_new_profile() {
+        let none = AppState::new();
+        let one = AppState {
+            profile: Some("Дім".into()),
+            ..AppState::new()
+        };
+        assert_eq!((command(CommandId::NewProfile).available)(&none), Ok(()));
+        for id in [CommandId::EditProfile, CommandId::DeleteProfile] {
+            assert_eq!(
+                (command(id).available)(&none),
+                Err(Reason::NoProfiles),
+                "{id:?}"
+            );
+            assert_eq!((command(id).available)(&one), Ok(()), "{id:?}");
+        }
     }
 
     #[test]

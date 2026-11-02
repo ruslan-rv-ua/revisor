@@ -41,6 +41,11 @@ pub fn field_label(s: &dyn Strings, name: &str, access: u8) -> String {
     format!("{}:", with_access(s, name, access, false))
 }
 
+/// A button of a dialog: "&Add folder…" or "Додати теку (&A)…".
+pub fn button_label(s: &dyn Strings, name: &str, access: u8, ellipsis: bool) -> String {
+    with_access(s, name, access, ellipsis)
+}
+
 /// A menu bar item: name, access key, ellipsis and, after a tab, the shortcut.
 pub fn menu_label(s: &dyn Strings, c: &Command) -> String {
     let label = context_label(s, c);

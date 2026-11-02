@@ -10,7 +10,7 @@ use std::sync::atomic::AtomicBool;
 use std::time::Instant;
 
 use revisor_core::scan::{ScanOptions, scan, synthetic};
-use revisor_core::store::Store;
+use revisor_core::store::{ProfileSettings, Scope, Store};
 
 const MIB: f64 = 1024.0 * 1024.0;
 
@@ -76,6 +76,11 @@ fn run(input: &Input, wal: bool, db: &Path) -> Result<(), Box<dyn std::error::Er
     for suffix in ["", "-journal", "-wal", "-shm"] {
         let _ = fs::remove_file(with_suffix(db, suffix));
     }
+    let settings = ProfileSettings {
+        name: "store_bench".into(),
+        scope: Scope::default(),
+    };
+    drop(Store::create(db, &settings)?);
     if wal {
         rusqlite::Connection::open(db)?.pragma_update(None, "journal_mode", "WAL")?;
     }
@@ -87,7 +92,7 @@ fn run(input: &Input, wal: bool, db: &Path) -> Result<(), Box<dyn std::error::Er
     let mut store = Store::open(db)?;
 
     let started = Instant::now();
-    let first = store.save(None, &entries, &no_cancel)?;
+    let first = store.save(&settings.scope, None, &entries, &no_cancel)?;
     let save_time = started.elapsed();
     let one = db_size(db);
     println!(
@@ -107,7 +112,7 @@ fn run(input: &Input, wal: bool, db: &Path) -> Result<(), Box<dyn std::error::Er
     drop(loaded);
 
     let started = Instant::now();
-    store.save(None, &entries, &no_cancel)?;
+    store.save(&settings.scope, None, &entries, &no_cancel)?;
     let two = db_size(db);
     println!(
         "second save:   {:.2} s, database {:.1} MiB",

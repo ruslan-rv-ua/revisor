@@ -1,6 +1,7 @@
 //! Keys and shortcuts: what the key handler matches on and how a key is named in the
 //! interface (document «Клавіатура й меню», section «Назви клавіш»).
 
+use wxdragon::event::KeyboardEvent;
 use wxdragon::keycode::*;
 
 use crate::i18n::Strings;
@@ -67,6 +68,20 @@ impl Shortcut {
 
     pub const fn alt(self) -> Self {
         Self { alt: true, ..self }
+    }
+
+    /// The shortcut of a key event of a window's char hook.
+    pub fn from_event(key: &KeyboardEvent) -> Self {
+        let code = key.get_key_code().unwrap_or_default();
+        Self::from_wx(code, key.control_down(), key.shift_down(), key.alt_down())
+    }
+
+    /// The access key this is: the letter pressed with Alt alone.
+    pub fn access_letter(&self) -> Option<u8> {
+        match self.key {
+            Key::Letter(letter) if self.alt && !self.ctrl && !self.shift => Some(letter),
+            _ => None,
+        }
     }
 
     /// The shortcut a wx key event describes.

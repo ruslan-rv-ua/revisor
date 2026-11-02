@@ -1,7 +1,10 @@
 //! Ukrainian interface strings. Key names follow the Microsoft Ukrainian Style Guide
 //! (document «Клавіатура й меню», section «Назви клавіш»).
 
-use super::{Lang, Strings};
+use revisor_core::exclude::PatternError;
+
+use super::plural::{Category, category};
+use super::{Failure, Lang, Strings};
 use crate::commands::{CommandId, MenuId, Pane, Reason, SubmenuId};
 
 pub struct Uk;
@@ -139,6 +142,172 @@ impl Strings for Uk {
             "revisor {version}\nЛіцензія: MIT\nhttps://github.com/ruslan-rv-ua/revisor\n\n\
              Сторонні компоненти та їхні ліцензії:\n"
         )
+    }
+
+    fn profile_name(&self) -> &'static str {
+        "Назва"
+    }
+
+    fn profile_folders(&self) -> &'static str {
+        "Теки"
+    }
+
+    fn add_folder(&self) -> &'static str {
+        "Додати теку"
+    }
+
+    fn remove_folder(&self) -> &'static str {
+        "Прибрати теку"
+    }
+
+    fn profile_exclusions(&self) -> &'static str {
+        "Винятки"
+    }
+
+    fn create(&self) -> &'static str {
+        "Створити"
+    }
+
+    fn ok(&self) -> &'static str {
+        "OK"
+    }
+
+    fn cancel(&self) -> &'static str {
+        "Скасувати"
+    }
+
+    fn choose_folder(&self) -> &'static str {
+        "Виберіть теку для профілю"
+    }
+
+    fn name_missing(&self) -> &'static str {
+        "Введіть назву профілю."
+    }
+
+    fn name_taken(&self, name: &str) -> String {
+        format!("Профіль «{name}» уже є. Виберіть іншу назву.")
+    }
+
+    fn no_folders(&self) -> &'static str {
+        "Додайте до профілю хоча б одну теку."
+    }
+
+    fn bad_pattern(&self, line: usize, pattern: &str, error: PatternError) -> String {
+        let why = match error {
+            PatternError::NotFullPath => "шаблон із \\ — це повний шлях, тож він починається \
+                з диска, як-от C:\\, чи зі змінної середовища, як-от %TEMP%"
+                .to_string(),
+            PatternError::Slash => "у шляхах пишуть \\, а не /".to_string(),
+            PatternError::Colon => {
+                "двокрапка буває лише після літери диска на початку шляху, як у C:\\".to_string()
+            }
+            PatternError::Control(c) => {
+                format!("у ньому є керівний символ (U+{:04X})", u32::from(c))
+            }
+            PatternError::BadChar(c) => format!("в іменах файлів і тек не буває символу {c}"),
+        };
+        format!("Рядок {line} у винятках, «{pattern}»: {why}.")
+    }
+
+    fn folder_covered(&self, folder: &str, by: &str) -> String {
+        format!("Теку «{folder}» не додано: її файли вже охоплює тека профілю «{by}».")
+    }
+
+    fn folder_not_ntfs(&self, folder: &str, file_system: &str) -> String {
+        format!(
+            "Теку «{folder}» не можна додати: revisor підтримує лише томи NTFS, а ця тека \
+             на томі {file_system}."
+        )
+    }
+
+    fn folder_on_network(&self, folder: &str) -> String {
+        format!(
+            "Теку «{folder}» не можна додати: revisor підтримує лише томи NTFS цього \
+             комп'ютера, а це мережева тека."
+        )
+    }
+
+    fn folder_not_examined(&self, folder: &str, reason: &str) -> String {
+        format!("Теку «{folder}» не можна додати: revisor не може її перевірити: {reason}.")
+    }
+
+    fn replace_folders(&self, folder: &str, inside: &[String]) -> String {
+        let inside: Vec<String> = inside.iter().map(|f| format!("«{f}»")).collect();
+        format!(
+            "Тека «{folder}» містить теки профілю: {}. Замінити їх нею?",
+            inside.join(", ")
+        )
+    }
+
+    fn replace(&self) -> &'static str {
+        "Замінити"
+    }
+
+    fn delete_profile_question(&self, name: &str, snapshots: usize) -> String {
+        let snapshots = match (snapshots, category(Lang::Uk, (snapshots as u64).into())) {
+            (0, _) => {
+                return format!(
+                    "Видалити профіль «{name}»? Знімків у ньому немає. Цю дію не можна скасувати."
+                );
+            }
+            (n, Category::One) => format!("{n} знімок"),
+            (n, Category::Few) => format!("{n} знімки"),
+            (n, _) => format!("{n} знімків"),
+        };
+        format!("Видалити профіль «{name}» і {snapshots} у ньому? Цю дію не можна скасувати.")
+    }
+
+    fn delete(&self) -> &'static str {
+        "Видалити"
+    }
+
+    fn profile_created(&self, name: &str) -> String {
+        format!("Профіль «{name}» створено.")
+    }
+
+    fn profile_changed(&self, name: &str) -> String {
+        format!("Профіль «{name}» змінено.")
+    }
+
+    fn profile_deleted(&self, name: &str) -> String {
+        format!("Профіль «{name}» видалено.")
+    }
+
+    fn profile_not_saved(&self, reason: &str) -> String {
+        format!("Профіль не збережено: {reason}.")
+    }
+
+    fn profile_not_deleted(&self, name: &str, reason: &str) -> String {
+        format!("Профіль «{name}» не видалено: {reason}.")
+    }
+
+    fn profile_not_opened(&self, file: &str, reason: &str) -> String {
+        format!("Файл профілю «{file}» не вдалося відкрити: {reason}.")
+    }
+
+    fn profiles_not_listed(&self, folder: &str, reason: &str) -> String {
+        format!("Теку профілів «{folder}» не вдалося прочитати: {reason}.")
+    }
+
+    fn failure(&self, failure: &Failure) -> String {
+        match failure {
+            Failure::AccessDenied => "немає доступу: перевірте права на цей файл чи теку".into(),
+            Failure::InUse => "файл відкрито в іншій програмі, можливо, в іншій копії \
+                revisor: закрийте її й спробуйте ще раз"
+                .into(),
+            Failure::DiskFull => "на диску немає місця: звільніть місце й спробуйте ще раз".into(),
+            Failure::NewerVersion => {
+                "профіль створила новіша версія revisor: оновіть revisor".into()
+            }
+            Failure::NotAProfile => {
+                "це не файл профілю revisor: перенесіть його з теки профілів".into()
+            }
+            Failure::Other {
+                text,
+                code: Some(code),
+            } => format!("{text} (код {code})"),
+            Failure::Other { text, code: None } => text.clone(),
+        }
     }
 
     fn demo_snapshot(&self, n: usize) -> String {

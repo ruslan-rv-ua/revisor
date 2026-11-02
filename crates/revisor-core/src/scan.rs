@@ -17,6 +17,8 @@ use std::sync::{Condvar, Mutex};
 use std::thread;
 use std::time::{Duration, Instant};
 
+use crate::exclude::{Branch, Exclusions};
+
 const FILE_ATTRIBUTE_ARCHIVE: u32 = 0x20;
 const FILE_ATTRIBUTE_DIRECTORY: u32 = 0x10;
 const FILE_ATTRIBUTE_REPARSE_POINT: u32 = 0x400;
@@ -69,6 +71,9 @@ pub struct ScanOptions {
     pub threads: usize,
     /// Read versions of exe and dll files.
     pub read_versions: bool,
+    /// Entries that stay out of the scan; an excluded folder is not entered. The root is
+    /// never excluded.
+    pub exclusions: Exclusions,
 }
 
 impl Default for ScanOptions {
@@ -77,6 +82,7 @@ impl Default for ScanOptions {
         Self {
             threads,
             read_versions: true,
+            exclusions: Exclusions::default(),
         }
     }
 }
@@ -145,6 +151,8 @@ pub fn scan(root: &Path, options: &ScanOptions, cancel: &AtomicBool) -> Result<S
         version: None,
         link_target: None,
     };
+    // Path patterns name real locations, so the root is matched where it really is.
+    let real_root = crate::folders::real_path(root).unwrap_or_else(|_| root.to_path_buf());
 
     let walker = Walker {
         entries: Mutex::new(vec![root_entry]),
@@ -152,11 +160,13 @@ pub fn scan(root: &Path, options: &ScanOptions, cancel: &AtomicBool) -> Result<S
             jobs: vec![Job {
                 index: 0,
                 path: root_path,
+                branch: options.exclusions.branch(&real_root),
             }],
             active: 0,
         }),
         wake: Condvar::new(),
         cancel,
+        exclusions: &options.exclusions,
         read_versions: options.read_versions,
         versions_read: AtomicU64::new(0),
         version_nanos: AtomicU64::new(0),
@@ -189,7 +199,7 @@ pub fn scan(root: &Path, options: &ScanOptions, cancel: &AtomicBool) -> Result<S
 }
 
 /// Turns `path` into an absolute `\\?\` path, so paths longer than MAX_PATH work.
-fn verbatim(path: &Path) -> io::Result<PathBuf> {
+pub(crate) fn verbatim(path: &Path) -> io::Result<PathBuf> {
     let abs = std::path::absolute(path)?;
     let wide: Vec<u16> = abs.as_os_str().encode_wide().collect();
     let starts = |prefix: &str| wide.starts_with(&prefix.encode_utf16().collect::<Vec<_>>());
@@ -284,6 +294,8 @@ pub fn synthetic(count: usize) -> Vec<Entry> {
 struct Job {
     index: u32,
     path: PathBuf,
+    /// Where the folder stands against the exclusions.
+    branch: Branch,
 }
 
 struct Queue {
@@ -298,6 +310,7 @@ struct Walker<'a> {
     queue: Mutex<Queue>,
     wake: Condvar,
     cancel: &'a AtomicBool,
+    exclusions: &'a Exclusions,
     read_versions: bool,
     versions_read: AtomicU64,
     version_nanos: AtomicU64,
@@ -306,7 +319,7 @@ struct Walker<'a> {
 impl Walker<'_> {
     fn work(&self) {
         while let Some(job) = self.next_job() {
-            let (children, subdirs, failed) = self.list(&job.path);
+            let (children, subdirs, failed) = self.list(&job);
             let base = {
                 let mut entries = self.entries.lock().unwrap();
                 if failed {
@@ -320,9 +333,13 @@ impl Walker<'_> {
                 base
             };
             let mut queue = self.queue.lock().unwrap();
-            for (offset, path) in subdirs {
+            for (offset, path, branch) in subdirs {
                 let index = u32::try_from(base + offset).expect("more than 4G entries");
-                queue.jobs.push(Job { index, path });
+                queue.jobs.push(Job {
+                    index,
+                    path,
+                    branch,
+                });
             }
             queue.active -= 1;
             self.wake.notify_all();
@@ -347,9 +364,11 @@ impl Walker<'_> {
         }
     }
 
-    /// Lists one folder. Returns its children (parent not yet set), the positions and
-    /// paths of child folders to descend into, and whether the listing failed.
-    fn list(&self, path: &Path) -> (Vec<Entry>, Vec<(usize, PathBuf)>, bool) {
+    /// Lists one folder, leaving out the excluded children. Returns its children (parent
+    /// not yet set), the positions, paths and branches of child folders to descend into,
+    /// and whether the listing failed.
+    fn list(&self, job: &Job) -> (Vec<Entry>, Vec<(usize, PathBuf, Branch)>, bool) {
+        let path = &job.path;
         let mut raw = Vec::new();
         let failed = sys::open_dir(path)
             .and_then(|dir| sys::list_dir(&dir, &mut raw))
@@ -358,6 +377,9 @@ impl Walker<'_> {
         let mut children = Vec::with_capacity(raw.len());
         let mut subdirs = Vec::new();
         for r in raw {
+            let Some(branch) = self.exclusions.child(&job.branch, &r.name) else {
+                continue;
+            };
             let is_reparse = r.attributes & FILE_ATTRIBUTE_REPARSE_POINT != 0;
             let kind = if is_reparse && sys::is_name_surrogate(r.reparse_tag) {
                 EntryKind::Link
@@ -381,7 +403,7 @@ impl Walker<'_> {
             };
             let full = || path.join(&*entry.name);
             match kind {
-                EntryKind::Dir => subdirs.push((children.len(), full())),
+                EntryKind::Dir => subdirs.push((children.len(), full(), branch)),
                 EntryKind::Link => match sys::link_target(&full()) {
                     Ok(target) => entry.link_target = target.map(OsString::into_boxed_os_str),
                     Err(_) => entry.inaccessible = true,
