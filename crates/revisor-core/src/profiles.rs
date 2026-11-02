@@ -7,8 +7,10 @@ use std::fs;
 use std::io;
 use std::path::{Path, PathBuf};
 
+use rusqlite::ErrorCode;
+
 use crate::names::eq_ignore_case;
-use crate::store::{ProfileSettings, Store, StoreError};
+use crate::store::{ProfileSettings, SnapshotInfo, Store, StoreError};
 
 /// Names Windows keeps for devices, with or without an extension.
 const DEVICE_NAMES: [&str; 28] = [
@@ -97,6 +99,23 @@ pub fn settings_of(path: &Path) -> Result<ProfileSettings, StoreError> {
 /// How many snapshots the profile in the file at `path` has.
 pub fn snapshot_count(path: &Path) -> Result<usize, StoreError> {
     Store::open(path)?.snapshot_count()
+}
+
+/// The snapshots of the profile in the file at `path`, oldest first.
+pub fn snapshots_of(path: &Path) -> Result<Vec<SnapshotInfo>, StoreError> {
+    Store::open(path)?.list()
+}
+
+/// Whether a store error says the database is busy with another connection's write, such
+/// as another revisor compacting it: a reader may then wait and try again (TASK-9).
+pub fn is_busy(error: &StoreError) -> bool {
+    match error {
+        StoreError::Sqlite(e) => matches!(
+            e.sqlite_error_code(),
+            Some(ErrorCode::DatabaseBusy | ErrorCode::DatabaseLocked)
+        ),
+        _ => false,
+    }
 }
 
 /// Whether a profile other than the one in the file `except` has `name`, regardless of

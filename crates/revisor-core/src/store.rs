@@ -42,7 +42,8 @@ const STATE_NOT_A_FOLDER: i64 = 5;
 /// How many entries are written between checks for cancellation.
 const CANCEL_CHECK: usize = 4096;
 /// How long a connection waits for another one's write to end before giving up: a
-/// snapshot's commit takes seconds, and a VACUUM (TASK-9) closes the database for longer.
+/// snapshot's commit takes seconds, and a compaction (TASK-9) closes the database for
+/// longer, so whoever needs the database then waits in its own way.
 const BUSY_TIMEOUT: Duration = Duration::from_secs(5);
 
 const SCHEMA: &str = "
@@ -140,6 +141,7 @@ pub enum StoreError {
     NewerSchema(i64),
     /// The file is not a revisor profile.
     NotAProfile,
+    /// A save was cancelled, or a compaction interrupted; nothing has changed.
     Cancelled,
 }
 
@@ -153,7 +155,7 @@ impl fmt::Display for StoreError {
                 "the database has schema version {v}, newer than {SCHEMA_VERSION}"
             ),
             StoreError::NotAProfile => f.write_str("the file is not a revisor profile"),
-            StoreError::Cancelled => f.write_str("saving cancelled"),
+            StoreError::Cancelled => f.write_str("cancelled"),
         }
     }
 }
@@ -299,6 +301,24 @@ impl Snapshot {
 /// One profile: its settings and its snapshots.
 pub struct Store {
     conn: Connection,
+    path: PathBuf,
+}
+
+/// Interrupts what a [`Store`] is doing on another thread, such as a compaction; the
+/// interrupted call ends with [`StoreError::Cancelled`] and leaves the database as it was.
+pub struct Interrupt(rusqlite::InterruptHandle);
+
+impl Interrupt {
+    pub fn interrupt(&self) {
+        self.0.interrupt();
+    }
+}
+
+/// What a compaction did: the size of the database file before and after it.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct Compacted {
+    pub before: u64,
+    pub after: u64,
 }
 
 impl Store {
@@ -322,7 +342,10 @@ impl Store {
                 Ok(conn)
             });
         match made {
-            Ok(conn) => Ok(Store { conn }),
+            Ok(conn) => Ok(Store {
+                conn,
+                path: path.to_path_buf(),
+            }),
             Err(e) => {
                 let _ = std::fs::remove_file(path);
                 Err(e)
@@ -334,11 +357,18 @@ impl Store {
     /// such as a snapshot being saved on another thread, reads and writes wait for it
     /// rather than fail at once.
     pub fn open(path: &Path) -> Result<Store, StoreError> {
+        Self::open_with_timeout(path, BUSY_TIMEOUT)
+    }
+
+    /// Opens the database of an existing profile, waiting up to `busy_timeout` for another
+    /// connection's write to end: a comment written while a snapshot is being saved waits
+    /// for the save (TASK-9), which is a matter of seconds.
+    pub fn open_with_timeout(path: &Path, busy_timeout: Duration) -> Result<Store, StoreError> {
         let conn = Connection::open_with_flags(
             path,
             OpenFlags::SQLITE_OPEN_READ_WRITE | OpenFlags::SQLITE_OPEN_NO_MUTEX,
         )?;
-        conn.busy_timeout(BUSY_TIMEOUT)?;
+        conn.busy_timeout(busy_timeout)?;
         // A file that is not a database at all fails here, when it is first read. Other
         // errors stay errors: a profile another revisor is writing is still a profile.
         let app: i32 = conn
@@ -354,7 +384,15 @@ impl Store {
         if version > SCHEMA_VERSION {
             return Err(StoreError::NewerSchema(version));
         }
-        Ok(Store { conn })
+        Ok(Store {
+            conn,
+            path: path.to_path_buf(),
+        })
+    }
+
+    /// The database file.
+    pub fn path(&self) -> &Path {
+        &self.path
     }
 
     /// The profile's settings. A database without its profile row is not a profile.
@@ -639,26 +677,62 @@ impl Store {
         Ok(entries)
     }
 
-    /// Deletes a snapshot with all its entries. The freed space stays in the database
-    /// file until [`Store::vacuum`].
-    pub fn delete(&mut self, id: i64) -> Result<(), StoreError> {
-        let tx = self.conn.transaction()?;
-        tx.execute("DELETE FROM fs_entry WHERE snapshot_id = ?1", [id])?;
-        tx.execute("DELETE FROM entry WHERE snapshot_id = ?1", [id])?;
-        tx.execute("DELETE FROM snapshot_folder WHERE snapshot_id = ?1", [id])?;
-        tx.execute(
-            "DELETE FROM snapshot_exclusion WHERE snapshot_id = ?1",
-            [id],
+    /// Changes the comment of a snapshot, or removes it with `None`. A snapshot that is
+    /// gone is not an error: there is nothing left to comment on.
+    pub fn set_comment(&mut self, id: i64, comment: Option<&str>) -> Result<(), StoreError> {
+        self.conn.execute(
+            "UPDATE snapshot SET comment = ?1 WHERE id = ?2",
+            params![comment, id],
         )?;
-        tx.execute("DELETE FROM snapshot WHERE id = ?1", [id])?;
+        Ok(())
+    }
+
+    /// Deletes a snapshot with all its entries. The freed space stays in the database
+    /// file until [`Store::compact`].
+    pub fn delete(&mut self, id: i64) -> Result<(), StoreError> {
+        self.delete_many(&[id])
+    }
+
+    /// Deletes several snapshots with all their entries in one transaction, so either all
+    /// of them go or none. Ids of snapshots that are gone already are skipped.
+    pub fn delete_many(&mut self, ids: &[i64]) -> Result<(), StoreError> {
+        let tx = self.conn.transaction()?;
+        for &id in ids {
+            tx.execute("DELETE FROM fs_entry WHERE snapshot_id = ?1", [id])?;
+            tx.execute("DELETE FROM entry WHERE snapshot_id = ?1", [id])?;
+            tx.execute("DELETE FROM snapshot_folder WHERE snapshot_id = ?1", [id])?;
+            tx.execute(
+                "DELETE FROM snapshot_exclusion WHERE snapshot_id = ?1",
+                [id],
+            )?;
+            tx.execute("DELETE FROM snapshot WHERE id = ?1", [id])?;
+        }
         tx.commit()?;
         Ok(())
     }
 
-    /// Rebuilds the database file, returning the space of deleted snapshots to the disk.
-    pub fn vacuum(&self) -> Result<(), StoreError> {
-        self.conn.execute_batch("VACUUM")?;
-        Ok(())
+    /// A handle that interrupts a [`Store::compact`] running on another thread.
+    pub fn interrupt(&self) -> Interrupt {
+        Interrupt(self.conn.get_interrupt_handle())
+    }
+
+    /// Rebuilds the database file (VACUUM), returning the space of deleted snapshots to
+    /// the disk; the file is closed to every other connection meanwhile. Interrupted
+    /// through [`Store::interrupt`], it ends with [`StoreError::Cancelled`] and leaves the
+    /// file as it was.
+    pub fn compact(&self) -> Result<Compacted, StoreError> {
+        let size = || std::fs::metadata(&self.path).map_or(0, |m| m.len());
+        let before = size();
+        self.conn
+            .execute_batch("VACUUM")
+            .map_err(|e| match e.sqlite_error_code() {
+                Some(ErrorCode::OperationInterrupted) => StoreError::Cancelled,
+                _ => StoreError::Sqlite(e),
+            })?;
+        Ok(Compacted {
+            before,
+            after: size(),
+        })
     }
 
     /// Saved snapshots, oldest first.

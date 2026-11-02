@@ -87,6 +87,8 @@ impl Strings for En {
             Reason::SnapshotNotRunning => "no snapshot is being taken",
             Reason::ComparisonNotRunning => "no comparison is running",
             Reason::CompactionNotRunning => "no compaction is running",
+            Reason::CompactionOfThisProfile => "the database of this profile is being compacted",
+            Reason::NoSelection => "no snapshot is selected",
             Reason::AlreadyAdmin => "revisor is already running as administrator",
             Reason::NotYet => "this version of revisor does not have this command yet",
         }

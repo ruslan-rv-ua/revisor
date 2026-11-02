@@ -7,6 +7,7 @@ pub mod folders;
 mod names;
 pub mod profiles;
 pub mod scan;
+pub mod settings;
 pub mod snapshot;
 pub mod store;
 

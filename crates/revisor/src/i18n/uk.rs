@@ -89,6 +89,8 @@ impl Strings for Uk {
             Reason::SnapshotNotRunning => "знімок зараз не триває",
             Reason::ComparisonNotRunning => "порівняння зараз не триває",
             Reason::CompactionNotRunning => "стискання зараз не триває",
+            Reason::CompactionOfThisProfile => "триває стискання бази цього профілю",
+            Reason::NoSelection => "жодного знімка не виділено",
             Reason::AlreadyAdmin => "revisor уже працює від імені адміністратора",
             Reason::NotYet => "цієї команди ще немає в цій версії revisor",
         }

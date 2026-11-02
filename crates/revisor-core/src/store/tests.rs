@@ -452,7 +452,7 @@ fn a_reader_waits_while_a_snapshot_is_being_saved() {
 }
 
 #[test]
-fn deleted_snapshot_is_gone_and_vacuum_returns_its_space() {
+fn deleted_snapshot_is_gone_but_its_space_stays_until_compaction() {
     let tmp = TempDir::new();
     let mut store = create(&tmp.db());
     let old = save(&mut store, &synthetic(20_000));
@@ -465,11 +465,112 @@ fn deleted_snapshot_is_gone_and_vacuum_returns_its_space() {
     assert_same(&store.load_folder(new, 0).unwrap(), &sample());
     // Freed pages stay in the file until VACUUM.
     assert_eq!(fs::metadata(tmp.db()).unwrap().len(), full);
+}
 
-    store.vacuum().unwrap();
-    let vacuumed = fs::metadata(tmp.db()).unwrap().len();
-    assert!(vacuumed * 10 < full, "{vacuumed} of {full} bytes left");
+#[test]
+fn a_comment_can_be_set_changed_and_removed() {
+    let tmp = TempDir::new();
+    let mut store = create(&tmp.db());
+    let id = save(&mut store, &sample());
+    let other = save(&mut store, &sample());
+    let comment = |store: &Store, id: i64| {
+        store
+            .list()
+            .unwrap()
+            .into_iter()
+            .find(|s| s.id == id)
+            .unwrap()
+            .comment
+    };
+
+    store.set_comment(id, Some("before install")).unwrap();
+    assert_eq!(comment(&store, id).as_deref(), Some("before install"));
+    assert_eq!(comment(&store, other), None, "only that snapshot changes");
+    store.set_comment(id, Some("after install")).unwrap();
+    assert_eq!(comment(&store, id).as_deref(), Some("after install"));
+    store.set_comment(id, None).unwrap();
+    assert_eq!(comment(&store, id), None);
+    // A snapshot that is gone is not an error: nothing is left to comment on.
+    store.set_comment(other + 100, Some("x")).unwrap();
+    assert_eq!(ids(&store), [id, other]);
+}
+
+#[test]
+fn several_snapshots_are_deleted_in_one_go() {
+    let tmp = TempDir::new();
+    let mut store = create(&tmp.db());
+    let first = save(&mut store, &sample());
+    let second = save(&mut store, &synthetic(100));
+    let third = save(&mut store, &sample());
+    let fourth = save(&mut store, &sample());
+
+    store.delete_many(&[first, third, fourth + 100]).unwrap();
+    assert_eq!(ids(&store), [second, fourth]);
+    assert!(store.load_folder(first, 0).unwrap().is_empty());
+    assert!(store.snapshot_folders(third).unwrap().is_empty());
+    assert_same(&store.load_folder(second, 0).unwrap(), &synthetic(100));
+    store.delete_many(&[]).unwrap();
+    assert_eq!(ids(&store), [second, fourth]);
+}
+
+#[test]
+fn compaction_returns_the_space_of_deleted_snapshots() {
+    let tmp = TempDir::new();
+    let mut store = create(&tmp.db());
+    let old = save(&mut store, &synthetic(20_000));
+    let new = save(&mut store, &sample());
+    let full = fs::metadata(tmp.db()).unwrap().len();
+    store.delete(old).unwrap();
+
+    let compacted = store.compact().unwrap();
+    assert_eq!(compacted.before, full);
+    assert_eq!(compacted.after, fs::metadata(tmp.db()).unwrap().len());
+    assert!(
+        compacted.after * 10 < compacted.before,
+        "{} of {} bytes left",
+        compacted.after,
+        compacted.before
+    );
     assert_same(&store.load_folder(new, 0).unwrap(), &sample());
+}
+
+#[test]
+fn an_interrupted_compaction_leaves_the_database_whole() {
+    let tmp = TempDir::new();
+    let mut store = create(&tmp.db());
+    // A big snapshot stays, so the rebuild has ~100 MiB to copy and takes a while.
+    let small = save(&mut store, &sample());
+    let kept = save(&mut store, &synthetic(1_000_000));
+    store.delete(small).unwrap();
+    let full = fs::metadata(tmp.db()).unwrap().len();
+
+    let interrupt = store.interrupt();
+    // The store goes to the compacting thread, as it does in the window, and comes back.
+    let (store, result) = thread::scope(|s| {
+        let compaction = s.spawn(move || {
+            let result = store.compact();
+            (store, result)
+        });
+        // Let the rebuild get going before interrupting it.
+        thread::sleep(Duration::from_millis(100));
+        interrupt.interrupt();
+        compaction.join().unwrap()
+    });
+    assert!(matches!(result, Err(StoreError::Cancelled)), "{result:?}");
+    drop(store);
+
+    // Nothing of the rebuild is left behind, and the data is as it was.
+    let store = Store::open(&tmp.db()).unwrap();
+    assert_eq!(ids(&store), [kept]);
+    assert_eq!(store.load_folder(kept, 0).unwrap().len(), 1_000_000);
+    assert_eq!(fs::metadata(tmp.db()).unwrap().len(), full);
+    let check: String = rusqlite::Connection::open(tmp.db())
+        .unwrap()
+        .query_row("PRAGMA integrity_check", [], |r| r.get(0))
+        .unwrap();
+    assert_eq!(check, "ok");
+    // The interrupt is spent: the next compaction goes through.
+    assert!(store.compact().unwrap().after < full);
 }
 
 #[test]
