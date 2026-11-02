@@ -260,17 +260,26 @@ impl Exclusions {
     /// Prepares `patterns` for matching on this computer: a leading environment variable is
     /// expanded now, and a pattern whose variable is not set leaves nothing out.
     pub fn new<S: AsRef<str>>(patterns: &[S], env: &dyn Environment) -> Exclusions {
+        let expanded: Vec<Expanded> = patterns
+            .iter()
+            .map(|pattern| expand(pattern.as_ref(), env))
+            .collect();
+        Self::from_expanded(&expanded)
+    }
+
+    /// Prepares patterns already expanded with [`expand`] for matching.
+    pub fn from_expanded(expanded: &[Expanded]) -> Exclusions {
         let mut ex = Exclusions::default();
-        for pattern in patterns {
-            match expand(pattern.as_ref(), env) {
+        for pattern in expanded {
+            match pattern {
                 Expanded::Path(path) => ex.paths.push(
-                    split_path(OsStr::new(&path))
+                    split_path(OsStr::new(path))
                         .iter()
                         .map(|part| fold(OsStr::new(part)))
                         .collect(),
                 ),
                 Expanded::Name(name) => {
-                    let folded = fold(OsStr::new(&name));
+                    let folded = fold(OsStr::new(name));
                     if folded.iter().any(|&c| c == STAR || c == QUESTION) {
                         ex.wild_names.push(folded);
                     } else {

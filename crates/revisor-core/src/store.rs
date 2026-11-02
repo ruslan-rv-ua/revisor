@@ -14,7 +14,7 @@ use std::io;
 use std::os::windows::ffi::{OsStrExt, OsStringExt};
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicBool, Ordering};
-use std::time::{SystemTime, UNIX_EPOCH};
+use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
 use rusqlite::types::{FromSqlError, ToSqlOutput, Value, ValueRef};
 use rusqlite::{Connection, ErrorCode, OpenFlags, Transaction, params};
@@ -38,8 +38,12 @@ const STATE_MISSING: i64 = 1;
 const STATE_NOT_NTFS: i64 = 2;
 const STATE_NETWORK: i64 = 3;
 const STATE_ERROR: i64 = 4;
+const STATE_NOT_A_FOLDER: i64 = 5;
 /// How many entries are written between checks for cancellation.
 const CANCEL_CHECK: usize = 4096;
+/// How long a connection waits for another one's write to end before giving up: a
+/// snapshot's commit takes seconds, and a VACUUM (TASK-9) closes the database for longer.
+const BUSY_TIMEOUT: Duration = Duration::from_secs(5);
 
 const SCHEMA: &str = "
 -- The profile's settings (ADR-0006): one row.
@@ -64,7 +68,8 @@ CREATE TABLE snapshot_folder (
     position INTEGER NOT NULL,
     path NOT NULL,
     -- 0 = scanned; 1 = missing, though its volume was there; 2 = on a volume other than
-    -- NTFS; 3 = on a network share; 4 = could not be reached (a Windows error).
+    -- NTFS; 3 = on a network share; 4 = could not be reached (a Windows error); 5 = a
+    -- file stood at its path.
     state INTEGER NOT NULL,
     -- The file system's name for state 2, the Windows error code for state 4.
     detail,
@@ -208,6 +213,8 @@ pub enum Unavailable {
     Network,
     /// The folder or its volume could not be reached: a Windows error code.
     Error(i32),
+    /// A file stands at the folder's path.
+    NotAFolder,
 }
 
 /// What a snapshot holds for one folder of the profile.
@@ -229,6 +236,15 @@ pub enum FolderState {
 pub struct SnapshotFolder {
     pub path: PathBuf,
     pub state: FolderState,
+}
+
+impl From<&FolderSnapshot> for SnapshotFolder {
+    fn from(folder: &FolderSnapshot) -> Self {
+        SnapshotFolder {
+            path: folder.path.clone(),
+            state: folder.state.clone(),
+        }
+    }
 }
 
 /// An exclusion a snapshot was taken with: the pattern as written, and as it applied.
@@ -314,12 +330,15 @@ impl Store {
         }
     }
 
-    /// Opens the database of an existing profile.
+    /// Opens the database of an existing profile. While another connection writes to it,
+    /// such as a snapshot being saved on another thread, reads and writes wait for it
+    /// rather than fail at once.
     pub fn open(path: &Path) -> Result<Store, StoreError> {
         let conn = Connection::open_with_flags(
             path,
             OpenFlags::SQLITE_OPEN_READ_WRITE | OpenFlags::SQLITE_OPEN_NO_MUTEX,
         )?;
+        conn.busy_timeout(BUSY_TIMEOUT)?;
         // A file that is not a database at all fails here, when it is first read. Other
         // errors stay errors: a profile another revisor is writing is still a profile.
         let app: i32 = conn
@@ -417,6 +436,7 @@ impl Store {
                 STATE_NOT_NTFS => FolderState::Unavailable(Unavailable::NotNtfs(r.get(2)?)),
                 STATE_NETWORK => FolderState::Unavailable(Unavailable::Network),
                 STATE_ERROR => FolderState::Unavailable(Unavailable::Error(r.get(2)?)),
+                STATE_NOT_A_FOLDER => FolderState::Unavailable(Unavailable::NotAFolder),
                 other => {
                     return Err(rusqlite::Error::FromSqlConversionFailure(
                         1,
@@ -486,6 +506,9 @@ impl Store {
                     }
                     FolderState::Unavailable(Unavailable::Error(code)) => {
                         (STATE_ERROR, Value::Integer(i64::from(*code)), None)
+                    }
+                    FolderState::Unavailable(Unavailable::NotAFolder) => {
+                        (STATE_NOT_A_FOLDER, Value::Null, None)
                     }
                 };
                 let (volume_serial, root, count) = match scanned {

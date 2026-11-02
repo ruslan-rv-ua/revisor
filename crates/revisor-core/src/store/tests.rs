@@ -198,6 +198,7 @@ fn each_folder_of_a_snapshot_keeps_its_state_and_its_tree() {
         Unavailable::NotNtfs("FAT32".into()),
         Unavailable::Network,
         Unavailable::Error(21),
+        Unavailable::NotAFolder,
     ];
     for (i, reason) in unavailable.iter().enumerate() {
         snapshot.folders.push(FolderSnapshot {
@@ -216,22 +217,15 @@ fn each_folder_of_a_snapshot_keeps_its_state_and_its_tree() {
 
     let store = Store::open(&tmp.db()).unwrap();
     let folders = store.snapshot_folders(id).unwrap();
-    let expected: Vec<SnapshotFolder> = snapshot
-        .folders
-        .iter()
-        .map(|f| SnapshotFolder {
-            path: f.path.clone(),
-            state: f.state.clone(),
-        })
-        .collect();
+    let expected: Vec<SnapshotFolder> = snapshot.folders.iter().map(SnapshotFolder::from).collect();
     assert_eq!(folders, expected);
     assert_same(&store.load_folder(id, 0).unwrap(), &sample());
-    for position in 1..5 {
+    for position in 1..6 {
         assert!(store.load_folder(id, position).unwrap().is_empty());
     }
     // The second tree comes back with its parents counted from its own root.
-    assert_same(&store.load_folder(id, 5).unwrap(), &synthetic(100));
-    assert!(store.load_folder(id, 6).unwrap().is_empty());
+    assert_same(&store.load_folder(id, 6).unwrap(), &synthetic(100));
+    assert!(store.load_folder(id, 7).unwrap().is_empty());
     assert!(store.load_folder(id + 1, 0).unwrap().is_empty());
     assert!(store.snapshot_folders(id + 1).unwrap().is_empty());
 }
@@ -430,6 +424,31 @@ fn cancelled_save_leaves_nothing_behind() {
     assert!(store.load_folder(kept + 1, 0).unwrap().is_empty());
     assert!(store.snapshot_folders(kept + 1).unwrap().is_empty());
     assert_eq!(store.snapshot_scope(kept + 1).unwrap(), Scope::default());
+}
+
+#[test]
+fn a_reader_waits_while_a_snapshot_is_being_saved() {
+    let tmp = TempDir::new();
+    let mut writer = create(&tmp.db());
+    let reader = Store::open(&tmp.db()).unwrap();
+    let snapshot = Snapshot::of_tree(synthetic(300_000));
+    let saving = AtomicBool::new(true);
+    thread::scope(|s| {
+        s.spawn(|| {
+            writer.save(&snapshot, &AtomicBool::new(false)).unwrap();
+            saving.store(false, Ordering::Relaxed);
+        });
+        wait_for_journal(&tmp, || saving.load(Ordering::Relaxed));
+        // Reads during the write, its commit included, wait for it instead of failing
+        // with "database is busy".
+        let mut reads = 0;
+        while saving.load(Ordering::Relaxed) {
+            reader.snapshot_count().unwrap();
+            reads += 1;
+        }
+        assert!(reads > 0);
+    });
+    assert_eq!(reader.snapshot_count().unwrap(), 1);
 }
 
 #[test]

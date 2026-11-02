@@ -226,6 +226,13 @@ fn has_difference(state: &AppState) -> Result<(), Reason> {
     require(state.has_difference, Reason::NoDifference)
 }
 
+/// For the commands on snapshots whose tasks are not done: they need snapshots, and then
+/// their own task.
+fn snapshots_not_yet(state: &AppState) -> Result<(), Reason> {
+    has_snapshots(state)?;
+    not_yet(state)
+}
+
 fn snapshot_running(state: &AppState) -> Result<(), Reason> {
     require(state.snapshot_running, Reason::SnapshotNotRunning)
 }
@@ -342,10 +349,7 @@ pub static COMMANDS: &[Command] = &[
     },
     Command {
         shortcut: Some(key(Key::F(5)).ctrl()),
-        available: |s| {
-            has_snapshots(s)?;
-            not_yet(s)
-        },
+        available: snapshots_not_yet,
         ..item(
             CommandId::SnapshotAndCompare,
             place(MenuId::Snapshot, 0),
@@ -359,10 +363,7 @@ pub static COMMANDS: &[Command] = &[
             pane: Pane::Snapshots,
             group: 1,
         }),
-        available: |s| {
-            has_snapshots(s)?;
-            not_yet(s)
-        },
+        available: snapshots_not_yet,
         ..item(CommandId::Comment, place(MenuId::Snapshot, 1), b'C')
     },
     Command {
@@ -372,10 +373,7 @@ pub static COMMANDS: &[Command] = &[
             pane: Pane::Snapshots,
             group: 2,
         }),
-        available: |s| {
-            has_snapshots(s)?;
-            not_yet(s)
-        },
+        available: snapshots_not_yet,
         ..item(CommandId::DeleteSnapshots, place(MenuId::Snapshot, 1), b'D')
     },
     Command {
@@ -399,10 +397,7 @@ pub static COMMANDS: &[Command] = &[
             pane: Pane::Snapshots,
             group: 0,
         }),
-        available: |s| {
-            has_snapshots(s)?;
-            not_yet(s)
-        },
+        available: snapshots_not_yet,
         ..item(
             CommandId::CompareWithPrevious,
             place(MenuId::Compare, 0),
@@ -416,10 +411,7 @@ pub static COMMANDS: &[Command] = &[
             pane: Pane::Snapshots,
             group: 0,
         }),
-        available: |s| {
-            has_snapshots(s)?;
-            not_yet(s)
-        },
+        available: snapshots_not_yet,
         ..item(CommandId::CompareWith, place(MenuId::Compare, 0), b'W')
     },
     Command {

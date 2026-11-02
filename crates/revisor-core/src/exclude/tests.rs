@@ -290,6 +290,15 @@ fn a_pattern_expands_to_how_it_applies_on_the_computer() {
     assert_eq!(expand(r"%Missing%\x", &env), Expanded::Inactive);
     assert_eq!(Expanded::Inactive.applied(), None);
     assert_eq!(Expanded::Name("x".into()).applied(), Some("x"));
+    // Expanded once, the patterns match as `new` would have them.
+    let ex = Exclusions::from_expanded(&[
+        expand("%TEMP%", &env),
+        expand("*.tmp", &env),
+        expand(r"%Missing%\x", &env),
+    ]);
+    assert!(excluded(&ex, r"C:\Users\Руслан", r"AppData\Local\Temp"));
+    assert!(excluded(&ex, r"C:\Data", "x.tmp"));
+    assert!(!excluded(&ex, r"C:\Data", "x"));
 }
 
 #[test]

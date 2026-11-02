@@ -99,8 +99,10 @@ mod tests {
     use super::*;
 
     #[test]
-    fn the_backup_privilege_is_enabled_exactly_for_administrators() {
-        // A standard user has no SeBackupPrivilege to enable; an administrator has it.
-        assert_eq!(enable_backup_privilege().unwrap(), is_elevated());
+    fn an_administrator_gets_the_backup_privilege_and_nobody_fails() {
+        // An administrator has SeBackupPrivilege and gets it enabled; a standard user
+        // usually has none (a Backup Operator does), and the call still succeeds.
+        let enabled = enable_backup_privilege().unwrap();
+        assert!(enabled || !is_elevated());
     }
 }

@@ -131,6 +131,7 @@ pub trait Strings {
     fn folder_missing(&self) -> &'static str;
     fn folder_volume_not_ntfs(&self, file_system: &str) -> String;
     fn folder_volume_network(&self) -> &'static str;
+    fn folder_is_a_file(&self) -> &'static str;
     fn folder_unreachable(&self, reason: &str) -> String;
     fn snapshot_cancelled(&self) -> &'static str;
     fn snapshot_failed(&self, reason: &str) -> String;

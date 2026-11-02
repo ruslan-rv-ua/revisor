@@ -380,6 +380,10 @@ impl Strings for En {
         "the folder is on a network share"
     }
 
+    fn folder_is_a_file(&self) -> &'static str {
+        "a file stands at this path, not a folder"
+    }
+
     fn folder_unreachable(&self, reason: &str) -> String {
         format!("the folder cannot be read: {reason}")
     }

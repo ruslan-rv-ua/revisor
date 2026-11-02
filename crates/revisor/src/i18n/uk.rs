@@ -377,6 +377,10 @@ impl Strings for Uk {
         "тека на мережевому ресурсі"
     }
 
+    fn folder_is_a_file(&self) -> &'static str {
+        "за цією адресою файл, а не тека"
+    }
+
     fn folder_unreachable(&self, reason: &str) -> String {
         format!("теку не прочитати: {reason}")
     }

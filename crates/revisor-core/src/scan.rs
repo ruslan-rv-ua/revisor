@@ -204,7 +204,8 @@ impl std::error::Error for ScanError {}
 
 /// Scans the folder tree under `root`, reporting to `progress` as it goes. Setting
 /// `cancel` stops the scan with [`ScanError::Cancelled`]. A root that is a junction or a
-/// symbolic link is read through its target.
+/// symbolic link is read through its target; a root that rights keep closed is the one
+/// inaccessible entry of its tree, like any such folder deeper down.
 pub fn scan(
     root: &Path,
     options: &ScanOptions,
@@ -212,9 +213,16 @@ pub fn scan(
     progress: &Progress,
 ) -> Result<Scan, ScanError> {
     let root_path = verbatim(root).map_err(ScanError::Root)?;
-    let info = sys::open_dir(&root_path)
-        .and_then(|dir| sys::dir_info(&dir))
-        .map_err(ScanError::Root)?;
+    let (info, denied) = match sys::open_dir(&root_path) {
+        Ok(dir) => (sys::dir_info(&dir).map_err(ScanError::Root)?, false),
+        Err(e) if sys::is_access_denied(&e) => {
+            let info = sys::open_dir_attributes(&root_path)
+                .and_then(|dir| sys::dir_info(&dir))
+                .map_err(|_| ScanError::Root(e))?;
+            (info, true)
+        }
+        Err(e) => return Err(ScanError::Root(e)),
+    };
     if info.attributes & FILE_ATTRIBUTE_DIRECTORY == 0 {
         return Err(ScanError::Root(io::Error::new(
             io::ErrorKind::NotADirectory,
@@ -225,7 +233,7 @@ pub fn scan(
         parent: None,
         name: root.as_os_str().into(),
         kind: EntryKind::Dir,
-        inaccessible: false,
+        inaccessible: denied,
         attributes: info.attributes,
         size: 0,
         created: info.created,
@@ -235,6 +243,18 @@ pub fn scan(
         link_target: None,
     };
     progress.add(1);
+    if denied {
+        return Ok(Scan {
+            entries: vec![root_entry],
+            stats: ScanStats {
+                dirs: 1,
+                inaccessible: 1,
+                denied: 1,
+                ..ScanStats::default()
+            },
+            volume_serial: info.volume_serial,
+        });
+    }
     // Path patterns name real locations, so the root is matched where it really is.
     let real_root = crate::folders::real_path(root).unwrap_or_else(|_| root.to_path_buf());
 

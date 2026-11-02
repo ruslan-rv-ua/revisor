@@ -230,14 +230,46 @@ fn a_folder_closed_by_rights_counts_as_denied() {
     icacls(&["/remove:d", "*S-1-1-0"]);
 
     let report = result.unwrap();
-    assert_eq!(report.denied, 1);
-    assert_eq!(
+    // The folder is in the snapshot as its own inaccessible entry, like a closed folder
+    // deeper down: its contents are unknown, not absent.
+    assert_eq!((report.denied, report.inaccessible), (1, 1));
+    assert!(matches!(
         report.folders[0].state,
-        FolderState::Unavailable(Unavailable::Error(ERROR_ACCESS_DENIED))
-    );
+        FolderState::Scanned { .. }
+    ));
     assert!(matches!(
         report.folders[1].state,
         FolderState::Scanned { .. }
     ));
-    assert_eq!(report.entries, 2);
+    assert_eq!(report.entries, 1 + 2);
+    let store = Store::open(&tmp.db()).unwrap();
+    let tree = store.load_folder(report.id, 0).unwrap();
+    assert_eq!(tree.len(), 1);
+    assert!(tree[0].inaccessible);
+    assert_eq!(report.not_found().count(), 0);
+}
+
+#[test]
+fn a_file_at_a_folders_path_is_not_a_folder() {
+    let tmp = TempDir::new();
+    let file = tmp.write("was-a-folder", b"now a file");
+    tmp.write(r"app\a.txt", b"a");
+    drop(profile(&tmp, &[file.clone(), tmp.path().join("app")], &[]));
+
+    let (report, _) = take_it(&tmp);
+
+    assert_eq!(
+        report.folders[0].state,
+        FolderState::Unavailable(Unavailable::NotAFolder)
+    );
+    assert_eq!(report.not_found().count(), 1);
+    assert_eq!((report.entries, report.denied), (2, 0));
+    assert_eq!(
+        Store::open(&tmp.db())
+            .unwrap()
+            .snapshot_folders(report.id)
+            .unwrap()[0]
+            .state,
+        FolderState::Unavailable(Unavailable::NotAFolder)
+    );
 }

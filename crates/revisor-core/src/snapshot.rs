@@ -10,7 +10,9 @@ use std::path::Path;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::time::{Duration, Instant};
 
-use crate::exclude::{self, Exclusions, SystemEnvironment};
+use windows_sys::Win32::Foundation;
+
+use crate::exclude::{self, Exclusions, Expanded, SystemEnvironment};
 use crate::folders::{self, LocateError};
 use crate::scan::{self, Progress, ScanError, ScanOptions, ScanStats};
 use crate::store::{
@@ -18,9 +20,10 @@ use crate::store::{
     StoreError, Unavailable,
 };
 
-const ERROR_FILE_NOT_FOUND: i32 = 2;
-const ERROR_PATH_NOT_FOUND: i32 = 3;
-const ERROR_ACCESS_DENIED: i32 = 5;
+// Windows error codes as `io::Error::raw_os_error` gives them.
+const ERROR_FILE_NOT_FOUND: i32 = Foundation::ERROR_FILE_NOT_FOUND as i32;
+const ERROR_PATH_NOT_FOUND: i32 = Foundation::ERROR_PATH_NOT_FOUND as i32;
+const ERROR_ACCESS_DENIED: i32 = Foundation::ERROR_ACCESS_DENIED as i32;
 
 /// What a finished snapshot reports.
 #[derive(Clone, Debug)]
@@ -89,17 +92,24 @@ pub fn take(
     let mut store = Store::open(db)?;
     let scope = store.settings()?.scope;
     let taken_at = store::now_millis();
-    let env = SystemEnvironment;
+    // The exclusions are expanded once: the scan applies them, and the snapshot records
+    // them, exactly as expanded here.
+    let expanded: Vec<Expanded> = scope
+        .exclusions
+        .iter()
+        .map(|pattern| exclude::expand(pattern, &SystemEnvironment))
+        .collect();
     let options = ScanOptions {
-        exclusions: Exclusions::new(&scope.exclusions, &env),
+        exclusions: Exclusions::from_expanded(&expanded),
         ..ScanOptions::default()
     };
     let exclusions = scope
         .exclusions
         .iter()
-        .map(|pattern| SnapshotExclusion {
+        .zip(&expanded)
+        .map(|(pattern, expanded)| SnapshotExclusion {
             pattern: pattern.clone(),
-            applied: exclude::expand(pattern, &env).applied().map(String::from),
+            applied: expanded.applied().map(String::from),
         })
         .collect();
 
@@ -125,14 +135,7 @@ pub fn take(
         inaccessible: totals.inaccessible,
         denied: totals.denied,
         versions_unread: totals.versions_unread,
-        folders: snapshot
-            .folders
-            .iter()
-            .map(|f| SnapshotFolder {
-                path: f.path.clone(),
-                state: f.state.clone(),
-            })
-            .collect(),
+        folders: snapshot.folders.iter().map(SnapshotFolder::from).collect(),
         elapsed: started.elapsed(),
     })
 }
@@ -167,6 +170,13 @@ fn scan_folder(
         state,
         entries: Vec::new(),
     };
+    // A folder that even the attributes of cannot be read is closed by rights too.
+    let mut not_opened = |e: &io::Error| {
+        if e.raw_os_error() == Some(ERROR_ACCESS_DENIED) {
+            totals.denied += 1;
+        }
+        without_tree(absent(path, e))
+    };
     match folders::locate(path) {
         Ok(_) => {}
         Err(LocateError::NotNtfs(fs)) => {
@@ -177,7 +187,7 @@ fn scan_folder(
         Err(LocateError::Network) => {
             return Ok(without_tree(FolderState::Unavailable(Unavailable::Network)));
         }
-        Err(LocateError::Io(e)) => return Ok(without_tree(absent(path, &e, totals))),
+        Err(LocateError::Io(e)) => return Ok(not_opened(&e)),
     }
     match scan::scan(path, options, cancel, progress) {
         Ok(scan) => {
@@ -191,17 +201,17 @@ fn scan_folder(
             })
         }
         Err(ScanError::Cancelled) => Err(SnapshotError::Cancelled),
-        Err(ScanError::Root(e)) => Ok(without_tree(absent(path, &e, totals))),
+        Err(ScanError::Root(e)) if e.kind() == io::ErrorKind::NotADirectory => Ok(without_tree(
+            FolderState::Unavailable(Unavailable::NotAFolder),
+        )),
+        Err(ScanError::Root(e)) => Ok(not_opened(&e)),
     }
 }
 
 /// The state of a folder that could not be opened: missing when it is not there but the
 /// nearest folder above it is (so its volume is), unavailable with the error otherwise.
-fn absent(path: &Path, error: &io::Error, totals: &mut Totals) -> FolderState {
+fn absent(path: &Path, error: &io::Error) -> FolderState {
     let code = error.raw_os_error().unwrap_or(0);
-    if code == ERROR_ACCESS_DENIED {
-        totals.denied += 1;
-    }
     let not_found =
         |code: Option<i32>| matches!(code, Some(ERROR_FILE_NOT_FOUND | ERROR_PATH_NOT_FOUND));
     if not_found(Some(code)) {

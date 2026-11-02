@@ -73,6 +73,16 @@ pub fn open_dir(path: &Path) -> io::Result<File> {
         .open(path)
 }
 
+/// Opens a directory only to ask about it, which rights that close its listing still
+/// allow.
+pub fn open_dir_attributes(path: &Path) -> io::Result<File> {
+    OpenOptions::new()
+        .access_mode(FILE_READ_ATTRIBUTES)
+        .share_mode(SHARE_ALL)
+        .custom_flags(FILE_FLAG_BACKUP_SEMANTICS)
+        .open(path)
+}
+
 pub fn dir_info(dir: &File) -> io::Result<DirInfo> {
     let mut basic = FILE_BASIC_INFO::default();
     let mut id = FILE_ID_INFO::default();

@@ -318,6 +318,37 @@ fn marks_unreadable_folder_and_goes_on() {
 }
 
 #[test]
+fn a_root_closed_by_rights_is_its_own_inaccessible_entry() {
+    let tmp = TempDir::new();
+    let locked = tmp.path().join("locked");
+    fs::create_dir(&locked).unwrap();
+    fs::write(locked.join("hidden.txt"), b"x").unwrap();
+    let icacls = |args: &[&str]| {
+        let status = Command::new("icacls")
+            .arg(&locked)
+            .args(args)
+            .output()
+            .unwrap()
+            .status;
+        assert!(status.success());
+    };
+    icacls(&["/deny", "*S-1-1-0:(RD)"]);
+
+    let scan = run_scan(&locked, 1);
+    icacls(&["/remove:d", "*S-1-1-0"]);
+
+    assert_eq!(scan.entries.len(), 1);
+    assert!(scan.entries[0].inaccessible);
+    assert_eq!(scan.entries[0].kind, EntryKind::Dir);
+    assert_ne!(scan.entries[0].file_id, FileId::default());
+    assert_eq!(
+        (scan.stats.dirs, scan.stats.inaccessible, scan.stats.denied),
+        (1, 1, 1)
+    );
+    assert_ne!(scan.volume_serial, 0);
+}
+
+#[test]
 fn scans_paths_longer_than_max_path() {
     let tmp = TempDir::new();
     let segment = "d".repeat(60);

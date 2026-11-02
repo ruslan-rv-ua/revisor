@@ -40,12 +40,22 @@ const FIRST_COMMAND_ID: i32 = 1000;
 /// How often the progress of a snapshot is shown, in milliseconds.
 const PROGRESS_INTERVAL: i32 = 100;
 
-/// The access keys of the labels and buttons of the main window. They do not take the
-/// letters of the menus, which would no longer open while the focus is in the panel.
+/// The access keys of the labels of the main window. They do not take the letters of the
+/// menus, which would no longer open while the focus is in the panel.
 const PROFILE_ACCESS: u8 = b'R';
 const PROGRESS_ACCESS: u8 = b'P';
-/// «Скасувати (N)» next to the progress: the letter of the menu command, too.
-const CANCEL_SNAPSHOT_ACCESS: u8 = b'N';
+
+/// «Скасувати (N)» next to the progress presses the command «Скасувати знімок», so it
+/// takes the command's letter.
+fn cancel_snapshot_access() -> u8 {
+    command(CommandId::CancelSnapshot).access
+}
+
+/// The positions of the labels and buttons in [`MainWindow::labels`], which
+/// `Route::FocusLabel` names them by.
+const LABEL_PROFILE: usize = 0;
+const LABEL_PROGRESS: usize = 1;
+const LABEL_CANCEL_SNAPSHOT: usize = 2;
 
 /// The access keys of the action buttons of questions: «Видалити», «Перезапустити» and
 /// «Закрити».
@@ -181,7 +191,12 @@ impl MainWindow {
             .with_style(TextCtrlStyle::ReadOnly)
             .build();
         let cancel_snapshot = Button::builder(&panel)
-            .with_label(&button_label(s, s.cancel(), CANCEL_SNAPSHOT_ACCESS, false))
+            .with_label(&button_label(
+                s,
+                s.cancel(),
+                cancel_snapshot_access(),
+                false,
+            ))
             .build();
         let snapshots = ListCtrl::builder(&panel)
             .with_style(ListCtrlStyle::Report)
@@ -325,7 +340,8 @@ impl MainWindow {
         self.timer.on_tick(move |_| w.poll_snapshot());
 
         let w = Rc::clone(self);
-        self.cancel_snapshot.on_click(move |_| w.cancel_snapshot());
+        self.cancel_snapshot
+            .on_click(move |_| w.run(CommandId::CancelSnapshot));
 
         let w = Rc::clone(self);
         self.profile.on_selection_changed(move |event| {
@@ -352,9 +368,9 @@ impl MainWindow {
     /// The access keys of the main window's labels and buttons, for `keyboard::route`:
     /// those of the progress row only while it is shown.
     fn labels(&self) -> Vec<u8> {
-        let mut labels = vec![PROFILE_ACCESS];
-        if self.job.borrow().is_some() {
-            labels.extend([PROGRESS_ACCESS, CANCEL_SNAPSHOT_ACCESS]);
+        let mut labels = vec![PROFILE_ACCESS, PROGRESS_ACCESS, cancel_snapshot_access()];
+        if self.job.borrow().is_none() {
+            labels.truncate(LABEL_PROGRESS);
         }
         labels
     }
@@ -404,10 +420,10 @@ impl MainWindow {
             Route::Refuse(id, reason) => self.say(&s.unavailable(s.command(id), s.reason(reason))),
             Route::OnlyIn(key, pane) => self.say(&s.key_only_in(&key.name(s), pane)),
             Route::FocusPane(pane) => self.list(pane).set_focus(),
-            // In the order of `labels`.
-            Route::FocusLabel(0) => self.profile.set_focus(),
-            Route::FocusLabel(1) => self.progress_text.set_focus(),
-            Route::FocusLabel(_) => self.cancel_snapshot(),
+            Route::FocusLabel(LABEL_PROFILE) => self.profile.set_focus(),
+            Route::FocusLabel(LABEL_PROGRESS) => self.progress_text.set_focus(),
+            Route::FocusLabel(LABEL_CANCEL_SNAPSHOT) => self.run(CommandId::CancelSnapshot),
+            Route::FocusLabel(_) => {}
             Route::ContextMenu(pane) => self.show_context_menu(pane, None),
             Route::Pass => {}
         }
@@ -691,7 +707,7 @@ impl MainWindow {
         job.wait();
         self.end_snapshot();
         match result {
-            Some(Ok(report)) => self.report_snapshot(&job.profile, &report),
+            Some(Ok(report)) => self.report_snapshot(&job.profile, &report, true),
             Some(Err(SnapshotError::Cancelled)) => self.say(s.snapshot_cancelled()),
             Some(Err(SnapshotError::Store(e))) => {
                 self.snapshot_failed(&s.failure(&failure::of_store(&e)));
@@ -725,9 +741,10 @@ impl MainWindow {
         self.panel.layout();
     }
 
-    /// Says what the saved snapshot holds, names the folders it did not find, and offers
-    /// a restart as administrator when rights closed some entries (TASK-8 #7, #16, #18).
-    fn report_snapshot(&self, profile: &ProfileFile, report: &Report) {
+    /// Says what the saved snapshot holds, names the folders it did not find, and, with
+    /// `offer_restart`, offers a restart as administrator when rights closed some entries
+    /// (TASK-8 #7, #16, #18).
+    fn report_snapshot(&self, profile: &ProfileFile, report: &Report, offer_restart: bool) {
         let s = self.s;
         if self
             .open_profile()
@@ -755,12 +772,13 @@ impl MainWindow {
             text.push_str(&s.folders_not_found(&not_found));
         }
         self.say(&text);
-        if report.denied > 0 && !self.state.borrow().elevated {
+        if offer_restart && report.denied > 0 && !self.state.borrow().elevated {
             let question = s.restart_question(&win32::format_count(report.denied));
             let restart = (s.restart(), RESTART_ACCESS);
             let title = s.command(CommandId::TakeSnapshot);
             if confirm(&self.frame, s, title, &question, restart, true) {
-                self.restart_now();
+                // On the snapshotted profile, whichever is open by now.
+                self.restart_now(Some(profile));
             }
         }
     }
@@ -773,6 +791,7 @@ impl MainWindow {
             FolderState::Missing => s.folder_missing().into(),
             FolderState::Unavailable(Unavailable::NotNtfs(fs)) => s.folder_volume_not_ntfs(fs),
             FolderState::Unavailable(Unavailable::Network) => s.folder_volume_network().into(),
+            FolderState::Unavailable(Unavailable::NotAFolder) => s.folder_is_a_file().into(),
             FolderState::Unavailable(Unavailable::Error(code)) => {
                 let error = io::Error::from_raw_os_error(*code);
                 s.folder_unreachable(&s.failure(&failure::of_io(&error)))
@@ -803,7 +822,8 @@ impl MainWindow {
         true
     }
 
-    /// Stops the snapshot being taken, if there is one, without asking.
+    /// Stops the snapshot being taken, if there is one, without asking. A snapshot that
+    /// ended meanwhile, while a question was up, is reported as it ended.
     fn stop_snapshot(&self) {
         let Some(mut job) = self.job.borrow_mut().take() else {
             return;
@@ -811,7 +831,10 @@ impl MainWindow {
         self.timer.stop();
         job.stop();
         self.end_snapshot();
-        self.say(self.s.snapshot_cancelled());
+        match job.done.try_recv() {
+            Ok(Ok(report)) => self.report_snapshot(&job.profile, &report, false),
+            _ => self.say(self.s.snapshot_cancelled()),
+        }
     }
 
     /// Restarts revisor as administrator on the open profile; during a snapshot, once the
@@ -824,19 +847,18 @@ impl MainWindow {
             (s.restart(), RESTART_ACCESS),
         );
         if agreed {
-            self.restart_now();
+            self.restart_now(self.open_profile().as_ref());
         }
     }
 
-    /// Starts revisor again as administrator, on the open profile, and closes this one.
-    fn restart_now(&self) {
+    /// Starts revisor again as administrator, on `profile`, and closes this one.
+    fn restart_now(&self, profile: Option<&ProfileFile>) {
         let s = self.s;
-        let exe = std::env::current_exe().unwrap_or_default();
-        let args = self
-            .open_profile()
+        let args = profile
             .map(|p| format!("--profile \"{}\"", p.path.display()))
             .unwrap_or_default();
-        match win32::run_as_admin(&exe, &args) {
+        let started = std::env::current_exe().and_then(|exe| win32::run_as_admin(&exe, &args));
+        match started {
             Ok(()) => self.frame.close(true),
             Err(e) => self.say(&s.restart_failed(&s.failure(&failure::of_io(&e)))),
         }
@@ -987,16 +1009,19 @@ mod tests {
 
     #[test]
     fn the_labels_of_the_main_window_take_no_menu_letter_and_differ() {
-        let labels = [PROFILE_ACCESS, PROGRESS_ACCESS, CANCEL_SNAPSHOT_ACCESS];
+        let labels = [PROFILE_ACCESS, PROGRESS_ACCESS, cancel_snapshot_access()];
         for (i, &label) in labels.iter().enumerate() {
             assert!(MenuId::ALL.iter().all(|m| m.access() != label));
             assert!(!labels[..i].contains(&label));
         }
+        assert_eq!(labels[LABEL_PROFILE], PROFILE_ACCESS);
+        assert_eq!(labels[LABEL_PROGRESS], PROGRESS_ACCESS);
+        assert_eq!(labels[LABEL_CANCEL_SNAPSHOT], cancel_snapshot_access());
         // The letters are in the English names, as everywhere.
         let has = |name: &str, letter: u8| name.to_ascii_uppercase().contains(char::from(letter));
         assert!(has(En.profile(), PROFILE_ACCESS));
         assert!(has(En.progress(), PROGRESS_ACCESS));
-        assert!(has(En.cancel(), CANCEL_SNAPSHOT_ACCESS));
+        assert!(has(En.cancel(), cancel_snapshot_access()));
         assert!(has(En.restart(), RESTART_ACCESS));
         assert!(has(En.close(), CLOSE_ACCESS));
         assert!(has(En.delete(), DELETE_ACCESS));
