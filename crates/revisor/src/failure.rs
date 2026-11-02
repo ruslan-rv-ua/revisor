@@ -14,6 +14,7 @@ const ERROR_SHARING_VIOLATION: i32 = 32;
 const ERROR_LOCK_VIOLATION: i32 = 33;
 const ERROR_HANDLE_DISK_FULL: i32 = 39;
 const ERROR_DISK_FULL: i32 = 112;
+const ERROR_CANCELLED: i32 = 1223;
 // SQLite primary result codes.
 const SQLITE_PERM: i32 = 3;
 const SQLITE_BUSY: i32 = 5;
@@ -27,6 +28,7 @@ pub fn of_io(e: &io::Error) -> Failure {
         Some(ERROR_ACCESS_DENIED) => Failure::AccessDenied,
         Some(ERROR_SHARING_VIOLATION | ERROR_LOCK_VIOLATION) => Failure::InUse,
         Some(ERROR_DISK_FULL | ERROR_HANDLE_DISK_FULL) => Failure::DiskFull,
+        Some(ERROR_CANCELLED) => Failure::Cancelled,
         code => {
             // Rust adds " (os error N)"; the code is shown on its own.
             let text = e.to_string();

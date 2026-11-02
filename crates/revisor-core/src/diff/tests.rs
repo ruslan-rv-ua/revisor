@@ -1,6 +1,6 @@
 use super::*;
-use crate::scan::{FileId, ScanOptions, scan, synthetic};
-use crate::store::{ProfileSettings, Scope, Store};
+use crate::scan::{FileId, Progress, ScanOptions, Version, VersionInfo, scan, synthetic};
+use crate::store::{ProfileSettings, Scope, Snapshot, Store};
 use std::collections::HashSet;
 use std::ffi::{OsStr, OsString};
 use std::fs;
@@ -84,9 +84,17 @@ fn entry(parent: Option<u32>, name: &str, kind: EntryKind) -> Entry {
         created: 0,
         modified: 0,
         file_id: FileId::default(),
-        version: None,
+        version: VersionInfo::NotRead,
         link_target: None,
     }
+}
+
+/// A read version with the same file and product version.
+fn version(parts: [u16; 4]) -> VersionInfo {
+    VersionInfo::Some(Version {
+        file: parts,
+        product: parts,
+    })
 }
 
 /// Path relative to the root, with `\` separators; "" for the root.
@@ -150,7 +158,7 @@ fn sample() -> Tree {
     exe.size = 1000;
     exe.created = 10;
     exe.modified = 20;
-    exe.version = Some([1, 2, 3, 4]);
+    exe.version = version([1, 2, 3, 4]);
     t.add(r"app\readme.txt", EntryKind::File).size = 5;
     t.add(r"app\data", EntryKind::Dir);
     t.add(r"app\data\a.dat", EntryKind::File);
@@ -236,7 +244,26 @@ fn only_the_creation_time_counts_as_a_change() {
 fn changed_version_is_a_change() {
     let old = sample();
     let mut new = sample();
-    new.get(r"app\app.exe").version = Some([1, 2, 3, 5]);
+    new.get(r"app\app.exe").version = version([1, 2, 3, 5]);
+    assert_eq!(lines(&old.0, &new.0), [r"~ app\app.exe version"]);
+    // The product version alone changes too.
+    let mut new = sample();
+    new.get(r"app\app.exe").version = VersionInfo::Some(Version {
+        file: [1, 2, 3, 4],
+        product: [2, 0, 0, 0],
+    });
+    assert_eq!(lines(&old.0, &new.0), [r"~ app\app.exe version"]);
+}
+
+#[test]
+fn a_version_not_read_in_either_snapshot_is_not_a_change() {
+    let old = sample();
+    let mut new = sample();
+    new.get(r"app\app.exe").version = VersionInfo::NotRead;
+    assert_eq!(lines(&old.0, &new.0), Vec::<String>::new());
+    assert_eq!(lines(&new.0, &old.0), Vec::<String>::new());
+    // Read in both, and the version resource is gone: a change.
+    new.get(r"app\app.exe").version = VersionInfo::None;
     assert_eq!(lines(&old.0, &new.0), [r"~ app\app.exe version"]);
 }
 
@@ -321,7 +348,7 @@ fn inaccessible_entries_are_listed_apart() {
     // An exe whose version cannot be read: the version is unknown, not changed.
     let exe = new.get(r"app\app.exe");
     exe.inaccessible = true;
-    exe.version = None;
+    exe.version = VersionInfo::NotRead;
     // A link whose target cannot be read.
     let link = new.get("link");
     link.inaccessible = true;
@@ -337,7 +364,7 @@ fn known_fields_of_inaccessible_entries_are_compared() {
     let mut new = sample();
     let exe = new.get(r"app\app.exe");
     exe.inaccessible = true;
-    exe.version = None;
+    exe.version = VersionInfo::NotRead;
     exe.size = 1;
     assert_eq!(
         lines(&old.0, &new.0),
@@ -404,7 +431,7 @@ fn known_changes(count: usize) -> (Vec<Entry>, Vec<Entry>, HashSet<String>) {
     for (i, e) in old.iter_mut().enumerate() {
         if e.kind == EntryKind::File && i % 100 == 10 {
             e.kind = EntryKind::Link;
-            e.version = None;
+            e.version = VersionInfo::NotRead;
             e.link_target = Some(OsString::from(format!(r"C:\target {i}")).into_boxed_os_str());
         }
     }
@@ -513,14 +540,14 @@ fn known_changes(count: usize) -> (Vec<Entry>, Vec<Entry>, HashSet<String>) {
                 e.kind = EntryKind::Dir;
                 e.attributes = FILE_ATTRIBUTE_DIRECTORY;
                 e.size = 0;
-                e.version = None;
+                e.version = VersionInfo::NotRead;
                 expected.insert(format!("- {path}"));
                 expected.insert(format!("+ {path}"));
                 None
             }
             9 => {
                 old[i].inaccessible = true;
-                old[i].version = None;
+                old[i].version = VersionInfo::NotRead;
                 expected.insert(format!("? {path}"));
                 None
             }
@@ -528,8 +555,8 @@ fn known_changes(count: usize) -> (Vec<Entry>, Vec<Entry>, HashSet<String>) {
                 e.link_target = Some(OsStr::new(r"C:\moved").into());
                 Some("target")
             }
-            14 if e.version.is_some() => {
-                e.version = Some([11, 0, 0, 0]);
+            14 if matches!(e.version, VersionInfo::Some(_)) => {
+                e.version = version([11, 0, 0, 0]);
                 Some("version")
             }
             _ => None,
@@ -634,15 +661,19 @@ fn unchanged_folder_scanned_twice_has_no_changes() {
         },
     };
     let mut store = Store::create(&tmp.0.join("profile.db"), &settings).unwrap();
-    let first = scan(&root, &ScanOptions::default(), &no_cancel).unwrap();
+    let progress = Progress::default();
+    let first = scan(&root, &ScanOptions::default(), &no_cancel, &progress).unwrap();
     let a = store
-        .save(&settings.scope, None, &first.entries, &no_cancel)
+        .save(&Snapshot::of_tree(first.entries), &no_cancel)
         .unwrap();
-    let second = scan(&root, &ScanOptions::default(), &no_cancel).unwrap();
+    let second = scan(&root, &ScanOptions::default(), &no_cancel, &progress).unwrap();
     let b = store
-        .save(&settings.scope, None, &second.entries, &no_cancel)
+        .save(&Snapshot::of_tree(second.entries), &no_cancel)
         .unwrap();
-    let (old, new) = (store.load(a).unwrap(), store.load(b).unwrap());
+    let (old, new) = (
+        store.load_folder(a, 0).unwrap(),
+        store.load_folder(b, 0).unwrap(),
+    );
     assert_eq!(old.len(), 1 + 10 * 4 + 2);
 
     let diff = diff(&old, &new, &no_cancel).unwrap();

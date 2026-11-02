@@ -9,8 +9,8 @@ use std::process::ExitCode;
 use std::sync::atomic::AtomicBool;
 use std::time::Instant;
 
-use revisor_core::scan::{ScanOptions, scan, synthetic};
-use revisor_core::store::{ProfileSettings, Scope, Store};
+use revisor_core::scan::{Progress, ScanOptions, scan, synthetic};
+use revisor_core::store::{ProfileSettings, Scope, Snapshot, Store};
 
 const MIB: f64 = 1024.0 * 1024.0;
 
@@ -60,7 +60,13 @@ fn run(input: &Input, wal: bool, db: &Path) -> Result<(), Box<dyn std::error::Er
     let entries = match input {
         Input::Scan(root) => {
             println!("input:         scan of {}", root.display());
-            scan(root, &ScanOptions::default(), &no_cancel)?.entries
+            scan(
+                root,
+                &ScanOptions::default(),
+                &no_cancel,
+                &Progress::default(),
+            )?
+            .entries
         }
         Input::Generate(n) => {
             println!("input:         {n} generated entries");
@@ -72,6 +78,8 @@ fn run(input: &Input, wal: bool, db: &Path) -> Result<(), Box<dyn std::error::Er
         entries.len(),
         started.elapsed().as_secs_f64()
     );
+    let count = entries.len();
+    let snapshot = Snapshot::of_tree(entries);
 
     for suffix in ["", "-journal", "-wal", "-shm"] {
         let _ = fs::remove_file(with_suffix(db, suffix));
@@ -92,18 +100,18 @@ fn run(input: &Input, wal: bool, db: &Path) -> Result<(), Box<dyn std::error::Er
     let mut store = Store::open(db)?;
 
     let started = Instant::now();
-    let first = store.save(&settings.scope, None, &entries, &no_cancel)?;
+    let first = store.save(&snapshot, &no_cancel)?;
     let save_time = started.elapsed();
     let one = db_size(db);
     println!(
         "save:          {:.2} s, database {:.1} MiB ({:.0} B per entry)",
         save_time.as_secs_f64(),
         one as f64 / MIB,
-        one as f64 / entries.len() as f64
+        one as f64 / count as f64
     );
 
     let started = Instant::now();
-    let loaded = store.load(first)?;
+    let loaded = store.load_folder(first, 0)?;
     println!(
         "load:          {:.2} s, {} entries",
         started.elapsed().as_secs_f64(),
@@ -112,7 +120,7 @@ fn run(input: &Input, wal: bool, db: &Path) -> Result<(), Box<dyn std::error::Er
     drop(loaded);
 
     let started = Instant::now();
-    store.save(&settings.scope, None, &entries, &no_cancel)?;
+    store.save(&snapshot, &no_cancel)?;
     let two = db_size(db);
     println!(
         "second save:   {:.2} s, database {:.1} MiB",

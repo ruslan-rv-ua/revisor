@@ -179,6 +179,62 @@ impl Environment for SystemEnvironment {
     }
 }
 
+/// The environment of patterns a snapshot recorded as they applied ([`Expanded`]):
+/// nothing is expanded or looked up again, so they apply exactly as they did then.
+pub struct RecordedEnvironment;
+
+impl Environment for RecordedEnvironment {
+    fn var(&self, _: &str) -> Option<OsString> {
+        None
+    }
+
+    fn real_path(&self, _: &Path) -> Option<PathBuf> {
+        None
+    }
+}
+
+/// How a pattern applies on a computer: its variable expanded, and the existing part of
+/// its path at its real location.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum Expanded {
+    /// A name pattern, as written: it matches a name at any depth.
+    Name(String),
+    /// A path pattern: the full path it stands for.
+    Path(String),
+    /// The pattern starts with a variable the computer does not have, so it leaves
+    /// nothing out.
+    Inactive,
+}
+
+impl Expanded {
+    /// The pattern as it applied, or `None` when it did not. [`Exclusions::new`] with
+    /// [`RecordedEnvironment`] takes these back as they are.
+    pub fn applied(&self) -> Option<&str> {
+        match self {
+            Expanded::Name(text) | Expanded::Path(text) => Some(text),
+            Expanded::Inactive => None,
+        }
+    }
+}
+
+/// Expands `pattern` for `env`: see [`Expanded`].
+pub fn expand(pattern: &str, env: &dyn Environment) -> Expanded {
+    let path = match leading_variable(pattern) {
+        Some((name, rest)) => {
+            let Some(mut path) = env.var(name) else {
+                return Expanded::Inactive;
+            };
+            path.push(rest);
+            Some(path)
+        }
+        None => pattern.contains('\\').then(|| OsString::from(pattern)),
+    };
+    match path {
+        Some(path) => Expanded::Path(pattern_parts(&path, env).join("\\")),
+        None => Expanded::Name(pattern.to_string()),
+    }
+}
+
 /// Exclusions ready to be matched against the entries of a tree.
 #[derive(Clone, Debug, Default)]
 pub struct Exclusions {
@@ -204,28 +260,33 @@ impl Exclusions {
     /// Prepares `patterns` for matching on this computer: a leading environment variable is
     /// expanded now, and a pattern whose variable is not set leaves nothing out.
     pub fn new<S: AsRef<str>>(patterns: &[S], env: &dyn Environment) -> Exclusions {
+        let expanded: Vec<Expanded> = patterns
+            .iter()
+            .map(|pattern| expand(pattern.as_ref(), env))
+            .collect();
+        Self::from_expanded(&expanded)
+    }
+
+    /// Prepares patterns already expanded with [`expand`] for matching.
+    pub fn from_expanded(expanded: &[Expanded]) -> Exclusions {
         let mut ex = Exclusions::default();
-        for pattern in patterns {
-            let pattern = pattern.as_ref();
-            let path = match leading_variable(pattern) {
-                Some((name, rest)) => {
-                    let Some(mut path) = env.var(name) else {
-                        continue;
-                    };
-                    path.push(rest);
-                    Some(path)
+        for pattern in expanded {
+            match pattern {
+                Expanded::Path(path) => ex.paths.push(
+                    split_path(OsStr::new(path))
+                        .iter()
+                        .map(|part| fold(OsStr::new(part)))
+                        .collect(),
+                ),
+                Expanded::Name(name) => {
+                    let folded = fold(OsStr::new(name));
+                    if folded.iter().any(|&c| c == STAR || c == QUESTION) {
+                        ex.wild_names.push(folded);
+                    } else {
+                        ex.names.insert(folded);
+                    }
                 }
-                None => pattern.contains('\\').then(|| pattern.into()),
-            };
-            if let Some(path) = path {
-                ex.paths.push(pattern_parts(&path, env));
-                continue;
-            }
-            let folded = fold(OsStr::new(pattern));
-            if folded.iter().any(|&c| c == STAR || c == QUESTION) {
-                ex.wild_names.push(folded);
-            } else {
-                ex.names.insert(folded);
+                Expanded::Inactive => {}
             }
         }
         ex
@@ -286,10 +347,10 @@ fn leading_variable(pattern: &str) -> Option<(&str, &str)> {
     (end > 0).then(|| (&rest[..end], &rest[end + 1..]))
 }
 
-/// The folded parts of a path pattern. The longest part of it without wildcards that
-/// exists is taken at its real location, the way the scanner sees it: Windows keeps TEMP
-/// in the 8.3 form, and a folder may be reached through a junction or a `subst` drive.
-fn pattern_parts(path: &OsStr, env: &dyn Environment) -> Vec<Vec<u32>> {
+/// The parts of a path pattern. The longest part of it without wildcards that exists is
+/// taken at its real location, the way the scanner sees it: Windows keeps TEMP in the 8.3
+/// form, and a folder may be reached through a junction or a `subst` drive.
+fn pattern_parts(path: &OsStr, env: &dyn Environment) -> Vec<String> {
     let mut parts = split_path(path);
     let literal = parts
         .iter()
@@ -308,7 +369,7 @@ fn pattern_parts(path: &OsStr, env: &dyn Environment) -> Vec<Vec<u32>> {
             break;
         }
     }
-    parts.iter().map(|part| fold(OsStr::new(part))).collect()
+    parts
 }
 
 /// The parts of a path, without a `\\?\` prefix and without empty parts.

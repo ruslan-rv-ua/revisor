@@ -1,11 +1,13 @@
 //! Core of revisor: snapshots, storage and comparison. Knows nothing about the GUI.
 
 pub mod diff;
+pub mod elevation;
 pub mod exclude;
 pub mod folders;
 mod names;
 pub mod profiles;
 pub mod scan;
+pub mod snapshot;
 pub mod store;
 
 /// Version of revisor, shared by every front end.

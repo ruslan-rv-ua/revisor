@@ -61,11 +61,13 @@ fn create(path: &Path) -> Store {
     Store::create(path, &settings()).unwrap()
 }
 
-/// Saves with the profile's scope, without a comment and without cancellation.
+/// Saves one tree without cancellation.
 fn save(store: &mut Store, entries: &[Entry]) -> i64 {
-    let scope = store.settings().unwrap().scope;
     store
-        .save(&scope, None, entries, &AtomicBool::new(false))
+        .save(
+            &Snapshot::of_tree(entries.to_vec()),
+            &AtomicBool::new(false),
+        )
         .unwrap()
 }
 
@@ -129,11 +131,46 @@ fn changed_settings_replace_the_old_ones() {
     assert_eq!(Store::open(&tmp.db()).unwrap().settings().unwrap(), changed);
 }
 
+/// A snapshot of the folders of `settings()`: the first scanned as `sample()`, the second
+/// missing; with the exclusions of `settings()` as they applied.
+fn snapshot_of_settings(comment: Option<&str>) -> Snapshot {
+    Snapshot {
+        taken_at: 1_793_000_000_000,
+        comment: comment.map(String::from),
+        folders: vec![
+            FolderSnapshot {
+                path: r"C:\Program Files".into(),
+                state: FolderState::Scanned {
+                    volume_serial: 0x1234_5678_9ABC_DEF0,
+                },
+                entries: sample(),
+            },
+            FolderSnapshot {
+                path: r"D:\Робота".into(),
+                state: FolderState::Missing,
+                entries: Vec::new(),
+            },
+        ],
+        exclusions: vec![
+            SnapshotExclusion {
+                pattern: "*.tmp".into(),
+                applied: Some("*.tmp".into()),
+            },
+            SnapshotExclusion {
+                pattern: "%TEMP%".into(),
+                applied: Some(r"C:\Users\Руслан\AppData\Local\Temp".into()),
+            },
+        ],
+    }
+}
+
 #[test]
 fn a_snapshot_keeps_the_folders_and_exclusions_it_was_taken_with() {
     let tmp = TempDir::new();
     let mut store = create(&tmp.db());
-    let before = save(&mut store, &sample());
+    let before = store
+        .save(&snapshot_of_settings(None), &AtomicBool::new(false))
+        .unwrap();
     let mut changed = settings();
     changed.scope.folders.remove(0);
     changed.scope.exclusions.push("Code Cache".into());
@@ -141,9 +178,73 @@ fn a_snapshot_keeps_the_folders_and_exclusions_it_was_taken_with() {
     let after = save(&mut store, &sample());
 
     assert_eq!(store.snapshot_scope(before).unwrap(), settings().scope);
-    assert_eq!(store.snapshot_scope(after).unwrap(), changed.scope);
+    assert_eq!(
+        store.snapshot_scope(after).unwrap(),
+        Scope {
+            folders: vec![r"C:\Data".into()],
+            exclusions: vec![],
+        }
+    );
     store.delete(before).unwrap();
     assert_eq!(store.snapshot_scope(before).unwrap(), Scope::default());
+}
+
+#[test]
+fn each_folder_of_a_snapshot_keeps_its_state_and_its_tree() {
+    let tmp = TempDir::new();
+    let mut store = create(&tmp.db());
+    let mut snapshot = snapshot_of_settings(Some("states"));
+    let unavailable = [
+        Unavailable::NotNtfs("FAT32".into()),
+        Unavailable::Network,
+        Unavailable::Error(21),
+        Unavailable::NotAFolder,
+    ];
+    for (i, reason) in unavailable.iter().enumerate() {
+        snapshot.folders.push(FolderSnapshot {
+            path: format!(r"E:\folder {i}").into(),
+            state: FolderState::Unavailable(reason.clone()),
+            entries: Vec::new(),
+        });
+    }
+    snapshot.folders.push(FolderSnapshot {
+        path: r"F:\Big".into(),
+        state: FolderState::Scanned { volume_serial: 7 },
+        entries: synthetic(100),
+    });
+    let id = store.save(&snapshot, &AtomicBool::new(false)).unwrap();
+    drop(store);
+
+    let store = Store::open(&tmp.db()).unwrap();
+    let folders = store.snapshot_folders(id).unwrap();
+    let expected: Vec<SnapshotFolder> = snapshot.folders.iter().map(SnapshotFolder::from).collect();
+    assert_eq!(folders, expected);
+    assert_same(&store.load_folder(id, 0).unwrap(), &sample());
+    for position in 1..6 {
+        assert!(store.load_folder(id, position).unwrap().is_empty());
+    }
+    // The second tree comes back with its parents counted from its own root.
+    assert_same(&store.load_folder(id, 6).unwrap(), &synthetic(100));
+    assert!(store.load_folder(id, 7).unwrap().is_empty());
+    assert!(store.load_folder(id + 1, 0).unwrap().is_empty());
+    assert!(store.snapshot_folders(id + 1).unwrap().is_empty());
+}
+
+#[test]
+fn exclusions_keep_how_they_applied() {
+    let tmp = TempDir::new();
+    let mut store = create(&tmp.db());
+    let mut snapshot = snapshot_of_settings(None);
+    snapshot.exclusions.push(SnapshotExclusion {
+        pattern: r"%NoSuchVariable%\x".into(),
+        applied: None,
+    });
+    let id = store.save(&snapshot, &AtomicBool::new(false)).unwrap();
+    assert_eq!(store.snapshot_exclusions(id).unwrap(), snapshot.exclusions);
+    assert_eq!(
+        store.snapshot_scope(id).unwrap().exclusions,
+        ["*.tmp", "%TEMP%", r"%NoSuchVariable%\x"]
+    );
 }
 
 #[test]
@@ -202,7 +303,7 @@ fn entry(parent: Option<u32>, name: OsString, kind: EntryKind) -> Entry {
         created: 0,
         modified: 0,
         file_id: FileId::default(),
-        version: None,
+        version: VersionInfo::NotRead,
         link_target: None,
     }
 }
@@ -220,7 +321,14 @@ fn sample() -> Vec<Entry> {
     dll.created = -1;
     dll.modified = i64::MAX;
     dll.file_id = FileId(*b"0123456789abcdef");
-    dll.version = Some([65535, 0, 1, 65535]);
+    dll.version = VersionInfo::Some(Version {
+        file: [65535, 0, 1, 65535],
+        product: [1, 2, 3, 4],
+    });
+
+    // Read, but without a version resource.
+    let mut plain_exe = entry(Some(0), "plain.exe".into(), EntryKind::File);
+    plain_exe.version = VersionInfo::None;
 
     let mut locked = entry(Some(0), "locked".into(), EntryKind::Dir);
     locked.inaccessible = true;
@@ -234,10 +342,18 @@ fn sample() -> Vec<Entry> {
 
     // Names on NTFS may hold unpaired surrogates, which are not valid Unicode.
     let odd = OsString::from_wide(&[0x61, 0xD800, 0x62]);
-    let mut odd_link = entry(Some(2), odd.clone(), EntryKind::Link);
+    let mut odd_link = entry(Some(3), odd.clone(), EntryKind::Link);
     odd_link.link_target = Some(odd.into_boxed_os_str());
 
-    vec![root, dll, locked, junction, unreadable_link, odd_link]
+    vec![
+        root,
+        dll,
+        plain_exe,
+        locked,
+        junction,
+        unreadable_link,
+        odd_link,
+    ]
 }
 
 fn assert_same(loaded: &[Entry], expected: &[Entry]) {
@@ -253,19 +369,18 @@ fn saved_snapshot_loads_back_unchanged() {
     let mut store = create(&tmp.db());
     let id = store
         .save(
-            &settings().scope,
-            Some("before install"),
-            &sample(),
+            &snapshot_of_settings(Some("before install")),
             &AtomicBool::new(false),
         )
         .unwrap();
     drop(store);
 
     let store = Store::open(&tmp.db()).unwrap();
-    assert_same(&store.load(id).unwrap(), &sample());
+    assert_same(&store.load_folder(id, 0).unwrap(), &sample());
     let list = store.list().unwrap();
     assert_eq!(list.len(), 1);
     assert_eq!(list[0].id, id);
+    assert_eq!(list[0].taken_at, 1_793_000_000_000);
     assert_eq!(list[0].comment.as_deref(), Some("before install"));
 }
 
@@ -276,8 +391,8 @@ fn snapshots_are_kept_apart() {
     let small = save(&mut store, &sample());
     let big = save(&mut store, &synthetic(5000));
 
-    assert_same(&store.load(small).unwrap(), &sample());
-    assert_same(&store.load(big).unwrap(), &synthetic(5000));
+    assert_same(&store.load_folder(small, 0).unwrap(), &sample());
+    assert_same(&store.load_folder(big, 0).unwrap(), &synthetic(5000));
     assert_eq!(ids(&store), [small, big]);
     assert_eq!(store.list().unwrap()[0].comment, None);
 }
@@ -288,7 +403,7 @@ fn cancelled_save_leaves_nothing_behind() {
     let mut store = create(&tmp.db());
     let kept = save(&mut store, &sample());
 
-    let entries = synthetic(1_000_000);
+    let snapshot = Snapshot::of_tree(synthetic(1_000_000));
     let cancel = AtomicBool::new(false);
     let saving = AtomicBool::new(true);
     let result = thread::scope(|s| {
@@ -298,16 +413,42 @@ fn cancelled_save_leaves_nothing_behind() {
             thread::sleep(Duration::from_millis(50));
             cancel.store(true, Ordering::Relaxed);
         });
-        let result = store.save(&settings().scope, Some("cancelled"), &entries, &cancel);
+        let result = store.save(&snapshot, &cancel);
         saving.store(false, Ordering::Relaxed);
         result
     });
     assert!(matches!(result, Err(StoreError::Cancelled)), "{result:?}");
 
     assert_eq!(ids(&store), [kept]);
-    assert_same(&store.load(kept).unwrap(), &sample());
-    assert!(store.load(kept + 1).unwrap().is_empty());
+    assert_same(&store.load_folder(kept, 0).unwrap(), &sample());
+    assert!(store.load_folder(kept + 1, 0).unwrap().is_empty());
+    assert!(store.snapshot_folders(kept + 1).unwrap().is_empty());
     assert_eq!(store.snapshot_scope(kept + 1).unwrap(), Scope::default());
+}
+
+#[test]
+fn a_reader_waits_while_a_snapshot_is_being_saved() {
+    let tmp = TempDir::new();
+    let mut writer = create(&tmp.db());
+    let reader = Store::open(&tmp.db()).unwrap();
+    let snapshot = Snapshot::of_tree(synthetic(300_000));
+    let saving = AtomicBool::new(true);
+    thread::scope(|s| {
+        s.spawn(|| {
+            writer.save(&snapshot, &AtomicBool::new(false)).unwrap();
+            saving.store(false, Ordering::Relaxed);
+        });
+        wait_for_journal(&tmp, || saving.load(Ordering::Relaxed));
+        // Reads during the write, its commit included, wait for it instead of failing
+        // with "database is busy".
+        let mut reads = 0;
+        while saving.load(Ordering::Relaxed) {
+            reader.snapshot_count().unwrap();
+            reads += 1;
+        }
+        assert!(reads > 0);
+    });
+    assert_eq!(reader.snapshot_count().unwrap(), 1);
 }
 
 #[test]
@@ -319,16 +460,16 @@ fn deleted_snapshot_is_gone_and_vacuum_returns_its_space() {
     let full = fs::metadata(tmp.db()).unwrap().len();
 
     store.delete(old).unwrap();
-    assert!(store.load(old).unwrap().is_empty());
+    assert!(store.load_folder(old, 0).unwrap().is_empty());
     assert_eq!(ids(&store), [new]);
-    assert_same(&store.load(new).unwrap(), &sample());
+    assert_same(&store.load_folder(new, 0).unwrap(), &sample());
     // Freed pages stay in the file until VACUUM.
     assert_eq!(fs::metadata(tmp.db()).unwrap().len(), full);
 
     store.vacuum().unwrap();
     let vacuumed = fs::metadata(tmp.db()).unwrap().len();
     assert!(vacuumed * 10 < full, "{vacuumed} of {full} bytes left");
-    assert_same(&store.load(new).unwrap(), &sample());
+    assert_same(&store.load_folder(new, 0).unwrap(), &sample());
 }
 
 #[test]
@@ -351,16 +492,9 @@ fn killed_save_child() {
     let Some(db) = std::env::var_os(CHILD_DB_VAR) else {
         return;
     };
-    let entries = synthetic(2_000_000);
+    let snapshot = Snapshot::of_tree(synthetic(2_000_000));
     let mut store = Store::open(Path::new(&db)).unwrap();
-    store
-        .save(
-            &settings().scope,
-            Some("partial"),
-            &entries,
-            &AtomicBool::new(false),
-        )
-        .unwrap();
+    store.save(&snapshot, &AtomicBool::new(false)).unwrap();
 }
 
 #[test]
@@ -381,6 +515,6 @@ fn killed_save_leaves_no_partial_snapshot() {
 
     let store = Store::open(&tmp.db()).unwrap();
     assert_eq!(ids(&store), [kept]);
-    assert!(store.load(kept + 1).unwrap().is_empty());
-    assert_same(&store.load(kept).unwrap(), &sample());
+    assert!(store.load_folder(kept + 1, 0).unwrap().is_empty());
+    assert_same(&store.load_folder(kept, 0).unwrap(), &sample());
 }

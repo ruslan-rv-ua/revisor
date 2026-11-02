@@ -20,7 +20,7 @@ use std::path::PathBuf;
 use std::sync::atomic::{self, AtomicBool};
 
 use crate::names::upcase;
-use crate::scan::{Entry, EntryKind};
+use crate::scan::{Entry, EntryKind, VersionInfo};
 
 const FILE_ATTRIBUTE_ARCHIVE: u32 = 0x20;
 /// How many entries are compared between checks for cancellation.
@@ -385,7 +385,9 @@ fn changed_fields(old: &Entry, new: &Entry, is_root: bool, unknown: bool) -> Fie
     if (old.attributes ^ new.attributes) & !FILE_ATTRIBUTE_ARCHIVE != 0 {
         fields |= Fields::ATTRIBUTES;
     }
-    if !unknown && old.version != new.version {
+    // Versions count only when both snapshots read them (TASK-8 #13, TASK-10 #6).
+    let versions_read = old.version != VersionInfo::NotRead && new.version != VersionInfo::NotRead;
+    if !unknown && versions_read && old.version != new.version {
         fields |= Fields::VERSION;
     }
     if !unknown && old.link_target != new.link_target {

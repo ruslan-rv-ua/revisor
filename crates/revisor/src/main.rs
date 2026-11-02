@@ -14,10 +14,12 @@ mod profile_window;
 mod state;
 mod win32;
 
+use std::ffi::OsStr;
 use std::path::{Path, PathBuf};
 
 use i18n::{En, Lang, Strings, Uk};
 use main_window::MainWindow;
+use revisor_core::elevation;
 use state::AppState;
 
 fn main() {
@@ -25,17 +27,22 @@ fn main() {
         Lang::Uk => &Uk,
         Lang::En => &En,
     };
-    // REVISOR_DEMO=1 in a debug build stands in for the state TASK-8…14 will bring, so
+    // An administrator reads with the backup privilege (TASK-8); a standard user has no
+    // such privilege, and nothing changes for them.
+    let _ = elevation::enable_backup_privilege();
+    // REVISOR_DEMO=1 in a debug build stands in for the state TASK-9…14 will bring, so
     // the keyboard and the status bar can be checked with NVDA.
     let demo = cfg!(debug_assertions) && std::env::var_os("REVISOR_DEMO").is_some_and(|v| v == "1");
-    let state = if demo {
+    let mut state = if demo {
         AppState::demo()
     } else {
         AppState::new()
     };
+    state.elevated = elevation::is_elevated();
+    let open = profile_argument();
     wxdragon::main(move |_| {
         // The frame's event handlers hold the window, so it lives as long as the frame.
-        MainWindow::open(strings, state, profiles_dir());
+        MainWindow::open(strings, state, profiles_dir(), open);
     })
     .expect("failed to start the GUI");
 }
@@ -48,4 +55,16 @@ fn profiles_dir() -> PathBuf {
         .unwrap_or(Path::new(""))
         .join("data")
         .join("profiles")
+}
+
+/// The profile file named on the command line as `--profile <path>`: a revisor restarted
+/// as administrator opens the profile it was restarted from (TASK-8).
+fn profile_argument() -> Option<PathBuf> {
+    let mut args = std::env::args_os().skip(1);
+    while let Some(arg) = args.next() {
+        if arg == OsStr::new("--profile") {
+            return args.next().map(PathBuf::from);
+        }
+    }
+    None
 }

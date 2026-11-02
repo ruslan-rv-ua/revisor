@@ -32,14 +32,19 @@ pub struct AppState {
     /// Whether a comparison has produced a difference to show.
     pub has_difference: bool,
     pub snapshot_running: bool,
+    /// Whether the snapshot being taken is of the open profile, which then cannot be
+    /// changed or deleted (TASK-8).
+    pub snapshotting_open_profile: bool,
     pub comparison_running: bool,
     pub compaction_running: bool,
+    /// Whether revisor runs as administrator (TASK-8).
+    pub elevated: bool,
     /// Which change types the filter shows, indexed by `ChangeType`.
     pub shown_types: [bool; 4],
     pub sort: SortColumn,
     pub descending: bool,
     /// Debug-only stand-in state (REVISOR_DEMO=1) for checking the keyboard with NVDA
-    /// before TASK-8…14 exist: commands without a state of their own count as available.
+    /// before TASK-9…14 exist: commands without a state of their own count as available.
     /// The profiles are the real ones.
     pub demo: bool,
 }
