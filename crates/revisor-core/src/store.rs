@@ -1,9 +1,11 @@
 //! Profile storage: one SQLite database per profile holds its settings and its snapshots
 //! (ADR-0002, ADR-0006).
 //!
-//! A snapshot is a tree of entries given by sources (ADR-0003). The common part of an
-//! entry — position in the tree, name, kind — lives in `entry`; attributes that only
-//! make sense for one source live in that source's table, now only `fs_entry`.
+//! A snapshot is a tree of entries given by sources (ADR-0003). The file system gives one
+//! tree per folder of the profile, each with its own root, and `snapshot_folder` says where
+//! each tree is in `entry` or why there is none (TASK-8). The common part of an entry —
+//! position in the tree, name, kind — lives in `entry`; attributes that only make sense
+//! for one source live in that source's table, now only `fs_entry`.
 
 use std::ffi::{OsStr, OsString};
 use std::fmt;
@@ -18,7 +20,7 @@ use rusqlite::types::{FromSqlError, ToSqlOutput, Value, ValueRef};
 use rusqlite::{Connection, ErrorCode, OpenFlags, Transaction, params};
 
 use crate::exclude::DEFAULT_EXCLUSIONS;
-use crate::scan::{Entry, EntryKind, FileId};
+use crate::scan::{Entry, EntryKind, FileId, Version, VersionInfo};
 
 /// Version of the database schema, kept in `PRAGMA user_version`. Until 0.1.0 is released
 /// the schema changes in place, without migrations: there are no users' databases yet.
@@ -30,6 +32,12 @@ const APPLICATION_ID: i32 = 0x5256_5052;
 const SOURCE_FS: i64 = 1;
 const KIND_CONTAINER: i64 = 0;
 const KIND_ITEM: i64 = 1;
+/// `snapshot_folder.state` values.
+const STATE_SCANNED: i64 = 0;
+const STATE_MISSING: i64 = 1;
+const STATE_NOT_NTFS: i64 = 2;
+const STATE_NETWORK: i64 = 3;
+const STATE_ERROR: i64 = 4;
 /// How many entries are written between checks for cancellation.
 const CANCEL_CHECK: usize = 4096;
 
@@ -49,24 +57,37 @@ CREATE TABLE profile_exclusion (
     position INTEGER PRIMARY KEY,
     pattern TEXT NOT NULL
 );
--- The folders and exclusions each snapshot was taken with; later changes of the profile
--- leave them as they were.
+-- The folders each snapshot was taken with, and what the snapshot holds for each; later
+-- changes of the profile leave them as they were.
 CREATE TABLE snapshot_folder (
     snapshot_id INTEGER NOT NULL,
     position INTEGER NOT NULL,
     path NOT NULL,
+    -- 0 = scanned; 1 = missing, though its volume was there; 2 = on a volume other than
+    -- NTFS; 3 = on a network share; 4 = could not be reached (a Windows error).
+    state INTEGER NOT NULL,
+    -- The file system's name for state 2, the Windows error code for state 4.
+    detail,
+    -- For a scanned folder: the serial number of its volume, the idx of its root entry
+    -- and how many entries its tree has.
+    volume_serial INTEGER,
+    root INTEGER,
+    entries INTEGER,
     PRIMARY KEY (snapshot_id, position)
 ) WITHOUT ROWID;
 CREATE TABLE snapshot_exclusion (
     snapshot_id INTEGER NOT NULL,
     position INTEGER NOT NULL,
     pattern TEXT NOT NULL,
+    -- The pattern as it applied: its variable expanded and the existing part of its path
+    -- at its real location; NULL when it did not apply (its variable was not set).
+    applied TEXT,
     PRIMARY KEY (snapshot_id, position)
 ) WITHOUT ROWID;
 CREATE TABLE snapshot (
     -- AUTOINCREMENT: ids of deleted snapshots are never given out again.
     id INTEGER PRIMARY KEY AUTOINCREMENT,
-    -- Unix time in milliseconds.
+    -- When the snapshot was started, as Unix time in milliseconds.
     taken_at INTEGER NOT NULL,
     comment TEXT
 );
@@ -75,9 +96,9 @@ CREATE TABLE entry (
     snapshot_id INTEGER NOT NULL,
     -- 1 = file system.
     source INTEGER NOT NULL,
-    -- Position in the source's tree; the root is 0.
+    -- Position in the source's trees; the root of each tree is at snapshot_folder.root.
     idx INTEGER NOT NULL,
-    -- idx of the parent; NULL for the root.
+    -- idx of the parent; NULL for a root.
     parent INTEGER,
     -- TEXT, or BLOB of raw UTF-16LE when the name is not valid Unicode.
     name NOT NULL,
@@ -95,8 +116,10 @@ CREATE TABLE fs_entry (
     created INTEGER NOT NULL,
     modified INTEGER NOT NULL,
     file_id BLOB NOT NULL,
-    -- Four 16-bit parts packed into one integer, most significant first.
-    version INTEGER,
+    -- NULL: the version was not read. Empty: read, and there is no version resource.
+    -- 16 bytes: the file version, then the product version, four 16-bit parts each,
+    -- most significant first.
+    versions BLOB,
     -- NOT NULL marks a link; '' when its target is unknown. TEXT or BLOB like entry.name.
     link_target,
     PRIMARY KEY (snapshot_id, idx)
@@ -142,7 +165,7 @@ impl From<rusqlite::Error> for StoreError {
 #[derive(Clone, Debug)]
 pub struct SnapshotInfo {
     pub id: i64,
-    /// When the snapshot was saved, as Unix time in milliseconds.
+    /// When the snapshot was started, as Unix time in milliseconds.
     pub taken_at: i64,
     pub comment: Option<String>,
 }
@@ -172,6 +195,87 @@ impl ProfileSettings {
                 folders: Vec::new(),
                 exclusions: DEFAULT_EXCLUSIONS.iter().map(|p| p.to_string()).collect(),
             },
+        }
+    }
+}
+
+/// Why a folder of the profile could not be read for a snapshot.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum Unavailable {
+    /// The folder is on a volume other than NTFS; holds the file system's name.
+    NotNtfs(String),
+    /// The folder is on a network share.
+    Network,
+    /// The folder or its volume could not be reached: a Windows error code.
+    Error(i32),
+}
+
+/// What a snapshot holds for one folder of the profile.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum FolderState {
+    /// The folder was scanned: its tree is in the snapshot, and the file IDs of its
+    /// entries are unique within the volume with this serial number.
+    Scanned { volume_serial: u64 },
+    /// The folder was not on the disk, though its volume was. A comparison takes it as
+    /// empty, so what it used to hold shows as deleted.
+    Missing,
+    /// The folder could not be read, for this reason. A comparison knows nothing about
+    /// what it holds.
+    Unavailable(Unavailable),
+}
+
+/// A folder of a saved snapshot: the profile's folder and what the snapshot holds for it.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct SnapshotFolder {
+    pub path: PathBuf,
+    pub state: FolderState,
+}
+
+/// An exclusion a snapshot was taken with: the pattern as written, and as it applied.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct SnapshotExclusion {
+    pub pattern: String,
+    /// The pattern as it applied (see [`crate::exclude::Expanded`]), or `None` when it did
+    /// not apply.
+    pub applied: Option<String>,
+}
+
+/// A folder of the profile as its scan collected it, to be saved.
+#[derive(Debug)]
+pub struct FolderSnapshot {
+    pub path: PathBuf,
+    pub state: FolderState,
+    /// The tree, laid out like [`crate::scan::Scan::entries`]; empty unless scanned.
+    pub entries: Vec<Entry>,
+}
+
+/// A snapshot to save: what the scans of the profile's folders collected.
+#[derive(Debug)]
+pub struct Snapshot {
+    /// When the snapshot was started, as Unix time in milliseconds.
+    pub taken_at: i64,
+    pub comment: Option<String>,
+    pub folders: Vec<FolderSnapshot>,
+    pub exclusions: Vec<SnapshotExclusion>,
+}
+
+impl Snapshot {
+    /// A snapshot of one scanned tree, whose root names the folder, with no comment and
+    /// no exclusions, started now; for tests and benchmarks.
+    pub fn of_tree(entries: Vec<Entry>) -> Snapshot {
+        let folders = match entries.first() {
+            Some(root) => vec![FolderSnapshot {
+                path: PathBuf::from(&*root.name),
+                state: FolderState::Scanned { volume_serial: 0 },
+                entries,
+            }],
+            None => Vec::new(),
+        };
+        Snapshot {
+            taken_at: now_millis(),
+            comment: None,
+            folders,
+            exclusions: Vec::new(),
         }
     }
 }
@@ -278,108 +382,201 @@ impl Store {
         Ok(())
     }
 
-    /// The folders and exclusions a snapshot was taken with; empty for a snapshot that
-    /// does not exist.
+    /// The folders and exclusions a snapshot was taken with, as written; empty for a
+    /// snapshot that does not exist.
     pub fn snapshot_scope(&self, id: i64) -> Result<Scope, StoreError> {
-        let mut stmt = self
-            .conn
-            .prepare("SELECT path FROM snapshot_folder WHERE snapshot_id = ?1 ORDER BY position")?;
-        let folders = stmt
-            .query_map([id], |r| Ok(PathBuf::from(os_from_sql(r.get_ref(0)?)?)))?
-            .collect::<Result<_, _>>()?;
-        let mut stmt = self.conn.prepare(
-            "SELECT pattern FROM snapshot_exclusion WHERE snapshot_id = ?1 ORDER BY position",
-        )?;
-        let exclusions = stmt
-            .query_map([id], |r| r.get(0))?
-            .collect::<Result<_, _>>()?;
+        let folders = self
+            .snapshot_folders(id)?
+            .into_iter()
+            .map(|f| f.path)
+            .collect();
+        let exclusions = self
+            .snapshot_exclusions(id)?
+            .into_iter()
+            .map(|e| e.pattern)
+            .collect();
         Ok(Scope {
             folders,
             exclusions,
         })
     }
 
-    /// Saves a file system snapshot taken with `scope` in one transaction and returns its
-    /// id. `entries` is a tree laid out like [`crate::scan::Scan::entries`]. Setting
-    /// `cancel` stops with [`StoreError::Cancelled`] and leaves nothing of the snapshot
-    /// behind.
-    pub fn save(
-        &mut self,
-        scope: &Scope,
-        comment: Option<&str>,
-        entries: &[Entry],
-        cancel: &AtomicBool,
-    ) -> Result<i64, StoreError> {
+    /// The folders of a snapshot with what it holds for each, in the profile's order;
+    /// empty for a snapshot that does not exist.
+    pub fn snapshot_folders(&self, id: i64) -> Result<Vec<SnapshotFolder>, StoreError> {
+        let mut stmt = self.conn.prepare(
+            "SELECT path, state, detail, volume_serial FROM snapshot_folder
+             WHERE snapshot_id = ?1 ORDER BY position",
+        )?;
+        let rows = stmt.query_map([id], |r| {
+            let state = match r.get::<_, i64>(1)? {
+                STATE_SCANNED => FolderState::Scanned {
+                    volume_serial: r.get::<_, i64>(3)? as u64,
+                },
+                STATE_MISSING => FolderState::Missing,
+                STATE_NOT_NTFS => FolderState::Unavailable(Unavailable::NotNtfs(r.get(2)?)),
+                STATE_NETWORK => FolderState::Unavailable(Unavailable::Network),
+                STATE_ERROR => FolderState::Unavailable(Unavailable::Error(r.get(2)?)),
+                other => {
+                    return Err(rusqlite::Error::FromSqlConversionFailure(
+                        1,
+                        rusqlite::types::Type::Integer,
+                        format!("unknown folder state {other}").into(),
+                    ));
+                }
+            };
+            Ok(SnapshotFolder {
+                path: PathBuf::from(os_from_sql(r.get_ref(0)?)?),
+                state,
+            })
+        })?;
+        Ok(rows.collect::<Result<_, _>>()?)
+    }
+
+    /// The exclusions a snapshot was taken with, as written and as they applied.
+    pub fn snapshot_exclusions(&self, id: i64) -> Result<Vec<SnapshotExclusion>, StoreError> {
+        let mut stmt = self.conn.prepare(
+            "SELECT pattern, applied FROM snapshot_exclusion WHERE snapshot_id = ?1
+             ORDER BY position",
+        )?;
+        let rows = stmt.query_map([id], |r| {
+            Ok(SnapshotExclusion {
+                pattern: r.get(0)?,
+                applied: r.get(1)?,
+            })
+        })?;
+        Ok(rows.collect::<Result<_, _>>()?)
+    }
+
+    /// Saves a snapshot in one transaction and returns its id. Setting `cancel` stops
+    /// with [`StoreError::Cancelled`] and leaves nothing of the snapshot behind.
+    pub fn save(&mut self, snapshot: &Snapshot, cancel: &AtomicBool) -> Result<i64, StoreError> {
         let tx = self.conn.transaction()?;
         tx.execute(
             "INSERT INTO snapshot (taken_at, comment) VALUES (?1, ?2)",
-            params![now_millis(), comment],
+            params![snapshot.taken_at, snapshot.comment],
         )?;
         let id = tx.last_insert_rowid();
-        for (position, folder) in scope.folders.iter().enumerate() {
-            tx.execute(
-                "INSERT INTO snapshot_folder VALUES (?1, ?2, ?3)",
-                params![id, position as i64, os_to_sql(folder.as_os_str())],
-            )?;
-        }
-        for (position, pattern) in scope.exclusions.iter().enumerate() {
-            tx.execute(
-                "INSERT INTO snapshot_exclusion VALUES (?1, ?2, ?3)",
-                params![id, position as i64, pattern],
-            )?;
-        }
         {
+            let mut insert_folder =
+                tx.prepare("INSERT INTO snapshot_folder VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8)")?;
             let mut insert_entry =
                 tx.prepare("INSERT INTO entry VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7)")?;
             let mut insert_fs =
                 tx.prepare("INSERT INTO fs_entry VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9)")?;
-            for (idx, e) in entries.iter().enumerate() {
-                if idx % CANCEL_CHECK == 0 && cancel.load(Ordering::Relaxed) {
-                    return Err(StoreError::Cancelled);
-                }
-                let kind = match e.kind {
-                    EntryKind::Dir => KIND_CONTAINER,
-                    EntryKind::File | EntryKind::Link => KIND_ITEM,
+            let mut base = 0usize;
+            let mut written = 0usize;
+            for (position, folder) in snapshot.folders.iter().enumerate() {
+                let (state, detail, scanned) = match &folder.state {
+                    FolderState::Scanned { volume_serial } => (
+                        STATE_SCANNED,
+                        Value::Null,
+                        Some((
+                            *volume_serial as i64,
+                            base as i64,
+                            folder.entries.len() as i64,
+                        )),
+                    ),
+                    FolderState::Missing => (STATE_MISSING, Value::Null, None),
+                    FolderState::Unavailable(Unavailable::NotNtfs(fs)) => {
+                        (STATE_NOT_NTFS, Value::Text(fs.clone()), None)
+                    }
+                    FolderState::Unavailable(Unavailable::Network) => {
+                        (STATE_NETWORK, Value::Null, None)
+                    }
+                    FolderState::Unavailable(Unavailable::Error(code)) => {
+                        (STATE_ERROR, Value::Integer(i64::from(*code)), None)
+                    }
                 };
-                insert_entry.execute(params![
+                let (volume_serial, root, count) = match scanned {
+                    Some((serial, root, count)) => (Some(serial), Some(root), Some(count)),
+                    None => (None, None, None),
+                };
+                insert_folder.execute(params![
                     id,
-                    SOURCE_FS,
-                    idx as i64,
-                    e.parent,
-                    os_to_sql(&e.name),
-                    kind,
-                    e.inaccessible,
+                    position as i64,
+                    os_to_sql(folder.path.as_os_str()),
+                    state,
+                    detail,
+                    volume_serial,
+                    root,
+                    count,
                 ])?;
-                let link_target = (e.kind == EntryKind::Link)
-                    .then(|| os_to_sql(e.link_target.as_deref().unwrap_or_default()));
-                insert_fs.execute(params![
-                    id,
-                    idx as i64,
-                    e.attributes,
-                    e.size as i64,
-                    e.created,
-                    e.modified,
-                    &e.file_id.0[..],
-                    e.version.map(pack_version),
-                    link_target,
-                ])?;
+                if scanned.is_none() {
+                    continue;
+                }
+                for (i, e) in folder.entries.iter().enumerate() {
+                    if written.is_multiple_of(CANCEL_CHECK) && cancel.load(Ordering::Relaxed) {
+                        return Err(StoreError::Cancelled);
+                    }
+                    written += 1;
+                    let idx = (base + i) as i64;
+                    let kind = match e.kind {
+                        EntryKind::Dir => KIND_CONTAINER,
+                        EntryKind::File | EntryKind::Link => KIND_ITEM,
+                    };
+                    insert_entry.execute(params![
+                        id,
+                        SOURCE_FS,
+                        idx,
+                        e.parent.map(|p| p as i64 + base as i64),
+                        os_to_sql(&e.name),
+                        kind,
+                        e.inaccessible,
+                    ])?;
+                    let link_target = (e.kind == EntryKind::Link)
+                        .then(|| os_to_sql(e.link_target.as_deref().unwrap_or_default()));
+                    insert_fs.execute(params![
+                        id,
+                        idx,
+                        e.attributes,
+                        e.size as i64,
+                        e.created,
+                        e.modified,
+                        &e.file_id.0[..],
+                        versions_to_sql(e.version),
+                        link_target,
+                    ])?;
+                }
+                base += folder.entries.len();
             }
+        }
+        for (position, exclusion) in snapshot.exclusions.iter().enumerate() {
+            tx.execute(
+                "INSERT INTO snapshot_exclusion VALUES (?1, ?2, ?3, ?4)",
+                params![id, position as i64, exclusion.pattern, exclusion.applied],
+            )?;
         }
         tx.commit()?;
         Ok(id)
     }
 
-    /// Loads the entries of a file system snapshot, in the order they were saved. A
-    /// snapshot that does not exist has no entries.
-    pub fn load(&self, id: i64) -> Result<Vec<Entry>, StoreError> {
+    /// Loads the tree of the folder at `position` of a snapshot, laid out like
+    /// [`crate::scan::Scan::entries`]: the root first, with parents as indices into the
+    /// result. Empty for a folder that was not scanned, or a snapshot that does not exist.
+    pub fn load_folder(&self, id: i64, position: usize) -> Result<Vec<Entry>, StoreError> {
+        let range: Option<(i64, i64)> = self
+            .conn
+            .query_row(
+                "SELECT root, entries FROM snapshot_folder WHERE snapshot_id = ?1 AND position = ?2",
+                params![id, position as i64],
+                |r| Ok(r.get::<_, Option<i64>>(0)?.zip(r.get::<_, Option<i64>>(1)?)),
+            )
+            .or_else(|e| match e {
+                rusqlite::Error::QueryReturnedNoRows => Ok(None),
+                e => Err(e),
+            })?;
+        let Some((root, count)) = range else {
+            return Ok(Vec::new());
+        };
         let mut stmt = self.conn.prepare(
             "SELECT e.parent, e.name, e.kind, e.inaccessible, f.attributes, f.size, f.created,
-                    f.modified, f.file_id, f.version, f.link_target
+                    f.modified, f.file_id, f.versions, f.link_target
              FROM entry e JOIN fs_entry f ON f.snapshot_id = e.snapshot_id AND f.idx = e.idx
-             WHERE e.snapshot_id = ?1 AND e.source = ?2
+             WHERE e.snapshot_id = ?1 AND e.source = ?2 AND e.idx >= ?3 AND e.idx < ?4
              ORDER BY e.idx",
         )?;
-        let rows = stmt.query_map(params![id, SOURCE_FS], |r| {
+        let rows = stmt.query_map(params![id, SOURCE_FS, root, root + count], |r| {
             let link_target = match r.get_ref(10)? {
                 ValueRef::Null => None,
                 v => Some(os_from_sql(v)?),
@@ -397,7 +594,7 @@ impl Store {
                 .try_into()
                 .map_err(|e| FromSqlError::Other(Box::new(e)))?;
             Ok(Entry {
-                parent: r.get(0)?,
+                parent: r.get::<_, Option<i64>>(0)?.map(|p| (p - root) as u32),
                 name: os_from_sql(r.get_ref(1)?)?.into_boxed_os_str(),
                 kind,
                 inaccessible: r.get(3)?,
@@ -406,13 +603,17 @@ impl Store {
                 created: r.get(6)?,
                 modified: r.get(7)?,
                 file_id: FileId(file_id),
-                version: r.get::<_, Option<i64>>(9)?.map(unpack_version),
+                version: versions_from_sql(r.get_ref(9)?)?,
                 link_target: link_target
                     .filter(|t| !t.is_empty())
                     .map(OsString::into_boxed_os_str),
             })
         })?;
-        Ok(rows.collect::<Result<_, _>>()?)
+        let mut entries = Vec::with_capacity(count as usize);
+        for row in rows {
+            entries.push(row?);
+        }
+        Ok(entries)
     }
 
     /// Deletes a snapshot with all its entries. The freed space stays in the database
@@ -478,7 +679,8 @@ fn write_scope(tx: &Transaction<'_>, settings: &ProfileSettings) -> Result<(), S
     Ok(())
 }
 
-fn now_millis() -> i64 {
+/// Now, as Unix time in milliseconds: the time a snapshot records.
+pub fn now_millis() -> i64 {
     SystemTime::now()
         .duration_since(UNIX_EPOCH)
         .map_or(0, |d| d.as_millis() as i64)
@@ -511,14 +713,38 @@ fn os_from_sql(value: ValueRef<'_>) -> Result<OsString, FromSqlError> {
     }
 }
 
-fn pack_version(v: [u16; 4]) -> i64 {
-    v.iter()
-        .fold(0u64, |acc, &part| acc << 16 | u64::from(part)) as i64
+/// The `fs_entry.versions` value: NULL, empty, or the two versions in 16 bytes.
+fn versions_to_sql(version: VersionInfo) -> Option<Vec<u8>> {
+    match version {
+        VersionInfo::NotRead => None,
+        VersionInfo::None => Some(Vec::new()),
+        VersionInfo::Some(v) => Some(
+            v.file
+                .iter()
+                .chain(&v.product)
+                .flat_map(|part| part.to_be_bytes())
+                .collect(),
+        ),
+    }
 }
 
-fn unpack_version(packed: i64) -> [u16; 4] {
-    let packed = packed as u64;
-    [48, 32, 16, 0].map(|shift| (packed >> shift) as u16)
+fn versions_from_sql(value: ValueRef<'_>) -> Result<VersionInfo, FromSqlError> {
+    let parts = |bytes: &[u8]| -> [u16; 4] {
+        let mut parts = [0u16; 4];
+        for (part, pair) in parts.iter_mut().zip(bytes.as_chunks::<2>().0) {
+            *part = u16::from_be_bytes(*pair);
+        }
+        parts
+    };
+    match value {
+        ValueRef::Null => Ok(VersionInfo::NotRead),
+        ValueRef::Blob([]) => Ok(VersionInfo::None),
+        ValueRef::Blob(bytes) if bytes.len() == 16 => Ok(VersionInfo::Some(Version {
+            file: parts(&bytes[..8]),
+            product: parts(&bytes[8..]),
+        })),
+        _ => Err(FromSqlError::InvalidType),
+    }
 }
 
 #[cfg(test)]

@@ -102,9 +102,15 @@ pub enum Reason {
     NoProfiles,
     NoSnapshots,
     NoDifference,
+    /// A snapshot is being taken, and only one goes at a time.
+    SnapshotRunning,
+    /// A snapshot of the open profile is being taken, so the profile cannot change.
+    SnapshotOfThisProfile,
     SnapshotNotRunning,
     ComparisonNotRunning,
     CompactionNotRunning,
+    /// revisor already runs as administrator.
+    AlreadyAdmin,
     /// The command's own task has not been done yet.
     NotYet,
 }
@@ -191,6 +197,23 @@ fn require(condition: bool, reason: Reason) -> Result<(), Reason> {
 
 fn has_profile(state: &AppState) -> Result<(), Reason> {
     state.profile.as_ref().map(|_| ()).ok_or(Reason::NoProfiles)
+}
+
+/// The open profile can be changed or deleted unless it is being snapshotted (TASK-8).
+fn profile_free(state: &AppState) -> Result<(), Reason> {
+    has_profile(state)?;
+    require(
+        !state.snapshotting_open_profile,
+        Reason::SnapshotOfThisProfile,
+    )
+}
+
+fn no_snapshot_running(state: &AppState) -> Result<(), Reason> {
+    require(!state.snapshot_running, Reason::SnapshotRunning)
+}
+
+fn not_elevated(state: &AppState) -> Result<(), Reason> {
+    require(!state.elevated, Reason::AlreadyAdmin)
 }
 
 fn has_snapshots(state: &AppState) -> Result<(), Reason> {
@@ -289,16 +312,19 @@ pub static COMMANDS: &[Command] = &[
     },
     Command {
         ellipsis: true,
-        available: has_profile,
+        available: profile_free,
         ..item(CommandId::EditProfile, place(MenuId::File, 0), b'E')
     },
     Command {
         ellipsis: true,
-        available: has_profile,
+        available: profile_free,
         ..item(CommandId::DeleteProfile, place(MenuId::File, 0), b'D')
     },
     item(CommandId::Settings, place(MenuId::File, 1), b'S'),
-    item(CommandId::RestartAsAdmin, place(MenuId::File, 1), b'R'),
+    Command {
+        available: not_elevated,
+        ..item(CommandId::RestartAsAdmin, place(MenuId::File, 1), b'R')
+    },
     Command {
         shortcut: Some(key(Key::F(4)).alt()),
         available: always,
@@ -307,16 +333,19 @@ pub static COMMANDS: &[Command] = &[
     // Snapshot
     Command {
         shortcut: Some(key(Key::F(5))),
-        // Needs a profile, and then the snapshot itself (TASK-8).
+        // Needs a profile, and only one snapshot goes at a time (TASK-8).
         available: |s| {
             has_profile(s)?;
-            not_yet(s)
+            no_snapshot_running(s)
         },
         ..item(CommandId::TakeSnapshot, place(MenuId::Snapshot, 0), b'T')
     },
     Command {
         shortcut: Some(key(Key::F(5)).ctrl()),
-        available: has_snapshots,
+        available: |s| {
+            has_snapshots(s)?;
+            not_yet(s)
+        },
         ..item(
             CommandId::SnapshotAndCompare,
             place(MenuId::Snapshot, 0),
@@ -330,7 +359,10 @@ pub static COMMANDS: &[Command] = &[
             pane: Pane::Snapshots,
             group: 1,
         }),
-        available: has_snapshots,
+        available: |s| {
+            has_snapshots(s)?;
+            not_yet(s)
+        },
         ..item(CommandId::Comment, place(MenuId::Snapshot, 1), b'C')
     },
     Command {
@@ -340,7 +372,10 @@ pub static COMMANDS: &[Command] = &[
             pane: Pane::Snapshots,
             group: 2,
         }),
-        available: has_snapshots,
+        available: |s| {
+            has_snapshots(s)?;
+            not_yet(s)
+        },
         ..item(CommandId::DeleteSnapshots, place(MenuId::Snapshot, 1), b'D')
     },
     Command {
@@ -364,7 +399,10 @@ pub static COMMANDS: &[Command] = &[
             pane: Pane::Snapshots,
             group: 0,
         }),
-        available: has_snapshots,
+        available: |s| {
+            has_snapshots(s)?;
+            not_yet(s)
+        },
         ..item(
             CommandId::CompareWithPrevious,
             place(MenuId::Compare, 0),
@@ -378,7 +416,10 @@ pub static COMMANDS: &[Command] = &[
             pane: Pane::Snapshots,
             group: 0,
         }),
-        available: has_snapshots,
+        available: |s| {
+            has_snapshots(s)?;
+            not_yet(s)
+        },
         ..item(CommandId::CompareWith, place(MenuId::Compare, 0), b'W')
     },
     Command {
@@ -593,15 +634,19 @@ mod tests {
 
     #[test]
     fn outside_the_demo_only_the_commands_of_finished_tasks_run() {
+        // A profile with snapshots, as a standard user, with nothing running.
         let state = AppState {
             profile: Some("Дім".into()),
+            snapshots: 2,
             ..AppState::new()
         };
         let finished = [
             CommandId::NewProfile,
             CommandId::EditProfile,
             CommandId::DeleteProfile,
+            CommandId::RestartAsAdmin,
             CommandId::Exit,
+            CommandId::TakeSnapshot,
             CommandId::KeyboardShortcuts,
             CommandId::About,
         ];
@@ -609,13 +654,58 @@ mod tests {
             let available = (c.available)(&state);
             if finished.contains(&c.id) {
                 assert_eq!(available, Ok(()), "{:?}", c.id);
+            } else if c.id == CommandId::CancelSnapshot {
+                assert_eq!(available, Err(Reason::SnapshotNotRunning));
             } else {
                 assert!(available.is_err(), "{:?} runs before its task", c.id);
             }
         }
         let take = command(CommandId::TakeSnapshot).available;
-        assert_eq!(take(&state), Err(Reason::NotYet));
         assert_eq!(take(&AppState::new()), Err(Reason::NoProfiles));
+    }
+
+    #[test]
+    fn one_snapshot_at_a_time_and_its_profile_stays_as_it_is() {
+        let running = AppState {
+            profile: Some("Дім".into()),
+            snapshot_running: true,
+            snapshotting_open_profile: true,
+            ..AppState::new()
+        };
+        let available = |id, state: &AppState| (command(id).available)(state);
+        assert_eq!(
+            available(CommandId::TakeSnapshot, &running),
+            Err(Reason::SnapshotRunning)
+        );
+        assert_eq!(available(CommandId::CancelSnapshot, &running), Ok(()));
+        for id in [CommandId::EditProfile, CommandId::DeleteProfile] {
+            assert_eq!(
+                available(id, &running),
+                Err(Reason::SnapshotOfThisProfile),
+                "{id:?}"
+            );
+        }
+        // Another profile is open meanwhile: it can change, but no second snapshot starts.
+        let other_open = AppState {
+            snapshotting_open_profile: false,
+            ..running.clone()
+        };
+        assert_eq!(available(CommandId::EditProfile, &other_open), Ok(()));
+        assert_eq!(
+            available(CommandId::TakeSnapshot, &other_open),
+            Err(Reason::SnapshotRunning)
+        );
+    }
+
+    #[test]
+    fn restarting_as_administrator_is_for_standard_users() {
+        let restart = command(CommandId::RestartAsAdmin).available;
+        assert_eq!(restart(&AppState::new()), Ok(()));
+        let admin = AppState {
+            elevated: true,
+            ..AppState::new()
+        };
+        assert_eq!(restart(&admin), Err(Reason::AlreadyAdmin));
     }
 
     #[test]

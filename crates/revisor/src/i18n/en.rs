@@ -8,6 +8,16 @@ use crate::commands::{CommandId, MenuId, Pane, Reason, SubmenuId};
 
 pub struct En;
 
+impl En {
+    /// "1 entry", "12,345 entries".
+    fn entries(&self, entries: u64, entries_text: &str) -> String {
+        match category(Lang::En, entries.into()) {
+            Category::One => format!("{entries_text} entry"),
+            _ => format!("{entries_text} entries"),
+        }
+    }
+}
+
 impl Strings for En {
     fn lang(&self) -> Lang {
         Lang::En
@@ -72,9 +82,12 @@ impl Strings for En {
             Reason::NoProfiles => "there are no profiles yet",
             Reason::NoSnapshots => "there are no snapshots yet",
             Reason::NoDifference => "there is no difference yet",
+            Reason::SnapshotRunning => "a snapshot is being taken",
+            Reason::SnapshotOfThisProfile => "a snapshot of this profile is being taken",
             Reason::SnapshotNotRunning => "no snapshot is being taken",
             Reason::ComparisonNotRunning => "no comparison is running",
             Reason::CompactionNotRunning => "no compaction is running",
+            Reason::AlreadyAdmin => "revisor is already running as administrator",
             Reason::NotYet => "this version of revisor does not have this command yet",
         }
     }
@@ -306,12 +319,106 @@ impl Strings for En {
             Failure::NotAProfile => {
                 "this is not a revisor profile file: move it out of the folder of profiles".into()
             }
+            Failure::Cancelled => "the action was cancelled".into(),
             Failure::Other {
                 text,
                 code: Some(code),
             } => format!("{text} (code {code})"),
             Failure::Other { text, code: None } => text.clone(),
         }
+    }
+
+    fn progress(&self) -> &'static str {
+        "Progress"
+    }
+
+    fn snapshot_progress(&self, entries: u64, entries_text: &str, folder: &str) -> String {
+        let entries = self.entries(entries, entries_text);
+        if folder.is_empty() {
+            entries
+        } else {
+            format!("{entries}, reading {folder}")
+        }
+    }
+
+    fn snapshot_saving(&self, entries: u64, entries_text: &str) -> String {
+        format!(
+            "Saving the snapshot: {}…",
+            self.entries(entries, entries_text)
+        )
+    }
+
+    fn snapshot_started(&self) -> &'static str {
+        "Snapshot started."
+    }
+
+    fn snapshot_saved(&self, entries: u64, entries_text: &str) -> String {
+        format!("Snapshot saved: {}.", self.entries(entries, entries_text))
+    }
+
+    fn entries_inaccessible(&self, entries_text: &str) -> String {
+        format!("Inaccessible entries: {entries_text}.")
+    }
+
+    fn folders_not_found(&self, folders: &[(String, String)]) -> String {
+        let named: Vec<String> = folders
+            .iter()
+            .map(|(path, why)| format!("“{path}” ({why})"))
+            .collect();
+        format!("Folders not found: {}.", named.join("; "))
+    }
+
+    fn folder_missing(&self) -> &'static str {
+        "the folder is missing"
+    }
+
+    fn folder_volume_not_ntfs(&self, file_system: &str) -> String {
+        format!("the folder is on a {file_system} volume, not NTFS")
+    }
+
+    fn folder_volume_network(&self) -> &'static str {
+        "the folder is on a network share"
+    }
+
+    fn folder_unreachable(&self, reason: &str) -> String {
+        format!("the folder cannot be read: {reason}")
+    }
+
+    fn snapshot_cancelled(&self) -> &'static str {
+        "Snapshot cancelled."
+    }
+
+    fn snapshot_failed(&self, reason: &str) -> String {
+        format!("The snapshot was not saved: {reason}.")
+    }
+
+    fn snapshot_stopped(&self) -> &'static str {
+        "the snapshot stopped unexpectedly"
+    }
+
+    fn restart_question(&self, denied_text: &str) -> String {
+        format!(
+            "Entries inaccessible because of access rights: {denied_text}. Restart revisor as \
+             administrator? It will open this profile again; take a new snapshot then, and \
+             this one stays in the list."
+        )
+    }
+
+    fn restart(&self) -> &'static str {
+        "Restart"
+    }
+
+    fn close_during_snapshot(&self) -> &'static str {
+        "A snapshot is being taken, and closing revisor cancels it. Close revisor?"
+    }
+
+    fn restart_during_snapshot(&self) -> &'static str {
+        "A snapshot is being taken, and restarting revisor cancels it. Restart as \
+         administrator?"
+    }
+
+    fn restart_failed(&self, reason: &str) -> String {
+        format!("revisor was not restarted: {reason}.")
     }
 
     fn demo_snapshot(&self, n: usize) -> String {

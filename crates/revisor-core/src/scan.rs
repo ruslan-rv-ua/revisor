@@ -22,6 +22,13 @@ use crate::exclude::{Branch, Exclusions};
 const FILE_ATTRIBUTE_ARCHIVE: u32 = 0x20;
 const FILE_ATTRIBUTE_DIRECTORY: u32 = 0x10;
 const FILE_ATTRIBUTE_REPARSE_POINT: u32 = 0x400;
+/// The data of the file is not (all) on the disk: it is kept offline, or a cloud sync
+/// engine recalls it on open or on reading. Reading the file would download it.
+const FILE_ATTRIBUTE_OFFLINE: u32 = 0x1000;
+const FILE_ATTRIBUTE_RECALL_ON_OPEN: u32 = 0x4_0000;
+const FILE_ATTRIBUTE_RECALL_ON_DATA_ACCESS: u32 = 0x40_0000;
+const DATA_NOT_ON_DISK: u32 =
+    FILE_ATTRIBUTE_OFFLINE | FILE_ATTRIBUTE_RECALL_ON_OPEN | FILE_ATTRIBUTE_RECALL_ON_DATA_ACCESS;
 /// How often idle workers wake up to notice cancellation.
 const IDLE_WAIT: Duration = Duration::from_millis(50);
 
@@ -38,6 +45,28 @@ pub enum EntryKind {
     Link,
 }
 
+/// The numeric versions in the version resource of an exe or dll.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+pub struct Version {
+    /// The version of the file itself.
+    pub file: [u16; 4],
+    /// The version of the product the file ships with.
+    pub product: [u16; 4],
+}
+
+/// What a snapshot knows about the version of a file.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Default)]
+pub enum VersionInfo {
+    /// The version was not read: the file is not an exe or dll, its content could not be
+    /// read (no access, or locked by another program), or its data is not on the disk.
+    /// Versions are compared only when both snapshots read them.
+    #[default]
+    NotRead,
+    /// The file was read and has no version resource.
+    None,
+    Some(Version),
+}
+
 /// One node of the scanned tree.
 #[derive(Clone, Debug)]
 pub struct Entry {
@@ -47,8 +76,7 @@ pub struct Entry {
     pub name: Box<OsStr>,
     pub kind: EntryKind,
     /// The entry exists but could not be read: a folder that cannot be listed (or was
-    /// listed only in part), a link whose target cannot be read, an exe or dll whose
-    /// version cannot be read.
+    /// listed only in part), or a link whose target cannot be read.
     pub inaccessible: bool,
     /// Win32 `FILE_ATTRIBUTE_*` flags.
     pub attributes: u32,
@@ -59,8 +87,7 @@ pub struct Entry {
     /// Last write time as FILETIME.
     pub modified: i64,
     pub file_id: FileId,
-    /// Numeric file version of an exe or dll that has a version resource.
-    pub version: Option<[u16; 4]>,
+    pub version: VersionInfo,
     /// Where a link points, as stored in the reparse point.
     pub link_target: Option<Box<OsStr>>,
 }
@@ -94,7 +121,13 @@ pub struct ScanStats {
     pub files: u64,
     pub links: u64,
     pub inaccessible: u64,
+    /// Inaccessible entries that access rights kept closed; an administrator may read them.
+    pub denied: u64,
+    /// Exe and dll files whose version was read, whether or not they have one.
     pub versions_read: u64,
+    /// Exe and dll files whose version could not be read, or was not read because their
+    /// data is not on the disk.
+    pub versions_unread: u64,
     /// Time spent reading versions, summed over all worker threads.
     pub version_time: Duration,
 }
@@ -105,6 +138,50 @@ pub struct ScanStats {
 pub struct Scan {
     pub entries: Vec<Entry>,
     pub stats: ScanStats,
+    /// The serial number of the volume the root is on; file IDs are unique within it.
+    pub volume_serial: u64,
+}
+
+/// What a running scan reports to whoever waits for it: how many entries it has
+/// collected and the folder it is reading. Shared with another thread, which reads it now
+/// and then; a snapshot of several folders passes the same one to each scan, so the count
+/// goes on.
+#[derive(Debug, Default)]
+pub struct Progress {
+    entries: AtomicU64,
+    folder: Mutex<PathBuf>,
+    saving: AtomicBool,
+}
+
+impl Progress {
+    /// How many entries have been collected so far.
+    pub fn entries(&self) -> u64 {
+        self.entries.load(Ordering::Relaxed)
+    }
+
+    /// The folder being read now, as a plain path.
+    pub fn folder(&self) -> PathBuf {
+        self.folder.lock().unwrap().clone()
+    }
+
+    /// Whether the scans are over and the snapshot is being saved.
+    pub fn saving(&self) -> bool {
+        self.saving.load(Ordering::Relaxed)
+    }
+
+    pub fn add(&self, entries: u64) {
+        self.entries.fetch_add(entries, Ordering::Relaxed);
+    }
+
+    pub fn set_saving(&self, saving: bool) {
+        self.saving.store(saving, Ordering::Relaxed);
+    }
+
+    fn set_folder(&self, folder: &Path) {
+        let mut current = self.folder.lock().unwrap();
+        current.clear();
+        current.push(plain(folder));
+    }
 }
 
 #[derive(Debug)]
@@ -125,9 +202,15 @@ impl fmt::Display for ScanError {
 
 impl std::error::Error for ScanError {}
 
-/// Scans the folder tree under `root`. Setting `cancel` stops the scan with
-/// [`ScanError::Cancelled`].
-pub fn scan(root: &Path, options: &ScanOptions, cancel: &AtomicBool) -> Result<Scan, ScanError> {
+/// Scans the folder tree under `root`, reporting to `progress` as it goes. Setting
+/// `cancel` stops the scan with [`ScanError::Cancelled`]. A root that is a junction or a
+/// symbolic link is read through its target.
+pub fn scan(
+    root: &Path,
+    options: &ScanOptions,
+    cancel: &AtomicBool,
+    progress: &Progress,
+) -> Result<Scan, ScanError> {
     let root_path = verbatim(root).map_err(ScanError::Root)?;
     let info = sys::open_dir(&root_path)
         .and_then(|dir| sys::dir_info(&dir))
@@ -148,9 +231,10 @@ pub fn scan(root: &Path, options: &ScanOptions, cancel: &AtomicBool) -> Result<S
         created: info.created,
         modified: info.modified,
         file_id: FileId(info.file_id),
-        version: None,
+        version: VersionInfo::NotRead,
         link_target: None,
     };
+    progress.add(1);
     // Path patterns name real locations, so the root is matched where it really is.
     let real_root = crate::folders::real_path(root).unwrap_or_else(|_| root.to_path_buf());
 
@@ -166,9 +250,12 @@ pub fn scan(root: &Path, options: &ScanOptions, cancel: &AtomicBool) -> Result<S
         }),
         wake: Condvar::new(),
         cancel,
+        progress,
         exclusions: &options.exclusions,
         read_versions: options.read_versions,
+        denied: AtomicU64::new(0),
         versions_read: AtomicU64::new(0),
+        versions_unread: AtomicU64::new(0),
         version_nanos: AtomicU64::new(0),
     };
     thread::scope(|s| {
@@ -183,7 +270,9 @@ pub fn scan(root: &Path, options: &ScanOptions, cancel: &AtomicBool) -> Result<S
 
     let entries = walker.entries.into_inner().unwrap();
     let mut stats = ScanStats {
+        denied: walker.denied.into_inner(),
         versions_read: walker.versions_read.into_inner(),
+        versions_unread: walker.versions_unread.into_inner(),
         version_time: Duration::from_nanos(walker.version_nanos.into_inner()),
         ..ScanStats::default()
     };
@@ -195,7 +284,11 @@ pub fn scan(root: &Path, options: &ScanOptions, cancel: &AtomicBool) -> Result<S
         }
         stats.inaccessible += u64::from(e.inaccessible);
     }
-    Ok(Scan { entries, stats })
+    Ok(Scan {
+        entries,
+        stats,
+        volume_serial: info.volume_serial,
+    })
 }
 
 /// Turns `path` into an absolute `\\?\` path, so paths longer than MAX_PATH work.
@@ -214,6 +307,22 @@ pub(crate) fn verbatim(path: &Path) -> io::Result<PathBuf> {
         r"\\?\".encode_utf16().chain(wide.iter().copied()).collect()
     };
     Ok(PathBuf::from(OsString::from_wide(&out)))
+}
+
+/// A `\\?\` path as a plain one, the way it is shown: `\\?\C:\x` is `C:\x`, and
+/// `\\?\UNC\server\share` is `\\server\share`.
+pub(crate) fn plain(path: &Path) -> PathBuf {
+    let wide: Vec<u16> = path.as_os_str().encode_wide().collect();
+    let strip = |prefix: &str| -> Option<&[u16]> {
+        let prefix: Vec<u16> = prefix.encode_utf16().collect();
+        wide.starts_with(&prefix).then(|| &wide[prefix.len()..])
+    };
+    let out: Vec<u16> = match (strip(r"\\?\UNC\"), strip(r"\\?\")) {
+        (Some(rest), _) => r"\\".encode_utf16().chain(rest.iter().copied()).collect(),
+        (None, Some(rest)) => rest.to_vec(),
+        (None, None) => return path.to_path_buf(),
+    };
+    PathBuf::from(OsString::from_wide(&out))
 }
 
 /// Builds a made-up tree of `count` entries laid out like a [`scan`] result, without
@@ -236,10 +345,22 @@ pub fn synthetic(count: usize) -> Vec<Entry> {
     };
     let mut make = |i: usize, parent: Option<u32>, kind: EntryKind| {
         let (name, attributes, size, version) = match kind {
-            EntryKind::Dir => (format!("folder {i:06}"), FILE_ATTRIBUTE_DIRECTORY, 0, None),
+            EntryKind::Dir => (
+                format!("folder {i:06}"),
+                FILE_ATTRIBUTE_DIRECTORY,
+                0,
+                VersionInfo::NotRead,
+            ),
             _ => {
                 let ext = EXTENSIONS[i % EXTENSIONS.len()];
-                let version = matches!(ext, "dll" | "exe").then(|| [10, 0, (i % 30_000) as u16, 1]);
+                let version = if matches!(ext, "dll" | "exe") {
+                    VersionInfo::Some(Version {
+                        file: [10, 0, (i % 30_000) as u16, 1],
+                        product: [10, 0, 0, 0],
+                    })
+                } else {
+                    VersionInfo::NotRead
+                };
                 (
                     format!("file {i:06}.{ext}"),
                     FILE_ATTRIBUTE_ARCHIVE,
@@ -310,30 +431,48 @@ struct Walker<'a> {
     queue: Mutex<Queue>,
     wake: Condvar,
     cancel: &'a AtomicBool,
+    progress: &'a Progress,
     exclusions: &'a Exclusions,
     read_versions: bool,
+    denied: AtomicU64,
     versions_read: AtomicU64,
+    versions_unread: AtomicU64,
     version_nanos: AtomicU64,
+}
+
+/// What listing one folder found.
+struct Listing {
+    /// The children, with their parent not yet set.
+    children: Vec<Entry>,
+    /// Child folders to descend into: position among the children, path and branch.
+    subdirs: Vec<(usize, PathBuf, Branch)>,
+    /// Why the listing failed, if it did.
+    failed: Option<io::Error>,
 }
 
 impl Walker<'_> {
     fn work(&self) {
         while let Some(job) = self.next_job() {
-            let (children, subdirs, failed) = self.list(&job);
+            self.progress.set_folder(&job.path);
+            let listing = self.list(&job);
+            if let Some(e) = &listing.failed {
+                self.note_denied(e);
+            }
+            self.progress.add(listing.children.len() as u64);
             let base = {
                 let mut entries = self.entries.lock().unwrap();
-                if failed {
+                if listing.failed.is_some() {
                     entries[job.index as usize].inaccessible = true;
                 }
                 let base = entries.len();
-                entries.extend(children.into_iter().map(|mut e| {
+                entries.extend(listing.children.into_iter().map(|mut e| {
                     e.parent = Some(job.index);
                     e
                 }));
                 base
             };
             let mut queue = self.queue.lock().unwrap();
-            for (offset, path, branch) in subdirs {
+            for (offset, path, branch) in listing.subdirs {
                 let index = u32::try_from(base + offset).expect("more than 4G entries");
                 queue.jobs.push(Job {
                     index,
@@ -364,15 +503,13 @@ impl Walker<'_> {
         }
     }
 
-    /// Lists one folder, leaving out the excluded children. Returns its children (parent
-    /// not yet set), the positions, paths and branches of child folders to descend into,
-    /// and whether the listing failed.
-    fn list(&self, job: &Job) -> (Vec<Entry>, Vec<(usize, PathBuf, Branch)>, bool) {
+    /// Lists one folder, leaving out the excluded children.
+    fn list(&self, job: &Job) -> Listing {
         let path = &job.path;
         let mut raw = Vec::new();
         let failed = sys::open_dir(path)
             .and_then(|dir| sys::list_dir(&dir, &mut raw))
-            .is_err();
+            .err();
 
         let mut children = Vec::with_capacity(raw.len());
         let mut subdirs = Vec::new();
@@ -398,7 +535,7 @@ impl Walker<'_> {
                 created: r.created,
                 modified: r.modified,
                 file_id: FileId(r.file_id),
-                version: None,
+                version: VersionInfo::NotRead,
                 link_target: None,
             };
             let full = || path.join(&*entry.name);
@@ -406,32 +543,57 @@ impl Walker<'_> {
                 EntryKind::Dir => subdirs.push((children.len(), full(), branch)),
                 EntryKind::Link => match sys::link_target(&full()) {
                     Ok(target) => entry.link_target = target.map(OsString::into_boxed_os_str),
-                    Err(_) => entry.inaccessible = true,
+                    Err(e) => {
+                        self.note_denied(&e);
+                        entry.inaccessible = true;
+                    }
                 },
                 EntryKind::File => {
-                    if self.read_versions
-                        && has_version_extension(&entry.name)
-                        && !self.cancel.load(Ordering::Relaxed)
-                    {
-                        let full = full();
-                        self.read_version(&full, &mut entry);
+                    if self.read_versions && has_version_extension(&entry.name) {
+                        if entry.attributes & DATA_NOT_ON_DISK != 0 {
+                            // Reading it would download it from the cloud.
+                            self.versions_unread.fetch_add(1, Ordering::Relaxed);
+                        } else if !self.cancel.load(Ordering::Relaxed) {
+                            let full = full();
+                            self.read_version(&full, &mut entry);
+                        }
                     }
                 }
             }
             children.push(entry);
         }
-        (children, subdirs, failed)
+        Listing {
+            children,
+            subdirs,
+            failed,
+        }
     }
 
     fn read_version(&self, path: &Path, entry: &mut Entry) {
         let started = Instant::now();
         match sys::file_version(path) {
-            Ok(version) => entry.version = version,
-            Err(_) => entry.inaccessible = true,
+            Ok(Some(version)) => {
+                entry.version = VersionInfo::Some(version);
+                self.versions_read.fetch_add(1, Ordering::Relaxed);
+            }
+            Ok(None) => {
+                entry.version = VersionInfo::None;
+                self.versions_read.fetch_add(1, Ordering::Relaxed);
+            }
+            // The file itself is still in the snapshot with all the listing knows.
+            Err(_) => {
+                self.versions_unread.fetch_add(1, Ordering::Relaxed);
+            }
         }
         let nanos = u64::try_from(started.elapsed().as_nanos()).unwrap_or(u64::MAX);
         self.version_nanos.fetch_add(nanos, Ordering::Relaxed);
-        self.versions_read.fetch_add(1, Ordering::Relaxed);
+    }
+
+    /// Counts an inaccessible entry that rights kept closed.
+    fn note_denied(&self, error: &io::Error) {
+        if sys::is_access_denied(error) {
+            self.denied.fetch_add(1, Ordering::Relaxed);
+        }
     }
 }
 

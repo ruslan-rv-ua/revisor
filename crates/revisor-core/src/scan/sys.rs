@@ -10,10 +10,7 @@ use std::os::windows::io::AsRawHandle;
 use std::path::Path;
 use std::ptr;
 
-use windows_sys::Win32::Foundation::{
-    ERROR_ACCESS_DENIED, ERROR_LOCK_VIOLATION, ERROR_NO_MORE_FILES, ERROR_SHARING_VIOLATION,
-    GetLastError,
-};
+use windows_sys::Win32::Foundation::{ERROR_ACCESS_DENIED, ERROR_NO_MORE_FILES, GetLastError};
 use windows_sys::Win32::Storage::FileSystem::{
     FILE_BASIC_INFO, FILE_FLAG_BACKUP_SEMANTICS, FILE_FLAG_OPEN_REPARSE_POINT,
     FILE_ID_EXTD_DIR_INFO, FILE_ID_INFO, FILE_LIST_DIRECTORY, FILE_READ_ATTRIBUTES,
@@ -27,10 +24,14 @@ use windows_sys::Win32::System::SystemServices::{
     IO_REPARSE_TAG_MOUNT_POINT, IO_REPARSE_TAG_SYMLINK,
 };
 
+use super::Version;
+
 const SHARE_ALL: u32 = FILE_SHARE_READ | FILE_SHARE_WRITE | FILE_SHARE_DELETE;
 const VS_FFI_SIGNATURE: u32 = 0xFEEF_04BD;
 /// Set on reparse tags whose point names another file system object (junction, symlink…).
 const NAME_SURROGATE_BIT: u32 = 0x2000_0000;
+/// A symbolic link made in WSL: a name surrogate whose data is a version and a UTF-8 path.
+const IO_REPARSE_TAG_LX_SYMLINK: u32 = 0xA000_001D;
 const LIST_BUFFER_BYTES: usize = 64 * 1024;
 
 /// Metadata of one directory entry, as the directory listing reports it.
@@ -50,18 +51,18 @@ pub struct DirInfo {
     pub created: i64,
     pub modified: i64,
     pub file_id: [u8; 16],
+    /// The serial number of the volume the directory is on.
+    pub volume_serial: u64,
 }
 
 pub fn is_name_surrogate(reparse_tag: u32) -> bool {
     reparse_tag & NAME_SURROGATE_BIT != 0
 }
 
-/// True for errors that mean "exists, but we may not read it".
-pub fn is_denied(err: &io::Error) -> bool {
-    matches!(
-        err.raw_os_error().map(|c| c as u32),
-        Some(ERROR_ACCESS_DENIED | ERROR_SHARING_VIOLATION | ERROR_LOCK_VIOLATION)
-    )
+/// True for the error that access rights give; an administrator with the backup privilege
+/// does not get it.
+pub fn is_access_denied(err: &io::Error) -> bool {
+    err.raw_os_error() == Some(ERROR_ACCESS_DENIED as i32)
 }
 
 pub fn open_dir(path: &Path) -> io::Result<File> {
@@ -85,6 +86,7 @@ pub fn dir_info(dir: &File) -> io::Result<DirInfo> {
         created: basic.CreationTime,
         modified: basic.LastWriteTime,
         file_id: id.FileId.Identifier,
+        volume_serial: id.VolumeSerialNumber,
     })
 }
 
@@ -190,7 +192,8 @@ pub fn link_target(path: &Path) -> io::Result<Option<OsString>> {
     Ok(parse_reparse_buffer(&buf[..returned as usize]))
 }
 
-/// Parses REPARSE_DATA_BUFFER (ntifs.h) for mount points and symbolic links.
+/// Parses REPARSE_DATA_BUFFER (ntifs.h) for mount points, symbolic links and WSL
+/// symbolic links.
 fn parse_reparse_buffer(buf: &[u8]) -> Option<OsString> {
     let u16_at = |at: usize| -> Option<u16> {
         buf.get(at..at + 2)
@@ -201,6 +204,12 @@ fn parse_reparse_buffer(buf: &[u8]) -> Option<OsString> {
     let path_buffer = match tag {
         IO_REPARSE_TAG_MOUNT_POINT => 16,
         IO_REPARSE_TAG_SYMLINK => 20, // plus a u32 Flags field
+        IO_REPARSE_TAG_LX_SYMLINK => {
+            // The data is a u32 version (2) followed by the target in UTF-8.
+            let len = usize::from(u16_at(4)?);
+            let target = buf.get(12..8 + len)?;
+            return Some(String::from_utf8_lossy(target).into_owned().into());
+        }
         _ => return None,
     };
     let name = |off_at: usize| -> Option<Vec<u16>> {
@@ -230,17 +239,17 @@ fn parse_reparse_buffer(buf: &[u8]) -> Option<OsString> {
     Some(OsString::from_wide(&target))
 }
 
-/// Reads the numeric file version (VS_FIXEDFILEINFO) of an exe or dll.
+/// Reads the numeric versions (VS_FIXEDFILEINFO) of an exe or dll.
 ///
-/// `Ok(None)` means the file has no version resource.
-pub fn file_version(path: &Path) -> io::Result<Option<[u16; 4]>> {
+/// `Ok(None)` means the file has no version resource; `Err` means it could not be read.
+pub fn file_version(path: &Path) -> io::Result<Option<Version>> {
     let wide = to_wide(path.as_os_str());
     let mut handle = 0u32;
     // SAFETY: `wide` is NUL-terminated.
     let size =
         unsafe { GetFileVersionInfoSizeExW(FILE_VER_GET_NEUTRAL, wide.as_ptr(), &mut handle) };
     if size == 0 {
-        return no_version();
+        return no_version(path);
     }
     let mut data = vec![0u8; size as usize];
     // SAFETY: `data` is writable for `size` bytes.
@@ -254,7 +263,7 @@ pub fn file_version(path: &Path) -> io::Result<Option<[u16; 4]>> {
         )
     };
     if ok == 0 {
-        return no_version();
+        return no_version(path);
     }
     let mut fixed: *mut c_void = ptr::null_mut();
     let mut len = 0u32;
@@ -269,19 +278,23 @@ pub fn file_version(path: &Path) -> io::Result<Option<[u16; 4]>> {
     if info.dwSignature != VS_FFI_SIGNATURE {
         return Ok(None);
     }
-    Ok(Some([
-        (info.dwFileVersionMS >> 16) as u16,
-        info.dwFileVersionMS as u16,
-        (info.dwFileVersionLS >> 16) as u16,
-        info.dwFileVersionLS as u16,
-    ]))
+    let parts = |ms: u32, ls: u32| [(ms >> 16) as u16, ms as u16, (ls >> 16) as u16, ls as u16];
+    Ok(Some(Version {
+        file: parts(info.dwFileVersionMS, info.dwFileVersionLS),
+        product: parts(info.dwProductVersionMS, info.dwProductVersionLS),
+    }))
 }
 
-/// Maps the last error of a failed version call: denial is an error, anything else
-/// (no resource, not a PE file…) means "no version".
-fn no_version() -> io::Result<Option<[u16; 4]>> {
-    let err = io::Error::last_os_error();
-    if is_denied(&err) { Err(err) } else { Ok(None) }
+/// Tells a file without a version resource from one that could not be read. The version
+/// calls report a file they cannot open (locked by another program, or closed by rights)
+/// as one without a resource section, so the file is opened for reading to see which it
+/// is: readable means there is no version, and the error otherwise says why.
+fn no_version(path: &Path) -> io::Result<Option<Version>> {
+    OpenOptions::new()
+        .read(true)
+        .share_mode(SHARE_ALL)
+        .open(path)
+        .map(|_| None)
 }
 
 fn to_wide(s: &OsStr) -> Vec<u16> {
@@ -327,6 +340,24 @@ mod tests {
     fn falls_back_to_substitute_name_without_nt_prefix() {
         let b = reparse_buffer(IO_REPARSE_TAG_MOUNT_POINT, None, r"\??\D:\data", "");
         assert_eq!(parse_reparse_buffer(&b), Some(OsString::from(r"D:\data")));
+    }
+
+    #[test]
+    fn parses_the_utf8_target_of_a_wsl_symlink() {
+        let target = "../bin/файл".as_bytes();
+        let mut b = Vec::new();
+        b.extend(IO_REPARSE_TAG_LX_SYMLINK.to_le_bytes());
+        b.extend(((4 + target.len()) as u16).to_le_bytes());
+        b.extend(0u16.to_le_bytes());
+        b.extend(2u32.to_le_bytes());
+        b.extend(target);
+        // Whatever the driver appends after the data is not the target.
+        b.extend(b"junk");
+        assert_eq!(
+            parse_reparse_buffer(&b),
+            Some(OsString::from("../bin/файл"))
+        );
+        assert!(is_name_surrogate(IO_REPARSE_TAG_LX_SYMLINK));
     }
 
     #[test]

@@ -32,6 +32,8 @@ pub enum Failure {
     /// A newer version of revisor made the profile.
     NewerVersion,
     NotAProfile,
+    /// The user cancelled the action, say at the administrator prompt.
+    Cancelled,
     Other {
         text: String,
         code: Option<i64>,
@@ -113,6 +115,35 @@ pub trait Strings {
     /// Why an action on a file failed, as the second half of a message.
     fn failure(&self, failure: &Failure) -> String;
 
+    // The snapshot in progress and its outcome (TASK-8). Counts come with their text in
+    // the user's regional format; the number itself picks the plural form.
+    /// The label of the progress field, without access key or colon.
+    fn progress(&self) -> &'static str;
+    /// The progress field while folders are read; without a folder, the count alone.
+    fn snapshot_progress(&self, entries: u64, entries_text: &str, folder: &str) -> String;
+    /// The progress field while the snapshot is written to the database.
+    fn snapshot_saving(&self, entries: u64, entries_text: &str) -> String;
+    fn snapshot_started(&self) -> &'static str;
+    fn snapshot_saved(&self, entries: u64, entries_text: &str) -> String;
+    fn entries_inaccessible(&self, entries_text: &str) -> String;
+    /// The folders of the profile the snapshot did not find: each path with the reason.
+    fn folders_not_found(&self, folders: &[(String, String)]) -> String;
+    fn folder_missing(&self) -> &'static str;
+    fn folder_volume_not_ntfs(&self, file_system: &str) -> String;
+    fn folder_volume_network(&self) -> &'static str;
+    fn folder_unreachable(&self, reason: &str) -> String;
+    fn snapshot_cancelled(&self) -> &'static str;
+    fn snapshot_failed(&self, reason: &str) -> String;
+    /// The reason when the snapshot's thread ended without a result.
+    fn snapshot_stopped(&self) -> &'static str;
+    /// The offer to restart as administrator after a snapshot with entries closed by rights.
+    fn restart_question(&self, denied_text: &str) -> String;
+    fn restart(&self) -> &'static str;
+    /// The questions asked while a snapshot is being taken.
+    fn close_during_snapshot(&self) -> &'static str;
+    fn restart_during_snapshot(&self) -> &'static str;
+    fn restart_failed(&self, reason: &str) -> String;
+
     // The debug-only demo state (REVISOR_DEMO=1).
     fn demo_snapshot(&self, n: usize) -> String;
     fn demo_change(&self, n: usize) -> String;
@@ -162,6 +193,47 @@ mod tests {
         assert_eq!(
             en(2),
             "Delete the profile “Home” and its 2 snapshots? This cannot be undone."
+        );
+    }
+
+    #[test]
+    fn snapshot_counts_take_their_plural_forms() {
+        assert_eq!(
+            Uk.snapshot_progress(1, "1", r"C:\x"),
+            r"1 запис, читається C:\x"
+        );
+        assert_eq!(Uk.snapshot_progress(3, "3", ""), "3 записи");
+        assert_eq!(Uk.snapshot_saved(5, "5"), "Знімок збережено: 5 записів.");
+        assert_eq!(Uk.snapshot_saved(21, "21"), "Знімок збережено: 21 запис.");
+        assert_eq!(
+            Uk.snapshot_saving(12345, "12 345"),
+            "Збереження знімка: 12 345 записів…"
+        );
+        assert_eq!(
+            En.snapshot_progress(1, "1", r"C:\x"),
+            r"1 entry, reading C:\x"
+        );
+        assert_eq!(En.snapshot_progress(0, "0", ""), "0 entries");
+        assert_eq!(
+            En.snapshot_saved(12345, "12,345"),
+            "Snapshot saved: 12,345 entries."
+        );
+    }
+
+    #[test]
+    fn folders_not_found_are_named_with_their_reasons() {
+        let folders = [
+            (r"D:\Робота".to_string(), Uk.folder_missing().to_string()),
+            (r"E:\Архів".to_string(), Uk.folder_volume_not_ntfs("FAT32")),
+        ];
+        assert_eq!(
+            Uk.folders_not_found(&folders),
+            r"Тек не знайдено: «D:\Робота» (теки немає); «E:\Архів» (тека на томі FAT32, не NTFS)."
+        );
+        let folders = [(r"D:\Work".to_string(), En.folder_missing().to_string())];
+        assert_eq!(
+            En.folders_not_found(&folders),
+            r"Folders not found: “D:\Work” (the folder is missing)."
         );
     }
 }

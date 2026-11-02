@@ -1,5 +1,5 @@
 use super::*;
-use crate::store::{Scope, Store};
+use crate::store::{Scope, Snapshot, Store};
 use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 
 /// A fresh folder under the system temp folder, removed on drop. Profiles go into its
@@ -157,9 +157,7 @@ fn each_profile_has_its_own_snapshots() {
     let mut store = Store::open(&home.path).unwrap();
     store
         .save(
-            &settings("Дім").scope,
-            None,
-            &crate::scan::synthetic(10),
+            &Snapshot::of_tree(crate::scan::synthetic(10)),
             &AtomicBool::new(false),
         )
         .unwrap();

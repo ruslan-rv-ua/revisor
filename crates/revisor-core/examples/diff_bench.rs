@@ -17,8 +17,8 @@ use std::sync::atomic::AtomicBool;
 use std::time::Instant;
 
 use revisor_core::diff::{ChangeKind, diff, path};
-use revisor_core::scan::{Entry, EntryKind, ScanOptions, scan, synthetic};
-use revisor_core::store::{ProfileSettings, Scope, Store};
+use revisor_core::scan::{Entry, EntryKind, Progress, ScanOptions, scan, synthetic};
+use revisor_core::store::{ProfileSettings, Scope, Snapshot, Store};
 use windows_sys::Win32::System::ProcessStatus::{GetProcessMemoryInfo, PROCESS_MEMORY_COUNTERS};
 use windows_sys::Win32::System::Threading::GetCurrentProcess;
 
@@ -77,8 +77,9 @@ fn prepare(input: &Input, db: &Path) -> Result<(), Box<dyn std::error::Error>> {
         Input::Scan(root) => {
             println!("input:         two scans of {}", root.display());
             let options = ScanOptions::default();
-            let old = scan(root, &options, &no_cancel)?.entries;
-            (old, scan(root, &options, &no_cancel)?.entries)
+            let progress = Progress::default();
+            let old = scan(root, &options, &no_cancel, &progress)?.entries;
+            (old, scan(root, &options, &no_cancel, &progress)?.entries)
         }
         Input::Generate(n) => {
             println!("input:         {n} generated entries and a changed copy");
@@ -101,14 +102,17 @@ fn prepare(input: &Input, db: &Path) -> Result<(), Box<dyn std::error::Error>> {
     };
     let mut store = Store::create(db, &settings)?;
     let started = Instant::now();
-    store.save(&settings.scope, Some("old"), &old, &no_cancel)?;
-    store.save(&settings.scope, Some("new"), &new, &no_cancel)?;
+    for (comment, entries) in [("old", old), ("new", new)] {
+        let mut snapshot = Snapshot::of_tree(entries);
+        snapshot.comment = Some(comment.into());
+        store.save(&snapshot, &no_cancel)?;
+    }
     println!(
         "save both:     {:.2} s to {}",
         started.elapsed().as_secs_f64(),
         db.display()
     );
-    drop((store, old, new));
+    drop(store);
 
     let status = Command::new(std::env::current_exe()?)
         .arg("--compare-only")
@@ -154,8 +158,8 @@ fn compare(db: &Path) -> Result<(), Box<dyn std::error::Error>> {
     };
 
     let started = Instant::now();
-    let old = store.load(a.id)?;
-    let new = store.load(b.id)?;
+    let old = store.load_folder(a.id, 0)?;
+    let new = store.load_folder(b.id, 0)?;
     let load_time = started.elapsed();
     let (loaded_ws, loaded_commit) = peak_memory();
     println!(

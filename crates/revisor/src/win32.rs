@@ -1,14 +1,26 @@
 //! The Win32 calls wxDragon 0.9.24 does not expose (ADR-0008): the interface language,
 //! accessible names and the live region of the status bar, the focused control, list row
-//! positions, and a subclass of the main window that answers WM_MENUCHAR by key position
-//! and makes a context menu's first item its bold default.
+//! positions, a subclass of the main window that answers WM_MENUCHAR by key position and
+//! makes a context menu's first item its bold default, counts in the regional format, the
+//! shield icon of a menu item, and the restart as administrator (TASK-8).
 
 use std::cell::Cell;
-use std::ffi::c_void;
+use std::ffi::{OsStr, c_void};
+use std::io;
+use std::mem::size_of;
+use std::os::windows::ffi::OsStrExt;
+use std::path::Path;
+use std::ptr;
 
 use windows_sys::Win32::Foundation::{HWND, LPARAM, LRESULT, POINT, RECT, WPARAM};
-use windows_sys::Win32::Globalization::GetUserDefaultUILanguage;
-use windows_sys::Win32::Graphics::Gdi::ClientToScreen;
+use windows_sys::Win32::Globalization::{
+    GetLocaleInfoEx, GetNumberFormatEx, GetUserDefaultUILanguage, LOCALE_SDECIMAL,
+    LOCALE_SGROUPING, LOCALE_STHOUSAND, NUMBERFMTW,
+};
+use windows_sys::Win32::Graphics::Gdi::{
+    BI_RGB, BITMAPINFO, BITMAPINFOHEADER, ClientToScreen, CreateCompatibleDC, CreateDIBSection,
+    DIB_RGB_COLORS, DeleteDC, DeleteObject, HBITMAP, RGBQUAD, SelectObject,
+};
 use windows_sys::Win32::System::Com::{CLSCTX_INPROC_SERVER, CoCreateInstance};
 use windows_sys::Win32::UI::Accessibility::{
     CLSID_AccPropServices, LiveSetting_Property_GUID, NotifyWinEvent, PROPID_ACC_NAME, Polite,
@@ -20,11 +32,14 @@ use windows_sys::Win32::UI::Input::KeyboardAndMouse::{
     GetFocus, GetKeyState, GetKeyboardLayout, VK_MENU, VkKeyScanExW,
 };
 use windows_sys::Win32::UI::Shell::{
-    DefSubclassProc, RemoveWindowSubclass, SetWindowSubclass, StrCmpLogicalW,
+    DefSubclassProc, RemoveWindowSubclass, SHGSI_ICON, SHGSI_SMALLICON, SHGetStockIconInfo,
+    SHSTOCKICONINFO, SIID_SHIELD, SetWindowSubclass, ShellExecuteW, StrCmpLogicalW,
 };
 use windows_sys::Win32::UI::WindowsAndMessaging::{
-    CHILDID_SELF, EVENT_OBJECT_LIVEREGIONCHANGED, GetClassNameW, GetMenuItemCount, GetMenuStringW,
-    HMENU, MF_BYPOSITION, MF_SYSMENU, MNC_EXECUTE, OBJID_CLIENT, SendMessageW, SetMenuDefaultItem,
+    CHILDID_SELF, DI_NORMAL, DestroyIcon, DrawIconEx, EVENT_OBJECT_LIVEREGIONCHANGED,
+    GetClassNameW, GetMenu, GetMenuItemCount, GetMenuStringW, GetSubMenu, GetSystemMetrics, HICON,
+    HMENU, MENUITEMINFOW, MF_BYPOSITION, MF_SYSMENU, MIIM_BITMAP, MNC_EXECUTE, OBJID_CLIENT,
+    SM_CXSMICON, SM_CYSMICON, SW_SHOWNORMAL, SendMessageW, SetMenuDefaultItem, SetMenuItemInfoW,
     WM_INITMENUPOPUP, WM_MENUCHAR, WM_NCDESTROY,
 };
 use windows_sys::core::{GUID, HRESULT};
@@ -323,6 +338,188 @@ fn menu_item_by_key_position(ch: u16, menu: HMENU) -> Option<usize> {
     find_access_key(&items, vk)
 }
 
+// --- Counts, the shield and the restart ------------------------------------------------
+
+/// A count in the user's regional format, with its digit grouping: "12,345" or "12 345".
+/// Plain digits when the format cannot be read.
+pub fn format_count(count: u64) -> String {
+    let plain = count.to_string();
+    let locale_info = |kind: u32| -> Option<Vec<u16>> {
+        let mut buf = [0u16; 32];
+        // SAFETY: the user's default locale (a null name); the buffer length is passed.
+        let len = unsafe { GetLocaleInfoEx(ptr::null(), kind, buf.as_mut_ptr(), buf.len() as i32) };
+        // The length counts the terminating NUL, which the format needs too.
+        (len > 0).then(|| buf[..len as usize].to_vec())
+    };
+    let (Some(mut thousand), Some(mut decimal), Some(grouping)) = (
+        locale_info(LOCALE_STHOUSAND),
+        locale_info(LOCALE_SDECIMAL),
+        locale_info(LOCALE_SGROUPING),
+    ) else {
+        return plain;
+    };
+    let format = NUMBERFMTW {
+        NumDigits: 0,
+        LeadingZero: 1,
+        Grouping: grouping_field(&String::from_utf16_lossy(&grouping)),
+        lpDecimalSep: decimal.as_mut_ptr(),
+        lpThousandSep: thousand.as_mut_ptr(),
+        NegativeOrder: 1,
+    };
+    let value: Vec<u16> = plain.encode_utf16().chain([0]).collect();
+    let mut out = [0u16; 64];
+    // SAFETY: every string is NUL-terminated and the output length is passed.
+    let len = unsafe {
+        GetNumberFormatEx(
+            ptr::null(),
+            0,
+            value.as_ptr(),
+            &format,
+            out.as_mut_ptr(),
+            out.len() as i32,
+        )
+    };
+    if len <= 1 {
+        return plain;
+    }
+    String::from_utf16_lossy(&out[..len as usize - 1])
+}
+
+/// The `Grouping` field of NUMBERFMTW from LOCALE_SGROUPING: "3;0" (groups of three,
+/// repeating) is 3, "3;2;0" (Indic) is 32, and a list without the final 0 groups once,
+/// so "3" is 30.
+fn grouping_field(sgrouping: &str) -> u32 {
+    let parts: Vec<&str> = sgrouping.trim_end_matches('\0').split(';').collect();
+    let repeating = parts.last() == Some(&"0");
+    let digits = parts
+        .iter()
+        .take(if repeating {
+            parts.len() - 1
+        } else {
+            parts.len()
+        })
+        .filter_map(|p| p.parse::<u32>().ok())
+        .fold(0, |acc, g| acc * 10 + g);
+    if repeating { digits } else { digits * 10 }
+}
+
+/// Puts the system's shield icon, which marks actions that need administrator rights, on
+/// the item with command id `command_id` of the frame's menu at `menu_position`. The icon
+/// is left out when it cannot be drawn; the command works all the same.
+pub fn mark_with_shield(frame: *mut c_void, menu_position: i32, command_id: i32) {
+    let mut info = SHSTOCKICONINFO {
+        cbSize: size_of::<SHSTOCKICONINFO>() as u32,
+        hIcon: ptr::null_mut(),
+        iSysImageIndex: 0,
+        iIcon: 0,
+        szPath: [0; 260],
+    };
+    // SAFETY: `info` says its own size, as the call requires.
+    let hr = unsafe { SHGetStockIconInfo(SIID_SHIELD, SHGSI_ICON | SHGSI_SMALLICON, &mut info) };
+    if hr < 0 || info.hIcon.is_null() {
+        return;
+    }
+    let bitmap = icon_to_bitmap(info.hIcon);
+    // SAFETY: the icon came from SHGetStockIconInfo and is no longer needed.
+    unsafe { DestroyIcon(info.hIcon) };
+    let Some(bitmap) = bitmap else {
+        return;
+    };
+    // SAFETY: a live frame window; the menu handles come from the system.
+    let menu = unsafe { GetSubMenu(GetMenu(frame), menu_position) };
+    if menu.is_null() {
+        // SAFETY: the bitmap was made by `icon_to_bitmap` and nothing shows it.
+        unsafe { DeleteObject(bitmap) };
+        return;
+    }
+    // SAFETY: an all-zero MENUITEMINFOW is valid; the fields set are the ones the mask names.
+    let mut item: MENUITEMINFOW = unsafe { std::mem::zeroed() };
+    item.cbSize = size_of::<MENUITEMINFOW>() as u32;
+    item.fMask = MIIM_BITMAP;
+    item.hbmpItem = bitmap;
+    // The bitmap stays alive for as long as the menu shows it, which is the window's life.
+    // SAFETY: the menu is live and `item` is a complete MENUITEMINFOW.
+    unsafe { SetMenuItemInfoW(menu, command_id as u32, 0, &item) };
+}
+
+/// Draws an icon into a 32-bit bitmap with alpha, the kind a themed menu draws right.
+fn icon_to_bitmap(icon: HICON) -> Option<HBITMAP> {
+    // SAFETY: plain FFI calls.
+    let (width, height) = unsafe { (GetSystemMetrics(SM_CXSMICON), GetSystemMetrics(SM_CYSMICON)) };
+    // SAFETY: an all-zero BITMAPINFO is valid; the header fields are filled below.
+    let mut info: BITMAPINFO = unsafe { std::mem::zeroed() };
+    info.bmiHeader = BITMAPINFOHEADER {
+        biSize: size_of::<BITMAPINFOHEADER>() as u32,
+        biWidth: width,
+        // Negative: top-down rows, the layout the menu expects.
+        biHeight: -height,
+        biPlanes: 1,
+        biBitCount: 32,
+        biCompression: BI_RGB,
+        biSizeImage: 0,
+        biXPelsPerMeter: 0,
+        biYPelsPerMeter: 0,
+        biClrUsed: 0,
+        biClrImportant: 0,
+    };
+    info.bmiColors = [RGBQUAD {
+        rgbBlue: 0,
+        rgbGreen: 0,
+        rgbRed: 0,
+        rgbReserved: 0,
+    }];
+    let mut bits: *mut c_void = ptr::null_mut();
+    // SAFETY: a memory DC of the screen; `info` describes the bitmap; the DC and the old
+    // bitmap are restored and the DC deleted before returning.
+    unsafe {
+        let dc = CreateCompatibleDC(ptr::null_mut());
+        if dc.is_null() {
+            return None;
+        }
+        let bitmap = CreateDIBSection(dc, &info, DIB_RGB_COLORS, &mut bits, ptr::null_mut(), 0);
+        if bitmap.is_null() {
+            DeleteDC(dc);
+            return None;
+        }
+        let old = SelectObject(dc, bitmap);
+        let drawn = DrawIconEx(dc, 0, 0, icon, width, height, 0, ptr::null_mut(), DI_NORMAL);
+        SelectObject(dc, old);
+        DeleteDC(dc);
+        if drawn == 0 {
+            DeleteObject(bitmap);
+            return None;
+        }
+        Some(bitmap)
+    }
+}
+
+/// Starts `exe` with `args` as administrator, through the UAC prompt. An error means it
+/// did not start; declining the prompt is `ERROR_CANCELLED`.
+pub fn run_as_admin(exe: &Path, args: &str) -> io::Result<()> {
+    let wide = |s: &OsStr| -> Vec<u16> { s.encode_wide().chain([0]).collect() };
+    let verb = wide(OsStr::new("runas"));
+    let exe = wide(exe.as_os_str());
+    let args = wide(OsStr::new(args));
+    // SAFETY: every string is NUL-terminated; no window owns the prompt.
+    let result = unsafe {
+        ShellExecuteW(
+            ptr::null_mut(),
+            verb.as_ptr(),
+            exe.as_ptr(),
+            args.as_ptr(),
+            ptr::null(),
+            SW_SHOWNORMAL,
+        )
+    };
+    // A value above 32 means success; the rest are error codes, with the detail in the
+    // last error.
+    if result as usize > 32 {
+        Ok(())
+    } else {
+        Err(io::Error::last_os_error())
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -333,5 +530,30 @@ mod tests {
         assert_eq!(compare_names("профіль 2", "Профіль 10"), Ordering::Less);
         assert_eq!(compare_names("Дім", "дім"), Ordering::Equal);
         assert_eq!(compare_names("Home", "home 1"), Ordering::Less);
+    }
+
+    #[test]
+    fn counts_keep_their_digits_in_the_regional_format() {
+        // The separator depends on the user's region; the digits do not.
+        let digits =
+            |text: String| -> String { text.chars().filter(char::is_ascii_digit).collect() };
+        assert_eq!(format_count(0), "0");
+        assert_eq!(format_count(7), "7");
+        assert_eq!(digits(format_count(1_234_567)), "1234567");
+        assert!(
+            format_count(1_234_567).len() > 7,
+            "the thousands are grouped"
+        );
+        assert!(
+            !format_count(1_234_567).contains(['.', ',']) || !format_count(1).contains(['.', ','])
+        );
+    }
+
+    #[test]
+    fn grouping_follows_the_locale_string() {
+        assert_eq!(grouping_field("3;0"), 3);
+        assert_eq!(grouping_field("3;2;0"), 32);
+        assert_eq!(grouping_field("3"), 30);
+        assert_eq!(grouping_field("0"), 0);
     }
 }

@@ -9,6 +9,17 @@ use crate::commands::{CommandId, MenuId, Pane, Reason, SubmenuId};
 
 pub struct Uk;
 
+impl Uk {
+    /// "1 запис", "3 записи", "12 345 записів".
+    fn entries(&self, entries: u64, entries_text: &str) -> String {
+        match category(Lang::Uk, entries.into()) {
+            Category::One => format!("{entries_text} запис"),
+            Category::Few => format!("{entries_text} записи"),
+            _ => format!("{entries_text} записів"),
+        }
+    }
+}
+
 impl Strings for Uk {
     fn lang(&self) -> Lang {
         Lang::Uk
@@ -73,9 +84,12 @@ impl Strings for Uk {
             Reason::NoProfiles => "профілів ще немає",
             Reason::NoSnapshots => "знімків ще немає",
             Reason::NoDifference => "різниці ще немає",
+            Reason::SnapshotRunning => "триває знімок",
+            Reason::SnapshotOfThisProfile => "триває знімок цього профілю",
             Reason::SnapshotNotRunning => "знімок зараз не триває",
             Reason::ComparisonNotRunning => "порівняння зараз не триває",
             Reason::CompactionNotRunning => "стискання зараз не триває",
+            Reason::AlreadyAdmin => "revisor уже працює від імені адміністратора",
             Reason::NotYet => "цієї команди ще немає в цій версії revisor",
         }
     }
@@ -302,12 +316,106 @@ impl Strings for Uk {
             Failure::NotAProfile => {
                 "це не файл профілю revisor: перенесіть його з теки профілів".into()
             }
+            Failure::Cancelled => "дію скасовано".into(),
             Failure::Other {
                 text,
                 code: Some(code),
             } => format!("{text} (код {code})"),
             Failure::Other { text, code: None } => text.clone(),
         }
+    }
+
+    fn progress(&self) -> &'static str {
+        "Прогрес"
+    }
+
+    fn snapshot_progress(&self, entries: u64, entries_text: &str, folder: &str) -> String {
+        let entries = self.entries(entries, entries_text);
+        if folder.is_empty() {
+            entries
+        } else {
+            format!("{entries}, читається {folder}")
+        }
+    }
+
+    fn snapshot_saving(&self, entries: u64, entries_text: &str) -> String {
+        format!(
+            "Збереження знімка: {}…",
+            self.entries(entries, entries_text)
+        )
+    }
+
+    fn snapshot_started(&self) -> &'static str {
+        "Знімок розпочато."
+    }
+
+    fn snapshot_saved(&self, entries: u64, entries_text: &str) -> String {
+        format!("Знімок збережено: {}.", self.entries(entries, entries_text))
+    }
+
+    fn entries_inaccessible(&self, entries_text: &str) -> String {
+        format!("Недоступних записів: {entries_text}.")
+    }
+
+    fn folders_not_found(&self, folders: &[(String, String)]) -> String {
+        let named: Vec<String> = folders
+            .iter()
+            .map(|(path, why)| format!("«{path}» ({why})"))
+            .collect();
+        format!("Тек не знайдено: {}.", named.join("; "))
+    }
+
+    fn folder_missing(&self) -> &'static str {
+        "теки немає"
+    }
+
+    fn folder_volume_not_ntfs(&self, file_system: &str) -> String {
+        format!("тека на томі {file_system}, не NTFS")
+    }
+
+    fn folder_volume_network(&self) -> &'static str {
+        "тека на мережевому ресурсі"
+    }
+
+    fn folder_unreachable(&self, reason: &str) -> String {
+        format!("теку не прочитати: {reason}")
+    }
+
+    fn snapshot_cancelled(&self) -> &'static str {
+        "Знімок скасовано."
+    }
+
+    fn snapshot_failed(&self, reason: &str) -> String {
+        format!("Знімок не збережено: {reason}.")
+    }
+
+    fn snapshot_stopped(&self) -> &'static str {
+        "знімок несподівано зупинився"
+    }
+
+    fn restart_question(&self, denied_text: &str) -> String {
+        format!(
+            "Записів, недоступних через права: {denied_text}. Перезапустити revisor від імені \
+             адміністратора? Він знову відкриє цей профіль; тоді зробіть новий знімок, а цей \
+             лишиться в переліку."
+        )
+    }
+
+    fn restart(&self) -> &'static str {
+        "Перезапустити"
+    }
+
+    fn close_during_snapshot(&self) -> &'static str {
+        "Триває знімок, і закриття revisor його скасує. Закрити revisor?"
+    }
+
+    fn restart_during_snapshot(&self) -> &'static str {
+        "Триває знімок, і перезапуск revisor його скасує. Перезапустити від імені \
+         адміністратора?"
+    }
+
+    fn restart_failed(&self, reason: &str) -> String {
+        format!("revisor не перезапущено: {reason}.")
     }
 
     fn demo_snapshot(&self, n: usize) -> String {

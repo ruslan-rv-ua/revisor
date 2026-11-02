@@ -1,8 +1,8 @@
 use super::*;
 use crate::exclude::SystemEnvironment;
 use std::collections::BTreeSet;
-use std::fs;
-use std::os::windows::fs::MetadataExt;
+use std::fs::{self, OpenOptions};
+use std::os::windows::fs::{MetadataExt, OpenOptionsExt};
 use std::process::Command;
 use std::sync::atomic::AtomicUsize;
 
@@ -36,7 +36,33 @@ fn run_scan(root: &Path, threads: usize) -> Scan {
         read_versions: true,
         exclusions: Exclusions::default(),
     };
-    scan(root, &options, &AtomicBool::new(false)).unwrap()
+    scan(
+        root,
+        &options,
+        &AtomicBool::new(false),
+        &Progress::default(),
+    )
+    .unwrap()
+}
+
+/// Copies kernel32.dll, which has a version resource, to `to`.
+fn copy_kernel32(to: &Path) {
+    let system = std::env::var_os("SystemRoot").unwrap();
+    fs::copy(Path::new(&system).join("System32\\kernel32.dll"), to).unwrap();
+}
+
+/// Makes `link` a junction to `target`.
+fn junction(link: &Path, target: &Path) {
+    let status = Command::new("cmd")
+        .arg("/c")
+        .arg("mklink")
+        .arg("/J")
+        .arg(link)
+        .arg(target)
+        .output()
+        .unwrap()
+        .status;
+    assert!(status.success());
 }
 
 /// Path of an entry relative to the root, with `\` separators.
@@ -95,26 +121,127 @@ fn collects_tree_and_metadata() {
 }
 
 #[test]
-fn reads_exe_and_dll_versions() {
+fn reads_file_and_product_versions_of_exe_and_dll_only() {
     let tmp = TempDir::new();
-    let system = std::env::var_os("SystemRoot").unwrap();
-    let kernel32 = Path::new(&system).join("System32\\kernel32.dll");
-    fs::copy(&kernel32, tmp.path().join("k.DLL")).unwrap();
+    copy_kernel32(&tmp.path().join("k.DLL"));
     fs::write(tmp.path().join("fake.exe"), b"not a PE file").unwrap();
     fs::write(tmp.path().join("plain.txt"), b"text").unwrap();
 
     let scan = run_scan(tmp.path(), 1);
 
-    let version = find(&scan, "k.DLL")
-        .1
-        .version
-        .expect("kernel32 has a version");
-    assert!(version[0] >= 6, "{version:?}");
+    let VersionInfo::Some(version) = find(&scan, "k.DLL").1.version else {
+        panic!("kernel32 has a version");
+    };
+    assert!(version.file[0] >= 6, "{version:?}");
+    assert!(version.product[0] >= 6, "{version:?}");
     let fake = find(&scan, "fake.exe").1;
-    assert_eq!(fake.version, None);
+    assert_eq!(fake.version, VersionInfo::None);
     assert!(!fake.inaccessible);
-    assert_eq!(find(&scan, "plain.txt").1.version, None);
+    // Not read, rather than absent: a later revisor may read versions of more kinds of
+    // files, and old snapshots must not show that as a change.
+    assert_eq!(find(&scan, "plain.txt").1.version, VersionInfo::NotRead);
     assert_eq!(scan.stats.versions_read, 2);
+    assert_eq!(scan.stats.versions_unread, 0);
+}
+
+#[test]
+fn a_locked_exe_keeps_its_metadata_with_its_version_unread() {
+    let tmp = TempDir::new();
+    let exe = tmp.path().join("busy.exe");
+    copy_kernel32(&exe);
+    // Opened with no sharing, as a running program may hold its data file.
+    let _lock = OpenOptions::new()
+        .read(true)
+        .share_mode(0)
+        .open(&exe)
+        .unwrap();
+
+    let scan = run_scan(tmp.path(), 1);
+
+    let busy = find(&scan, "busy.exe").1;
+    assert_eq!(busy.version, VersionInfo::NotRead);
+    assert!(
+        !busy.inaccessible,
+        "a version not read is not inaccessibility"
+    );
+    assert_eq!(busy.size, fs::metadata(&exe).unwrap().len());
+    assert_eq!(scan.stats.versions_unread, 1);
+    assert_eq!(scan.stats.inaccessible, 0);
+}
+
+#[test]
+fn a_file_kept_in_the_cloud_only_is_not_opened_for_its_version() {
+    let tmp = TempDir::new();
+    let dll = tmp.path().join("cloud.dll");
+    copy_kernel32(&dll);
+    // The offline attribute marks data that is not on the disk, as cloud files are.
+    let status = Command::new("attrib").arg("+O").arg(&dll).status().unwrap();
+    assert!(status.success());
+
+    let scan = run_scan(tmp.path(), 1);
+
+    let cloud = find(&scan, "cloud.dll").1;
+    assert_eq!(cloud.version, VersionInfo::NotRead);
+    assert_ne!(cloud.attributes & FILE_ATTRIBUTE_OFFLINE, 0);
+    assert!(!cloud.inaccessible);
+    assert_eq!(scan.stats.versions_read, 0);
+    assert_eq!(scan.stats.versions_unread, 1);
+}
+
+#[test]
+fn progress_counts_the_entries_and_names_the_folder_being_read() {
+    let tmp = TempDir::new();
+    fs::create_dir_all(tmp.path().join("a\\b")).unwrap();
+    fs::write(tmp.path().join("a\\b\\x.txt"), b"x").unwrap();
+    fs::write(tmp.path().join("y.txt"), b"y").unwrap();
+    let progress = Progress::default();
+    progress.add(10);
+
+    let scan = scan(
+        tmp.path(),
+        &ScanOptions::default(),
+        &AtomicBool::new(false),
+        &progress,
+    )
+    .unwrap();
+
+    // The count goes on from where it was: a snapshot of several folders shares it.
+    assert_eq!(progress.entries(), 10 + scan.entries.len() as u64);
+    let folder = progress.folder();
+    assert!(
+        folder.starts_with(tmp.path()),
+        "{} is not under {}",
+        folder.display(),
+        tmp.path().display()
+    );
+    assert!(!folder.to_string_lossy().starts_with(r"\\?\"));
+}
+
+#[test]
+fn reports_the_serial_number_of_the_root_volume() {
+    let tmp = TempDir::new();
+    fs::create_dir(tmp.path().join("inner")).unwrap();
+    let outer = run_scan(tmp.path(), 1);
+    let inner = run_scan(&tmp.path().join("inner"), 1);
+    assert_ne!(outer.volume_serial, 0);
+    assert_eq!(outer.volume_serial, inner.volume_serial);
+}
+
+#[test]
+fn a_root_that_is_a_junction_is_read_through_its_target() {
+    let tmp = TempDir::new();
+    let target = tmp.path().join("target");
+    fs::create_dir(&target).unwrap();
+    fs::write(target.join("inside.txt"), b"x").unwrap();
+    let link = tmp.path().join("link");
+    junction(&link, &target);
+
+    let scan = run_scan(&link, 1);
+
+    assert_eq!(scan.entries[0].kind, EntryKind::Dir);
+    assert_eq!(&*scan.entries[0].name, link.as_os_str());
+    find(&scan, "inside.txt");
+    assert_eq!(scan.stats.files, 1);
 }
 
 #[test]
@@ -124,16 +251,7 @@ fn records_junction_without_entering() {
     fs::create_dir(&target).unwrap();
     fs::write(target.join("inside.txt"), b"x").unwrap();
     let link = tmp.path().join("link");
-    let status = Command::new("cmd")
-        .arg("/c")
-        .arg("mklink")
-        .arg("/J")
-        .arg(&link)
-        .arg(&target)
-        .output()
-        .unwrap()
-        .status;
-    assert!(status.success());
+    junction(&link, &target);
 
     let scan = run_scan(tmp.path(), 1);
 
@@ -193,6 +311,10 @@ fn marks_unreadable_folder_and_goes_on() {
     assert!(scan.entries.iter().all(|e| e.parent != Some(index as u32)));
     find(&scan, "open\\seen.txt");
     assert_eq!(scan.stats.inaccessible, 1);
+    assert_eq!(
+        scan.stats.denied, 1,
+        "denied by rights, which an administrator has"
+    );
 }
 
 #[test]
@@ -205,12 +327,7 @@ fn scans_paths_longer_than_max_path() {
     }
     fs::create_dir_all(&deep).unwrap();
     fs::write(deep.join("deep.txt"), b"x").unwrap();
-    let system = std::env::var_os("SystemRoot").unwrap();
-    fs::copy(
-        Path::new(&system).join("System32\\kernel32.dll"),
-        deep.join("deep.dll"),
-    )
-    .unwrap();
+    copy_kernel32(&deep.join("deep.dll"));
 
     let scan = run_scan(tmp.path(), 1);
 
@@ -219,7 +336,7 @@ fn scans_paths_longer_than_max_path() {
     assert_eq!(file.size, 1);
     assert!(tmp.path().join(&rel).join("deep.txt").as_os_str().len() > 260);
     let dll = find(&scan, &format!("{rel}\\deep.dll")).1;
-    assert!(dll.version.is_some());
+    assert!(matches!(dll.version, VersionInfo::Some(_)));
 }
 
 #[test]
@@ -264,7 +381,13 @@ fn excluded_files_and_folders_stay_out_with_all_they_hold() {
         exclusions: Exclusions::new(&patterns, &SystemEnvironment),
     };
 
-    let scan = scan(tmp.path(), &options, &AtomicBool::new(false)).unwrap();
+    let scan = scan(
+        tmp.path(),
+        &options,
+        &AtomicBool::new(false),
+        &Progress::default(),
+    )
+    .unwrap();
 
     let paths: BTreeSet<String> = (1..scan.entries.len())
         .map(|i| rel_path(&scan, i))
@@ -278,7 +401,12 @@ fn excluded_files_and_folders_stay_out_with_all_they_hold() {
 fn cancelled_scan_returns_cancelled() {
     let tmp = TempDir::new();
     fs::create_dir(tmp.path().join("a")).unwrap();
-    let result = scan(tmp.path(), &ScanOptions::default(), &AtomicBool::new(true));
+    let result = scan(
+        tmp.path(),
+        &ScanOptions::default(),
+        &AtomicBool::new(true),
+        &Progress::default(),
+    );
     assert!(matches!(result, Err(ScanError::Cancelled)));
 }
 
@@ -289,6 +417,7 @@ fn missing_root_is_an_error() {
         &tmp.path().join("missing"),
         &ScanOptions::default(),
         &AtomicBool::new(false),
+        &Progress::default(),
     );
     assert!(matches!(result, Err(ScanError::Root(_))));
 }
@@ -311,6 +440,16 @@ fn verbatim_paths() {
 }
 
 #[test]
+fn plain_paths_drop_the_verbatim_prefix() {
+    assert_eq!(plain(Path::new(r"\\?\C:\a\b")), Path::new(r"C:\a\b"));
+    assert_eq!(
+        plain(Path::new(r"\\?\UNC\server\share\x")),
+        Path::new(r"\\server\share\x")
+    );
+    assert_eq!(plain(Path::new(r"C:\a")), Path::new(r"C:\a"));
+}
+
+#[test]
 fn synthetic_tree_has_requested_size_and_valid_parents() {
     for count in [1, 2, 11, 1000] {
         let entries = synthetic(count);
@@ -326,5 +465,9 @@ fn synthetic_tree_has_requested_size_and_valid_parents() {
     let entries = synthetic(1000);
     assert!(entries.iter().any(|e| e.kind == EntryKind::File));
     assert!(entries[1..].iter().any(|e| e.kind == EntryKind::Dir));
-    assert!(entries.iter().any(|e| e.version.is_some()));
+    assert!(
+        entries
+            .iter()
+            .any(|e| matches!(e.version, VersionInfo::Some(_)))
+    );
 }

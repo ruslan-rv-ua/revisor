@@ -276,6 +276,40 @@ fn this_computer_gives_its_variables_and_real_locations() {
 }
 
 #[test]
+fn a_pattern_expands_to_how_it_applies_on_the_computer() {
+    let short = r"C:\Users\RUSLAN~1\AppData\Local\Temp";
+    let long = r"C:\Users\Руслан\AppData\Local\Temp";
+    let env = FakeEnv::with(&[("TEMP", short)]).existing(short, long);
+    assert_eq!(expand("%TEMP%", &env), Expanded::Path(long.into()));
+    assert_eq!(
+        expand(r"%TEMP%\gone\*.dmp", &env),
+        Expanded::Path(format!(r"{long}\gone\*.dmp"))
+    );
+    assert_eq!(expand(r"D:\Logs\", &env), Expanded::Path(r"D:\Logs".into()));
+    assert_eq!(expand("*.tmp", &env), Expanded::Name("*.tmp".into()));
+    assert_eq!(expand(r"%Missing%\x", &env), Expanded::Inactive);
+    assert_eq!(Expanded::Inactive.applied(), None);
+    assert_eq!(Expanded::Name("x".into()).applied(), Some("x"));
+}
+
+#[test]
+fn recorded_patterns_apply_as_they_did_without_expanding_again() {
+    let env = FakeEnv::with(&[("TEMP", r"C:\Users\R\AppData\Local\Temp")]);
+    let recorded: Vec<String> = ["%TEMP%", "*.tmp", r"%Missing%\x"]
+        .iter()
+        .filter_map(|p| expand(p, &env).applied().map(String::from))
+        .collect();
+    assert_eq!(recorded, [r"C:\Users\R\AppData\Local\Temp", "*.tmp"]);
+    // Later, whatever the variables are then, the recorded patterns mean what they did.
+    let ex = Exclusions::new(&recorded, &RecordedEnvironment);
+    assert!(excluded(&ex, r"C:\Users\R", r"AppData\Local\Temp"));
+    assert!(excluded(&ex, r"C:\Data", "x.tmp"));
+    assert!(!excluded(&ex, r"C:\Data", "x"));
+    assert_eq!(RecordedEnvironment.var("TEMP"), None);
+    assert_eq!(RecordedEnvironment.real_path(Path::new(r"C:\")), None);
+}
+
+#[test]
 fn a_profile_folder_itself_is_never_excluded() {
     let ex = exclusions(&["Code Cache", r"C:\Windows\Temp", r"C:\Windows"]);
     assert!(!excluded(&ex, r"C:\Data\Code Cache", "x.bin"));
