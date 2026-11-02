@@ -304,6 +304,18 @@ pub fn select_all(list: *mut c_void) {
     set_row_state(list, -1, LVIS_SELECTED, LVIS_SELECTED);
 }
 
+/// Takes the focus rectangle off every row, so that deleting rows moves it nowhere: the
+/// list would otherwise hand it to a neighbour at each deletion, and a screen reader
+/// would announce rows about to go.
+pub fn unfocus_rows(list: *mut c_void) {
+    set_row_state(list, -1, 0, LVIS_FOCUSED);
+}
+
+/// Puts the focus rectangle back on `row`, leaving the selection as it is.
+pub fn focus_row(list: *mut c_void, row: usize) {
+    set_row_state(list, row as isize, LVIS_FOCUSED, LVIS_FOCUSED);
+}
+
 /// Makes a report list select whole rows, not just the first column, and keeps its column
 /// headers from looking like sort buttons (TASK-9).
 pub fn full_row_select_no_sort(list: *mut c_void) {

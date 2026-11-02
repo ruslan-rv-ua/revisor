@@ -1086,6 +1086,11 @@ impl MainWindow {
         if chosen.is_empty() {
             return;
         }
+        // No row keeps the focus rectangle from here on: when the question closes, the
+        // focus comes back to the list, and a screen reader would announce the focused
+        // row just as it is deleted. A refusal puts the rectangle back.
+        let focused = win32::focused_row(list);
+        win32::unfocus_rows(list);
         if self.confirm_deletion() {
             let question = match chosen.as_slice() {
                 [one] => s.delete_snapshot_question(
@@ -1098,6 +1103,9 @@ impl MainWindow {
             let agreed =
                 self.with_jobs_paused(|| confirm(&self.frame, s, title, &question, delete, true));
             if !agreed {
+                if let Some(row) = focused {
+                    win32::focus_row(list, row);
+                }
                 return;
             }
         }
@@ -1111,11 +1119,14 @@ impl MainWindow {
             Err(e) => {
                 let reason = s.failure(&failure::of_store(&e));
                 tell(&self.frame, s, title, &s.snapshots_not_deleted(&reason));
+                if let Some(row) = focused {
+                    win32::focus_row(list, row);
+                }
                 return;
             }
         };
-        // The rows go at once, from the bottom up so the positions hold; the focus goes to
-        // the row that followed them (#26).
+        // The rows go at once, from the bottom up so the positions hold; then the focus
+        // goes to the row that followed them (#26).
         let count = self.rows.borrow().len();
         for &i in selected.iter().rev() {
             self.snapshots.delete_item(i as i64);
