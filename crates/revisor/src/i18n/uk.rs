@@ -2,6 +2,7 @@
 //! (document «Клавіатура й меню», section «Назви клавіш»).
 
 use revisor_core::exclude::PatternError;
+use revisor_core::settings::FocusAfterSnapshot;
 
 use super::plural::{Category, category};
 use super::{Failure, Lang, Strings};
@@ -16,6 +17,15 @@ impl Uk {
             Category::One => format!("{entries_text} запис"),
             Category::Few => format!("{entries_text} записи"),
             _ => format!("{entries_text} записів"),
+        }
+    }
+
+    /// "1 знімок", "3 знімки", "5 знімків".
+    fn snapshots(&self, count: usize) -> String {
+        match category(Lang::Uk, (count as u64).into()) {
+            Category::One => format!("{count} знімок"),
+            Category::Few => format!("{count} знімки"),
+            _ => format!("{count} знімків"),
         }
     }
 }
@@ -260,17 +270,15 @@ impl Strings for Uk {
     }
 
     fn delete_profile_question(&self, name: &str, snapshots: usize) -> String {
-        let snapshots = match (snapshots, category(Lang::Uk, (snapshots as u64).into())) {
-            (0, _) => {
-                return format!(
-                    "Видалити профіль «{name}»? Знімків у ньому немає. Цю дію не можна скасувати."
-                );
-            }
-            (n, Category::One) => format!("{n} знімок"),
-            (n, Category::Few) => format!("{n} знімки"),
-            (n, _) => format!("{n} знімків"),
-        };
-        format!("Видалити профіль «{name}» і {snapshots} у ньому? Цю дію не можна скасувати.")
+        if snapshots == 0 {
+            return format!(
+                "Видалити профіль «{name}»? Знімків у ньому немає. Цю дію не можна скасувати."
+            );
+        }
+        format!(
+            "Видалити профіль «{name}» і {} у ньому? Цю дію не можна скасувати.",
+            self.snapshots(snapshots)
+        )
     }
 
     fn delete(&self) -> &'static str {
@@ -317,6 +325,9 @@ impl Strings for Uk {
             }
             Failure::NotAProfile => {
                 "це не файл профілю revisor: перенесіть його з теки профілів".into()
+            }
+            Failure::NotSettings => {
+                "це не файл налаштувань revisor: перенесіть його з теки data".into()
             }
             Failure::Cancelled => "дію скасовано".into(),
             Failure::Other {
@@ -424,8 +435,124 @@ impl Strings for Uk {
         format!("revisor не перезапущено: {reason}.")
     }
 
-    fn demo_snapshot(&self, n: usize) -> String {
-        format!("Демо-знімок {n}")
+    fn column_date_time(&self) -> &'static str {
+        "Дата й час"
+    }
+
+    fn column_comment(&self) -> &'static str {
+        "Коментар"
+    }
+
+    fn no_snapshots_yet(&self, key: &str) -> String {
+        format!("Знімків ще немає. Натисніть {key}, щоб зробити перший знімок.")
+    }
+
+    fn no_profiles_yet(&self, key: &str) -> String {
+        format!("Профілів ще немає. Натисніть {key}, щоб створити перший профіль.")
+    }
+
+    fn no_profiles_item(&self) -> &'static str {
+        "Профілів ще немає"
+    }
+
+    fn comment_of(&self, snapshot: &str) -> String {
+        format!("Коментар до знімка {snapshot}")
+    }
+
+    fn comment_saved(&self) -> &'static str {
+        "Коментар збережено."
+    }
+
+    fn comment_removed(&self) -> &'static str {
+        "Коментар прибрано."
+    }
+
+    fn comment_not_saved(&self, reason: &str) -> String {
+        format!("Коментар не збережено: {reason}.")
+    }
+
+    fn delete_snapshot_question(&self, name: &str, comment: Option<&str>) -> String {
+        match comment {
+            Some(comment) => {
+                format!("Видалити знімок {name} «{comment}»? Цю дію не можна скасувати.")
+            }
+            None => format!("Видалити знімок {name}? Цю дію не можна скасувати."),
+        }
+    }
+
+    fn delete_snapshots_question(&self, count: usize) -> String {
+        format!(
+            "Видалити {}? Цю дію не можна скасувати.",
+            self.snapshots(count)
+        )
+    }
+
+    fn snapshots_deleted(&self, count: usize, profile: &str) -> String {
+        format!(
+            "Видалено {}; триває стискання бази профілю «{profile}».",
+            self.snapshots(count)
+        )
+    }
+
+    fn snapshots_not_deleted(&self, reason: &str) -> String {
+        format!("Знімки не видалено: {reason}.")
+    }
+
+    fn compacting(&self, profile: &str) -> String {
+        format!("Стискання бази профілю «{profile}»…")
+    }
+
+    fn compaction_done(&self, profile: &str, freed: &str) -> String {
+        format!("Базу профілю «{profile}» стиснуто: звільнено {freed}.")
+    }
+
+    fn compaction_cancelled(&self, profile: &str) -> String {
+        format!(
+            "Стискання бази профілю «{profile}» скасовано. Знімки видалено, а їхнє місце \
+             займуть наступні знімки."
+        )
+    }
+
+    fn compaction_failed(&self, profile: &str, reason: &str) -> String {
+        format!(
+            "Базу профілю «{profile}» не стиснуто: {reason}. Знімки видалено, а їхнє місце \
+             займуть наступні знімки."
+        )
+    }
+
+    fn compaction_stopped(&self) -> &'static str {
+        "стискання несподівано зупинилося"
+    }
+
+    fn focus_after_snapshot(&self) -> &'static str {
+        "Фокус після знімка"
+    }
+
+    fn focus_option(&self, value: FocusAfterSnapshot) -> &'static str {
+        match value {
+            FocusAfterSnapshot::IfInList => "Якщо фокус у переліку",
+            FocusAfterSnapshot::Always => "Завжди",
+            FocusAfterSnapshot::Never => "Ніколи",
+        }
+    }
+
+    fn confirm_snapshot_deletion(&self) -> &'static str {
+        "Підтверджувати видалення знімків"
+    }
+
+    fn settings_saved(&self) -> &'static str {
+        "Налаштування збережено."
+    }
+
+    fn settings_not_saved(&self, reason: &str) -> String {
+        format!("Налаштування не збережено: {reason}.")
+    }
+
+    fn settings_not_opened(&self, file: &str, reason: &str) -> String {
+        format!(
+            "Файл налаштувань «{file}» не вдалося відкрити: {reason}. Використано типові \
+             налаштування, а їхні зміни не зберігаються."
+        )
     }
 
     fn demo_change(&self, n: usize) -> String {

@@ -1,6 +1,7 @@
 //! English interface strings, the base language.
 
 use revisor_core::exclude::PatternError;
+use revisor_core::settings::FocusAfterSnapshot;
 
 use super::plural::{Category, category};
 use super::{Failure, Lang, Strings};
@@ -14,6 +15,14 @@ impl En {
         match category(Lang::En, entries.into()) {
             Category::One => format!("{entries_text} entry"),
             _ => format!("{entries_text} entries"),
+        }
+    }
+
+    /// "1 snapshot", "3 snapshots".
+    fn snapshots(&self, count: usize) -> String {
+        match category(Lang::En, (count as u64).into()) {
+            Category::One => format!("{count} snapshot"),
+            _ => format!("{count} snapshots"),
         }
     }
 }
@@ -321,6 +330,9 @@ impl Strings for En {
             Failure::NotAProfile => {
                 "this is not a revisor profile file: move it out of the folder of profiles".into()
             }
+            Failure::NotSettings => {
+                "this is not a revisor settings file: move it out of the data folder".into()
+            }
             Failure::Cancelled => "the action was cancelled".into(),
             Failure::Other {
                 text,
@@ -427,8 +439,121 @@ impl Strings for En {
         format!("revisor was not restarted: {reason}.")
     }
 
-    fn demo_snapshot(&self, n: usize) -> String {
-        format!("Demo snapshot {n}")
+    fn column_date_time(&self) -> &'static str {
+        "Date and time"
+    }
+
+    fn column_comment(&self) -> &'static str {
+        "Comment"
+    }
+
+    fn no_snapshots_yet(&self, key: &str) -> String {
+        format!("No snapshots yet. Press {key} to take the first snapshot.")
+    }
+
+    fn no_profiles_yet(&self, key: &str) -> String {
+        format!("No profiles yet. Press {key} to create the first profile.")
+    }
+
+    fn no_profiles_item(&self) -> &'static str {
+        "No profiles yet"
+    }
+
+    fn comment_of(&self, snapshot: &str) -> String {
+        format!("Comment on the snapshot {snapshot}")
+    }
+
+    fn comment_saved(&self) -> &'static str {
+        "Comment saved."
+    }
+
+    fn comment_removed(&self) -> &'static str {
+        "Comment removed."
+    }
+
+    fn comment_not_saved(&self, reason: &str) -> String {
+        format!("The comment was not saved: {reason}.")
+    }
+
+    fn delete_snapshot_question(&self, name: &str, comment: Option<&str>) -> String {
+        match comment {
+            Some(comment) => {
+                format!("Delete the snapshot {name} “{comment}”? This cannot be undone.")
+            }
+            None => format!("Delete the snapshot {name}? This cannot be undone."),
+        }
+    }
+
+    fn delete_snapshots_question(&self, count: usize) -> String {
+        format!("Delete {}? This cannot be undone.", self.snapshots(count))
+    }
+
+    fn snapshots_deleted(&self, count: usize, profile: &str) -> String {
+        format!(
+            "Deleted {}; the database of the profile “{profile}” is being compacted.",
+            self.snapshots(count)
+        )
+    }
+
+    fn snapshots_not_deleted(&self, reason: &str) -> String {
+        format!("The snapshots were not deleted: {reason}.")
+    }
+
+    fn compacting(&self, profile: &str) -> String {
+        format!("Compacting the database of the profile “{profile}”…")
+    }
+
+    fn compaction_done(&self, profile: &str, freed: &str) -> String {
+        format!("The database of the profile “{profile}” is compacted: {freed} freed.")
+    }
+
+    fn compaction_cancelled(&self, profile: &str) -> String {
+        format!(
+            "Compaction of the database of the profile “{profile}” cancelled. The snapshots \
+             are deleted, and the next snapshots will take their space."
+        )
+    }
+
+    fn compaction_failed(&self, profile: &str, reason: &str) -> String {
+        format!(
+            "The database of the profile “{profile}” was not compacted: {reason}. The \
+             snapshots are deleted, and the next snapshots will take their space."
+        )
+    }
+
+    fn compaction_stopped(&self) -> &'static str {
+        "the compaction stopped unexpectedly"
+    }
+
+    fn focus_after_snapshot(&self) -> &'static str {
+        "Focus after a snapshot"
+    }
+
+    fn focus_option(&self, value: FocusAfterSnapshot) -> &'static str {
+        match value {
+            FocusAfterSnapshot::IfInList => "If focus is in the list",
+            FocusAfterSnapshot::Always => "Always",
+            FocusAfterSnapshot::Never => "Never",
+        }
+    }
+
+    fn confirm_snapshot_deletion(&self) -> &'static str {
+        "Confirm snapshot deletion"
+    }
+
+    fn settings_saved(&self) -> &'static str {
+        "Settings saved."
+    }
+
+    fn settings_not_saved(&self, reason: &str) -> String {
+        format!("The settings were not saved: {reason}.")
+    }
+
+    fn settings_not_opened(&self, file: &str, reason: &str) -> String {
+        format!(
+            "The settings file “{file}” cannot be opened: {reason}. The default settings are \
+             used, and changes to them are not kept."
+        )
     }
 
     fn demo_change(&self, n: usize) -> String {

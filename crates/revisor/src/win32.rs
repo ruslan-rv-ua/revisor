@@ -1,10 +1,11 @@
 //! The Win32 calls wxDragon 0.9.24 does not expose (ADR-0008): the interface language,
 //! accessible names and the live region of the status bar, the focused control, list row
 //! positions, a subclass of the main window that answers WM_MENUCHAR by key position and
-//! makes a context menu's first item its bold default, counts in the regional format, the
-//! shield icon of a menu item, and the restart as administrator (TASK-8).
+//! makes a context menu's first item its bold default, counts, dates and sizes in the
+//! regional format, the shield icon of a menu item, the restart as administrator (TASK-8),
+//! and the snapshot list's rows, styles and empty text (TASK-9).
 
-use std::cell::Cell;
+use std::cell::{Cell, RefCell};
 use std::ffi::{OsStr, c_void};
 use std::io;
 use std::mem::size_of;
@@ -12,21 +13,27 @@ use std::os::windows::ffi::OsStrExt;
 use std::path::Path;
 use std::ptr;
 
-use windows_sys::Win32::Foundation::{HWND, LPARAM, LRESULT, POINT, RECT, WPARAM};
+use windows_sys::Win32::Foundation::{
+    FILETIME, HWND, LPARAM, LRESULT, POINT, RECT, SYSTEMTIME, WPARAM,
+};
 use windows_sys::Win32::Globalization::{
-    GetLocaleInfoEx, GetNumberFormatEx, GetUserDefaultUILanguage, LOCALE_SDECIMAL,
-    LOCALE_SGROUPING, LOCALE_STHOUSAND, NUMBERFMTW,
+    DATE_SHORTDATE, GetDateFormatEx, GetLocaleInfoEx, GetNumberFormatEx, GetTimeFormatEx,
+    GetUserDefaultUILanguage, LOCALE_SDECIMAL, LOCALE_SGROUPING, LOCALE_STHOUSAND, NUMBERFMTW,
 };
 use windows_sys::Win32::Graphics::Gdi::{
     BI_RGB, BITMAPINFO, BITMAPINFOHEADER, ClientToScreen, CreateCompatibleDC, CreateDIBSection,
-    DIB_RGB_COLORS, DeleteDC, DeleteObject, HBITMAP, RGBQUAD, SelectObject,
+    DIB_RGB_COLORS, DeleteDC, DeleteObject, HBITMAP, InvalidateRect, RGBQUAD, SelectObject,
 };
 use windows_sys::Win32::System::Com::{CLSCTX_INPROC_SERVER, CoCreateInstance};
+use windows_sys::Win32::System::Time::{FileTimeToSystemTime, SystemTimeToTzSpecificLocalTime};
 use windows_sys::Win32::UI::Accessibility::{
     CLSID_AccPropServices, LiveSetting_Property_GUID, NotifyWinEvent, PROPID_ACC_NAME, Polite,
 };
 use windows_sys::Win32::UI::Controls::{
-    LVIR_BOUNDS, LVM_GETITEMRECT, LVM_GETNEXTITEM, LVNI_FOCUSED,
+    EMF_CENTERED, LVIR_BOUNDS, LVIS_FOCUSED, LVIS_SELECTED, LVITEMW, LVM_ENSUREVISIBLE,
+    LVM_GETITEMRECT, LVM_GETNEXTITEM, LVM_GETSELECTEDCOUNT, LVM_SETEXTENDEDLISTVIEWSTYLE,
+    LVM_SETITEMSTATE, LVN_GETEMPTYMARKUP, LVNI_FOCUSED, LVNI_SELECTED, LVS_EX_FULLROWSELECT,
+    LVS_NOSORTHEADER, NMHDR, NMLVEMPTYMARKUP,
 };
 use windows_sys::Win32::UI::Input::KeyboardAndMouse::{
     GetFocus, GetKeyState, GetKeyboardLayout, VK_MENU, VkKeyScanExW,
@@ -34,13 +41,15 @@ use windows_sys::Win32::UI::Input::KeyboardAndMouse::{
 use windows_sys::Win32::UI::Shell::{
     DefSubclassProc, RemoveWindowSubclass, SHGSI_ICON, SHGSI_SMALLICON, SHGetStockIconInfo,
     SHSTOCKICONINFO, SIID_SHIELD, SetWindowSubclass, ShellExecuteW, StrCmpLogicalW,
+    StrFormatByteSizeW,
 };
 use windows_sys::Win32::UI::WindowsAndMessaging::{
-    CHILDID_SELF, DI_NORMAL, DestroyIcon, DrawIconEx, EVENT_OBJECT_LIVEREGIONCHANGED,
-    GetClassNameW, GetMenu, GetMenuItemCount, GetMenuStringW, GetSubMenu, GetSystemMetrics, HICON,
-    HMENU, MENUITEMINFOW, MF_BYPOSITION, MF_SYSMENU, MIIM_BITMAP, MNC_EXECUTE, OBJID_CLIENT,
-    SM_CXSMICON, SM_CYSMICON, SW_SHOWNORMAL, SendMessageW, SetMenuDefaultItem, SetMenuItemInfoW,
-    WM_INITMENUPOPUP, WM_MENUCHAR, WM_NCDESTROY,
+    CHILDID_SELF, DI_NORMAL, DestroyIcon, DrawIconEx, EVENT_OBJECT_LIVEREGIONCHANGED, GWL_STYLE,
+    GetClassNameW, GetMenu, GetMenuItemCount, GetMenuStringW, GetSubMenu, GetSystemMetrics,
+    GetWindowLongPtrW, HICON, HMENU, MENUITEMINFOW, MF_BYPOSITION, MF_SYSMENU, MIIM_BITMAP,
+    MNC_EXECUTE, OBJID_CLIENT, SM_CXSMICON, SM_CYSMICON, SW_SHOWNORMAL, SendMessageW,
+    SetMenuDefaultItem, SetMenuItemInfoW, SetWindowLongPtrW, WM_INITMENUPOPUP, WM_MENUCHAR,
+    WM_NCDESTROY, WM_NOTIFY,
 };
 use windows_sys::core::{GUID, HRESULT};
 
@@ -223,6 +232,159 @@ pub fn is_text_field(hwnd: *mut c_void) -> bool {
     len > 0 && String::from_utf16_lossy(&class[..len as usize]).eq_ignore_ascii_case("Edit")
 }
 
+/// The row of a list that has the focus rectangle: the current snapshot (TASK-9).
+pub fn focused_row(list: *mut c_void) -> Option<usize> {
+    // SAFETY: a plain list-view message to a live list-view window.
+    let row = unsafe { SendMessageW(list, LVM_GETNEXTITEM, usize::MAX, LVNI_FOCUSED as LPARAM) };
+    usize::try_from(row).ok()
+}
+
+/// The selected rows of a list, top to bottom.
+pub fn selected_rows(list: *mut c_void) -> Vec<usize> {
+    let mut rows = Vec::new();
+    let mut row = -1isize;
+    loop {
+        // SAFETY: a plain list-view message to a live list-view window.
+        row = unsafe {
+            SendMessageW(
+                list,
+                LVM_GETNEXTITEM,
+                row as WPARAM,
+                LVNI_SELECTED as LPARAM,
+            )
+        };
+        match usize::try_from(row) {
+            Ok(row) => rows.push(row),
+            Err(_) => return rows,
+        }
+    }
+}
+
+/// How many rows of a list are selected.
+pub fn selected_count(list: *mut c_void) -> usize {
+    // SAFETY: a plain list-view message to a live list-view window.
+    unsafe { SendMessageW(list, LVM_GETSELECTEDCOUNT, 0, 0) }
+        .try_into()
+        .unwrap_or(0)
+}
+
+/// Makes `row` the one selected row of a list, with the focus rectangle, and scrolls it
+/// into view; it does not move the keyboard focus to the list.
+pub fn select_only(list: *mut c_void, row: usize) {
+    set_row_state(list, -1, 0, LVIS_SELECTED);
+    set_row_state(
+        list,
+        row as isize,
+        LVIS_SELECTED | LVIS_FOCUSED,
+        LVIS_SELECTED | LVIS_FOCUSED,
+    );
+    // SAFETY: a plain list-view message to a live list-view window.
+    unsafe { SendMessageW(list, LVM_ENSUREVISIBLE, row, 0) };
+}
+
+/// LVM_SETITEMSTATE on `row`, or on every row with -1.
+fn set_row_state(list: *mut c_void, row: isize, state: u32, mask: u32) {
+    // SAFETY: an all-zero LVITEMW is valid; only the state fields are read for this message.
+    let mut item: LVITEMW = unsafe { std::mem::zeroed() };
+    item.state = state;
+    item.stateMask = mask;
+    // SAFETY: a live list-view window and a complete LVITEMW.
+    unsafe {
+        SendMessageW(
+            list,
+            LVM_SETITEMSTATE,
+            row as WPARAM,
+            &mut item as *mut LVITEMW as LPARAM,
+        )
+    };
+}
+
+/// Makes a report list select whole rows, not just the first column, and keeps its column
+/// headers from looking like sort buttons (TASK-9).
+pub fn style_as_log(list: *mut c_void) {
+    // SAFETY: plain messages and style calls on a live list-view window.
+    unsafe {
+        SendMessageW(
+            list,
+            LVM_SETEXTENDEDLISTVIEWSTYLE,
+            LVS_EX_FULLROWSELECT as WPARAM,
+            LVS_EX_FULLROWSELECT as LPARAM,
+        );
+        let style = GetWindowLongPtrW(list, GWL_STYLE);
+        SetWindowLongPtrW(list, GWL_STYLE, style | LVS_NOSORTHEADER as isize);
+    }
+}
+
+thread_local! {
+    /// What each list shows while it has no rows, by the list's window: the text the
+    /// list's parent answers LVN_GETEMPTYMARKUP with.
+    static EMPTY_TEXTS: RefCell<Vec<(usize, Vec<u16>)>> = const { RefCell::new(Vec::new()) };
+}
+
+/// Sets the text a list shows in its area while it has no rows, as Windows draws it
+/// (LVN_GETEMPTYMARKUP); the list's parent must have been given to
+/// [`subclass_list_parent`]. The text is cut to what the message can carry.
+pub fn set_empty_text(list: *mut c_void, text: &str) {
+    const MAX_CHARS: usize = 2083;
+    let wide: Vec<u16> = text.encode_utf16().take(MAX_CHARS).chain([0]).collect();
+    EMPTY_TEXTS.with(|texts| {
+        let mut texts = texts.borrow_mut();
+        match texts.iter_mut().find(|(hwnd, _)| *hwnd == list as usize) {
+            Some((_, old)) => *old = wide,
+            None => texts.push((list as usize, wide)),
+        }
+    });
+    // SAFETY: a live window; the whole client area is redrawn.
+    unsafe { InvalidateRect(list, ptr::null(), 1) };
+}
+
+/// Subclasses the parent of the lists so it answers LVN_GETEMPTYMARKUP for them.
+pub fn subclass_list_parent(hwnd: *mut c_void) {
+    // SAFETY: a live window of this thread; the procedure is a plain function.
+    unsafe { SetWindowSubclass(hwnd, Some(list_parent_proc), 1, 0) };
+}
+
+unsafe extern "system" fn list_parent_proc(
+    hwnd: HWND,
+    msg: u32,
+    wparam: WPARAM,
+    lparam: LPARAM,
+    _id: usize,
+    _data: usize,
+) -> LRESULT {
+    match msg {
+        WM_NOTIFY => {
+            // SAFETY: WM_NOTIFY's lparam points at an NMHDR, which for this code is the
+            // start of an NMLVEMPTYMARKUP the list owns for the call.
+            let header = unsafe { &*(lparam as *const NMHDR) };
+            if header.code == LVN_GETEMPTYMARKUP {
+                let text = EMPTY_TEXTS.with(|texts| {
+                    texts
+                        .borrow()
+                        .iter()
+                        .find(|(list, _)| *list == header.hwndFrom as usize)
+                        .map(|(_, text)| text.clone())
+                });
+                if let Some(text) = text {
+                    // SAFETY: see above; the markup struct is written within its bounds.
+                    let markup = unsafe { &mut *(lparam as *mut NMLVEMPTYMARKUP) };
+                    markup.dwFlags = EMF_CENTERED;
+                    markup.szMarkup[..text.len()].copy_from_slice(&text);
+                    return 1;
+                }
+            }
+        }
+        WM_NCDESTROY => {
+            // SAFETY: the subclass installed in `subclass_list_parent`, removed as the
+            // window goes, as the subclassing rules ask.
+            unsafe { RemoveWindowSubclass(hwnd, Some(list_parent_proc), 1) };
+        }
+        _ => {}
+    }
+    // SAFETY: passes the message on to wx's own window procedure.
+    unsafe { DefSubclassProc(hwnd, msg, wparam, lparam) }
+}
+
 /// Where a context menu opened from the keyboard goes: the screen point at the bottom
 /// left of the list's focused row, or the list's top left corner when no row has focus.
 pub fn context_menu_point(list: *mut c_void) -> (i32, i32) {
@@ -383,6 +545,114 @@ pub fn format_count(count: u64) -> String {
         return plain;
     }
     String::from_utf16_lossy(&out[..len as usize - 1])
+}
+
+/// A moment given as Unix time in milliseconds, in the user's regional short date and
+/// time with seconds, in this computer's time zone: "31.10.2026 14:05:12" or
+/// "10/31/2026 2:05:12 PM" (TASK-9). A moment Windows cannot convert, or a format it
+/// cannot give, falls back to the UTC time in ISO form, so a name is never empty.
+pub fn format_date_time(unix_millis: i64) -> String {
+    /// 100-ns intervals between 1601-01-01 and 1970-01-01.
+    const EPOCH_DIFFERENCE: i64 = 116_444_736_000_000_000;
+    let fallback = || iso_utc(unix_millis);
+    let Some(intervals) = unix_millis
+        .checked_mul(10_000)
+        .and_then(|i| i.checked_add(EPOCH_DIFFERENCE))
+        .filter(|&i| i >= 0)
+    else {
+        return fallback();
+    };
+    let file_time = FILETIME {
+        dwLowDateTime: intervals as u32,
+        dwHighDateTime: (intervals >> 32) as u32,
+    };
+    // SAFETY: all-zero SYSTEMTIMEs are valid out values; the calls fill them.
+    let mut utc: SYSTEMTIME = unsafe { std::mem::zeroed() };
+    let mut local: SYSTEMTIME = unsafe { std::mem::zeroed() };
+    // SAFETY: valid pointers; a null time zone means this computer's current one.
+    let converted = unsafe {
+        FileTimeToSystemTime(&file_time, &mut utc) != 0
+            && SystemTimeToTzSpecificLocalTime(ptr::null(), &utc, &mut local) != 0
+    };
+    if !converted {
+        return fallback();
+    }
+    let mut date = [0u16; 128];
+    let mut time = [0u16; 128];
+    // SAFETY: the user's default locale (a null name); the buffer lengths are passed and
+    // the format and calendar are the locale's own.
+    let (date_len, time_len) = unsafe {
+        (
+            GetDateFormatEx(
+                ptr::null(),
+                DATE_SHORTDATE,
+                &local,
+                ptr::null(),
+                date.as_mut_ptr(),
+                date.len() as i32,
+                ptr::null(),
+            ),
+            GetTimeFormatEx(
+                ptr::null(),
+                0,
+                &local,
+                ptr::null(),
+                time.as_mut_ptr(),
+                time.len() as i32,
+            ),
+        )
+    };
+    // The lengths count the terminating NUL.
+    if date_len <= 1 || time_len <= 1 {
+        return fallback();
+    }
+    format!(
+        "{} {}",
+        String::from_utf16_lossy(&date[..date_len as usize - 1]),
+        String::from_utf16_lossy(&time[..time_len as usize - 1])
+    )
+}
+
+/// "2026-10-31 12:05:12 UTC" for a Unix time in milliseconds, with no calendar library:
+/// the civil-from-days algorithm of Howard Hinnant.
+fn iso_utc(unix_millis: i64) -> String {
+    let seconds = unix_millis.div_euclid(1000);
+    let days = seconds.div_euclid(86_400);
+    let of_day = seconds.rem_euclid(86_400);
+    let z = days + 719_468;
+    let era = z.div_euclid(146_097);
+    let doe = z.rem_euclid(146_097);
+    let yoe = (doe - doe / 1460 + doe / 36_524 - doe / 146_096) / 365;
+    let doy = doe - (365 * yoe + yoe / 4 - yoe / 100);
+    let mp = (5 * doy + 2) / 153;
+    let day = doy - (153 * mp + 2) / 5 + 1;
+    let month = if mp < 10 { mp + 3 } else { mp - 9 };
+    let year = yoe + era * 400 + i64::from(month <= 2);
+    format!(
+        "{year:04}-{month:02}-{day:02} {:02}:{:02}:{:02} UTC",
+        of_day / 3600,
+        of_day % 3600 / 60,
+        of_day % 60
+    )
+}
+
+/// A size in bytes as Explorer shows it: "1.5 MB" in the user's format; plain bytes when
+/// the format cannot be given.
+pub fn format_size(bytes: u64) -> String {
+    let mut out = [0u16; 64];
+    // SAFETY: the buffer length is passed.
+    let written = unsafe {
+        StrFormatByteSizeW(
+            bytes.min(i64::MAX as u64) as i64,
+            out.as_mut_ptr(),
+            out.len() as u32,
+        )
+    };
+    if written.is_null() {
+        return bytes.to_string();
+    }
+    let len = out.iter().position(|&c| c == 0).unwrap_or(out.len());
+    String::from_utf16_lossy(&out[..len])
 }
 
 /// The `Grouping` field of NUMBERFMTW from LOCALE_SGROUPING: "3;0" (groups of three,
@@ -547,6 +817,37 @@ mod tests {
         assert!(
             !format_count(1_234_567).contains(['.', ',']) || !format_count(1).contains(['.', ','])
         );
+    }
+
+    #[test]
+    fn a_snapshot_name_holds_the_regional_date_and_the_time_with_seconds() {
+        // 2026-10-31 12:05:12 UTC; the local hour depends on this computer's time zone,
+        // but the minutes, the seconds and the day's digits do not.
+        let name = format_date_time(1_793_448_312_000);
+        assert!(name.contains("05:12"), "{name}");
+        assert!(name.contains("2026") || name.contains("26"), "{name}");
+        assert!(name.contains(' '), "{name}");
+        let later = format_date_time(1_793_448_313_000);
+        assert_ne!(name, later, "seconds tell two snapshots of a minute apart");
+        assert_eq!(iso_utc(1_793_448_312_000), "2026-10-31 12:05:12 UTC");
+        assert_eq!(iso_utc(0), "1970-01-01 00:00:00 UTC");
+        assert_eq!(iso_utc(-1000), "1969-12-31 23:59:59 UTC");
+        // A moment before 1601 cannot be a FILETIME; the ISO form stands in.
+        assert_eq!(
+            format_date_time(-20_000_000_000_000),
+            "1336-03-23 12:26:40 UTC"
+        );
+    }
+
+    #[test]
+    fn sizes_are_shown_as_explorer_shows_them() {
+        // The unit and the decimal separator follow the user's language and region:
+        // "1.43 MB" or "1,43 МБ".
+        let size = format_size(1_500_000);
+        assert!(size.starts_with("1"), "{size}");
+        assert!(size.contains(' '), "{size}");
+        assert_ne!(size, "1500000");
+        assert!(format_size(0).starts_with('0'));
     }
 
     #[test]

@@ -11,6 +11,7 @@ pub use en::En;
 pub use uk::Uk;
 
 use revisor_core::exclude::PatternError;
+use revisor_core::settings::FocusAfterSnapshot;
 
 use crate::commands::{CommandId, MenuId, Pane, Reason, SubmenuId};
 
@@ -32,6 +33,8 @@ pub enum Failure {
     /// A newer version of revisor made the profile.
     NewerVersion,
     NotAProfile,
+    /// The file in the place of the settings database is something else.
+    NotSettings,
     /// The user cancelled the action, say at the administrator prompt.
     Cancelled,
     Other {
@@ -145,8 +148,46 @@ pub trait Strings {
     fn restart_during_snapshot(&self) -> &'static str;
     fn restart_failed(&self, reason: &str) -> String;
 
+    // The snapshot list (TASK-9).
+    fn column_date_time(&self) -> &'static str;
+    fn column_comment(&self) -> &'static str;
+    /// Shown in the empty list; `key` is the shortcut that takes a snapshot.
+    fn no_snapshots_yet(&self, key: &str) -> String;
+    /// Shown in the empty list while there are no profiles; `key` makes a profile.
+    fn no_profiles_yet(&self, key: &str) -> String;
+    /// The only item of the profile box while there are no profiles.
+    fn no_profiles_item(&self) -> &'static str;
+    /// The label of the comment field, without access key or colon.
+    fn comment_of(&self, snapshot: &str) -> String;
+    fn comment_saved(&self) -> &'static str;
+    fn comment_removed(&self) -> &'static str;
+    fn comment_not_saved(&self, reason: &str) -> String;
+    /// The question before one snapshot, named with its comment, is deleted.
+    fn delete_snapshot_question(&self, name: &str, comment: Option<&str>) -> String;
+    /// The question before several snapshots are deleted.
+    fn delete_snapshots_question(&self, count: usize) -> String;
+    /// The status bar message once snapshots are deleted and the compaction started.
+    fn snapshots_deleted(&self, count: usize, profile: &str) -> String;
+    fn snapshots_not_deleted(&self, reason: &str) -> String;
+    /// The progress field while a profile's database is compacted.
+    fn compacting(&self, profile: &str) -> String;
+    /// `freed` is the space returned, in the user's format.
+    fn compaction_done(&self, profile: &str, freed: &str) -> String;
+    fn compaction_cancelled(&self, profile: &str) -> String;
+    fn compaction_failed(&self, profile: &str, reason: &str) -> String;
+    /// The reason when the compaction's thread ended without a result.
+    fn compaction_stopped(&self) -> &'static str;
+
+    // The settings window (TASK-9); labels come without access key or colon.
+    fn focus_after_snapshot(&self) -> &'static str;
+    fn focus_option(&self, value: FocusAfterSnapshot) -> &'static str;
+    fn confirm_snapshot_deletion(&self) -> &'static str;
+    fn settings_saved(&self) -> &'static str;
+    fn settings_not_saved(&self, reason: &str) -> String;
+    /// The settings file could not be used, so the defaults are.
+    fn settings_not_opened(&self, file: &str, reason: &str) -> String;
+
     // The debug-only demo state (REVISOR_DEMO=1).
-    fn demo_snapshot(&self, n: usize) -> String;
     fn demo_change(&self, n: usize) -> String;
     fn demo_done(&self, command: &str) -> String;
 
@@ -218,6 +259,62 @@ mod tests {
         assert_eq!(
             En.snapshot_saved(12345, "12,345"),
             "Snapshot saved: 12,345 entries."
+        );
+    }
+
+    #[test]
+    fn the_delete_snapshot_questions_name_the_snapshot_or_count_them() {
+        assert_eq!(
+            Uk.delete_snapshot_question("31.10.2026 14:05:12", Some("перед встановленням X")),
+            "Видалити знімок 31.10.2026 14:05:12 «перед встановленням X»? Цю дію не можна \
+             скасувати."
+        );
+        assert_eq!(
+            Uk.delete_snapshot_question("31.10.2026 14:05:12", None),
+            "Видалити знімок 31.10.2026 14:05:12? Цю дію не можна скасувати."
+        );
+        for (n, snapshots) in [(2, "2 знімки"), (5, "5 знімків"), (21, "21 знімок")]
+        {
+            assert_eq!(
+                Uk.delete_snapshots_question(n),
+                format!("Видалити {snapshots}? Цю дію не можна скасувати.")
+            );
+        }
+        assert_eq!(
+            Uk.snapshots_deleted(3, "Дім"),
+            "Видалено 3 знімки; триває стискання бази профілю «Дім»."
+        );
+        assert_eq!(
+            En.delete_snapshot_question("10/31/2026 2:05:12 PM", Some("before X")),
+            "Delete the snapshot 10/31/2026 2:05:12 PM “before X”? This cannot be undone."
+        );
+        assert_eq!(
+            En.delete_snapshots_question(2),
+            "Delete 2 snapshots? This cannot be undone."
+        );
+        assert_eq!(
+            En.snapshots_deleted(1, "Home"),
+            "Deleted 1 snapshot; the database of the profile “Home” is being compacted."
+        );
+    }
+
+    #[test]
+    fn the_empty_list_hints_name_the_keys() {
+        assert_eq!(
+            Uk.no_snapshots_yet("F5"),
+            "Знімків ще немає. Натисніть F5, щоб зробити перший знімок."
+        );
+        assert_eq!(
+            Uk.no_profiles_yet("Ctrl+N"),
+            "Профілів ще немає. Натисніть Ctrl+N, щоб створити перший профіль."
+        );
+        assert_eq!(
+            En.no_snapshots_yet("F5"),
+            "No snapshots yet. Press F5 to take the first snapshot."
+        );
+        assert_eq!(
+            En.no_profiles_yet("Ctrl+N"),
+            "No profiles yet. Press Ctrl+N to create the first profile."
         );
     }
 

@@ -4,6 +4,7 @@
 
 use std::io;
 
+use revisor_core::settings::SettingsError;
 use revisor_core::store::StoreError;
 
 use crate::i18n::Failure;
@@ -46,23 +47,44 @@ pub fn of_store(e: &StoreError) -> Failure {
         StoreError::Io(e) => of_io(e),
         StoreError::NewerSchema(_) => Failure::NewerVersion,
         StoreError::NotAProfile => Failure::NotAProfile,
-        StoreError::Sqlite(e) => {
-            let code = e.sqlite_error().map(|error| error.extended_code);
-            match code.map(|code| code & 0xff) {
-                Some(SQLITE_FULL) => Failure::DiskFull,
-                Some(SQLITE_BUSY | SQLITE_LOCKED) => Failure::InUse,
-                Some(SQLITE_PERM | SQLITE_READONLY) => Failure::AccessDenied,
-                Some(SQLITE_NOTADB) => Failure::NotAProfile,
-                _ => Failure::Other {
-                    text: e.to_string(),
-                    code: code.map(i64::from),
-                },
-            }
-        }
-        // Only a snapshot is cancelled (TASK-8), and it says so in its own words.
+        StoreError::Sqlite(e) => of_sqlite(
+            e.sqlite_error().map(|error| error.extended_code),
+            e.to_string(),
+            Failure::NotAProfile,
+        ),
+        // A cancelled snapshot (TASK-8) and an interrupted compaction (TASK-9) say so in
+        // their own words.
         StoreError::Cancelled => Failure::Other {
             text: e.to_string(),
             code: None,
+        },
+    }
+}
+
+pub fn of_settings(e: &SettingsError) -> Failure {
+    match e {
+        SettingsError::Io(e) => of_io(e),
+        SettingsError::NewerSchema(_) => Failure::NewerVersion,
+        SettingsError::NotSettings => Failure::NotSettings,
+        SettingsError::Sqlite(e) => of_sqlite(
+            e.sqlite_error().map(|error| error.extended_code),
+            e.to_string(),
+            Failure::NotSettings,
+        ),
+    }
+}
+
+/// An SQLite error by its extended result code and text; `not_a_database` is what a file
+/// that is not a database at all amounts to: not a profile, or not the settings file.
+fn of_sqlite(code: Option<i32>, text: String, not_a_database: Failure) -> Failure {
+    match code.map(|code| code & 0xff) {
+        Some(SQLITE_FULL) => Failure::DiskFull,
+        Some(SQLITE_BUSY | SQLITE_LOCKED) => Failure::InUse,
+        Some(SQLITE_PERM | SQLITE_READONLY) => Failure::AccessDenied,
+        Some(SQLITE_NOTADB) => not_a_database,
+        _ => Failure::Other {
+            text,
+            code: code.map(i64::from),
         },
     }
 }

@@ -1,8 +1,9 @@
 //! The main window: the menu bar and context menus built from the command table, the
 //! status bar that speaks without moving the focus, the key handler, the two parts of
-//! the window, and the snapshot being taken, with its progress and its outcome (TASK-8).
-//! The profile box lists the profiles (TASK-7); both lists are placeholders until TASK-9
-//! and TASK-11 fill them.
+//! the window, the snapshot being taken, with its progress and its outcome (TASK-8), and
+//! the snapshot list of the open profile with its comments, deletion and the compaction
+//! that follows it (TASK-9). The profile box lists the profiles (TASK-7); the difference
+//! list is a placeholder until TASK-11 fills it.
 
 use std::cell::{Cell, RefCell};
 use std::io;
@@ -12,11 +13,16 @@ use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::mpsc::{self, Receiver, TryRecvError};
 use std::thread::{self, JoinHandle};
+use std::time::Duration;
 
-use revisor_core::profiles::{self, ProfileError, ProfileFile};
+use revisor_core::profiles::{self, ProfileError, ProfileFile, Unreadable};
 use revisor_core::scan::Progress;
+use revisor_core::settings::{FocusAfterSnapshot, Settings};
 use revisor_core::snapshot::{self, Report, SnapshotError};
-use revisor_core::store::{FolderState, ProfileSettings, StoreError, Unavailable};
+use revisor_core::store::{
+    Compacted, FolderState, Interrupt, ProfileSettings, SnapshotInfo, Store, StoreError,
+    Unavailable,
+};
 use wxdragon::prelude::*;
 
 use crate::commands::{COMMANDS, CommandId, CommandKind, MenuId, Pane, command};
@@ -29,8 +35,10 @@ use crate::menus::{
     button_label, context_label, context_menu, field_label, menu_label, submenu_label,
     top_menu_label, window_title,
 };
-use crate::message_box::{confirm, tell};
+use crate::message_box::{ask_text, confirm, tell};
 use crate::profile_window::{self, Purpose};
+use crate::settings_window::{self, Values};
+use crate::snapshots::{Arrival, FocusPlace, arrival, row_after_deletion};
 use crate::state::{AppState, ChangeType, SortColumn};
 use crate::win32;
 
@@ -40,22 +48,45 @@ const FIRST_COMMAND_ID: i32 = 1000;
 /// How often the progress of a snapshot is shown, in milliseconds.
 const PROGRESS_INTERVAL: i32 = 100;
 
+/// How long a comment waits for the snapshot that is writing the profile's database
+/// (TASK-9 #29): the save's commit is a matter of seconds.
+const COMMENT_TIMEOUT: Duration = Duration::from_secs(60);
+
+/// How long a revisor started while another compacts a profile waits between its looks
+/// at the profile (TASK-9 #30).
+const BUSY_RETRY: Duration = Duration::from_secs(1);
+
+/// The file of the application's settings in the data folder (ADR-0007).
+const SETTINGS_FILE: &str = "settings.db";
+
+/// The widths of the snapshot list's columns: the name is fixed, the comment takes the rest.
+const DATE_TIME_WIDTH: i32 = 190;
+const COMMENT_WIDTH: i32 = 420;
+
 /// The access keys of the labels of the main window. They do not take the letters of the
 /// menus, which would no longer open while the focus is in the panel.
 const PROFILE_ACCESS: u8 = b'R';
 const PROGRESS_ACCESS: u8 = b'P';
 
-/// «Скасувати (N)» next to the progress presses the command «Скасувати знімок», so it
-/// takes the command's letter.
+/// The access key of the comment field in the «Коментар» window.
+const COMMENT_ACCESS: u8 = b'C';
+
+/// «Скасувати (N)» next to the progress presses the command «Скасувати знімок», and
+/// «Скасувати стискання (O)» the command «Скасувати стискання»: the button takes the
+/// letter of the command of the job it shows.
 fn cancel_snapshot_access() -> u8 {
     command(CommandId::CancelSnapshot).access
+}
+
+fn cancel_compaction_access() -> u8 {
+    command(CommandId::CancelCompaction).access
 }
 
 /// The positions of the labels and buttons in [`MainWindow::labels`], which
 /// `Route::FocusLabel` names them by.
 const LABEL_PROFILE: usize = 0;
 const LABEL_PROGRESS: usize = 1;
-const LABEL_CANCEL_SNAPSHOT: usize = 2;
+const LABEL_CANCEL: usize = 2;
 
 /// The access keys of the action buttons of questions: «Видалити», «Перезапустити» and
 /// «Закрити».
@@ -122,6 +153,50 @@ impl SnapshotJob {
     }
 }
 
+/// A profile's database being compacted on its own thread after snapshots were deleted
+/// (TASK-9). The database is closed even to reading meanwhile, so the job keeps what its
+/// list shows.
+struct CompactionJob {
+    profile: ProfileFile,
+    /// The profile's snapshots after the deletion.
+    rows: Vec<SnapshotInfo>,
+    interrupt: Interrupt,
+    done: Receiver<Result<Compacted, StoreError>>,
+    thread: Option<JoinHandle<()>>,
+}
+
+impl CompactionJob {
+    /// Starts compacting on `store`, the connection the deletion was made on.
+    fn start(profile: ProfileFile, rows: Vec<SnapshotInfo>, store: Store) -> Self {
+        let interrupt = store.interrupt();
+        let (sender, done) = mpsc::channel();
+        let thread = thread::spawn(move || {
+            let _ = sender.send(store.compact());
+        });
+        Self {
+            profile,
+            rows,
+            interrupt,
+            done,
+            thread: Some(thread),
+        }
+    }
+
+    fn wait(&mut self) {
+        if let Some(thread) = self.thread.take() {
+            let _ = thread.join();
+        }
+    }
+}
+
+/// Which background job the progress row shows: a snapshot first, else a compaction.
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum ShownJob {
+    Snapshot,
+    Compaction,
+    None,
+}
+
 pub struct MainWindow {
     frame: Frame,
     s: &'static dyn Strings,
@@ -130,30 +205,39 @@ pub struct MainWindow {
     status: StatusBar,
     panel: Panel,
     profile: Choice,
-    /// The progress of the snapshot being taken, shown only while one is.
+    /// The progress of the snapshot being taken, or of the compaction, shown only while
+    /// one is.
     progress_label: StaticText,
     progress_text: TextCtrl,
-    cancel_snapshot: Button,
+    /// Cancels the job the progress row shows.
+    cancel_button: Button,
     snapshots: ListCtrl,
     difference: ListCtrl,
-    /// Polls the snapshot being taken.
+    /// Polls the jobs.
     timer: Timer<Frame>,
     job: RefCell<Option<SnapshotJob>>,
+    compaction: RefCell<Option<CompactionJob>>,
     /// The folder of profiles, `data\profiles` next to the exe.
     profiles_dir: PathBuf,
+    /// The application's settings (ADR-0007), or why their file could not be used: then
+    /// the defaults stand, and changes are not kept.
+    settings: Result<Settings, String>,
     /// The profiles in the order the profile box shows them.
     profiles: RefCell<Vec<ProfileFile>>,
     /// The open profile: its position in `profiles`.
     open_index: Cell<Option<usize>>,
+    /// The open profile's snapshots, in the order of the snapshot list: oldest first.
+    rows: RefCell<Vec<SnapshotInfo>>,
 }
 
 impl MainWindow {
-    /// Opens the window on the profile in the file `open`, when there is one, or else on
-    /// the first profile.
+    /// Opens the window on the profile in the file `open`, when there is one, else on the
+    /// profile opened last time, else on the first profile; `data_dir` holds the profiles
+    /// and the settings.
     pub fn open(
         s: &'static dyn Strings,
         state: AppState,
-        profiles_dir: PathBuf,
+        data_dir: PathBuf,
         open: Option<PathBuf>,
     ) -> Rc<Self> {
         let frame = Frame::builder()
@@ -190,7 +274,7 @@ impl MainWindow {
         let progress_text = TextCtrl::builder(&panel)
             .with_style(TextCtrlStyle::ReadOnly)
             .build();
-        let cancel_snapshot = Button::builder(&panel)
+        let cancel_button = Button::builder(&panel)
             .with_label(&button_label(
                 s,
                 s.cancel(),
@@ -201,18 +285,28 @@ impl MainWindow {
         let snapshots = ListCtrl::builder(&panel)
             .with_style(ListCtrlStyle::Report)
             .build();
+        snapshots.insert_column(
+            0,
+            s.column_date_time(),
+            ListColumnFormat::Left,
+            DATE_TIME_WIDTH,
+        );
+        snapshots.insert_column(1, s.column_comment(), ListColumnFormat::Left, COMMENT_WIDTH);
+        win32::style_as_log(snapshots.get_handle());
         let difference = ListCtrl::builder(&panel)
             .with_style(ListCtrlStyle::Report)
             .build();
+        difference.insert_column(0, s.pane(Pane::Difference), ListColumnFormat::Left, 600);
         for (list, pane) in [
             (&snapshots, Pane::Snapshots),
             (&difference, Pane::Difference),
         ] {
-            list.insert_column(0, s.pane(pane), ListColumnFormat::Left, 600);
             win32::set_accessible_name(list.get_handle(), s.pane(pane));
         }
+        // The panel answers for the lists' text while they are empty.
+        win32::subclass_list_parent(panel.get_handle());
         if state.demo {
-            fill_demo(s, &state, &snapshots, &difference);
+            fill_demo(s, &difference);
         }
 
         let profile_row = BoxSizer::builder(Orientation::Horizontal).build();
@@ -231,7 +325,7 @@ impl MainWindow {
             5,
         );
         progress_row.add(&progress_text, 1, SizerFlag::All, 5);
-        progress_row.add(&cancel_snapshot, 0, SizerFlag::All, 5);
+        progress_row.add(&cancel_button, 0, SizerFlag::All, 5);
         let sizer = BoxSizer::builder(Orientation::Vertical).build();
         sizer.add_sizer(&profile_row, 0, SizerFlag::Expand, 0);
         sizer.add_sizer(&progress_row, 0, SizerFlag::Expand, 0);
@@ -240,6 +334,11 @@ impl MainWindow {
         panel.set_sizer(sizer, true);
         let timer = Timer::new(&frame);
 
+        let settings_path = data_dir.join(SETTINGS_FILE);
+        let settings = Settings::open(&settings_path).map_err(|e| {
+            let reason = s.failure(&failure::of_settings(&e));
+            s.settings_not_opened(&file_name(&settings_path), &reason)
+        });
         let window = Rc::new(Self {
             frame,
             s,
@@ -250,19 +349,25 @@ impl MainWindow {
             profile,
             progress_label,
             progress_text,
-            cancel_snapshot,
+            cancel_button,
             snapshots,
             difference,
             timer,
             job: RefCell::new(None),
-            profiles_dir,
+            compaction: RefCell::new(None),
+            profiles_dir: data_dir.join("profiles"),
+            settings,
             profiles: RefCell::new(Vec::new()),
             open_index: Cell::new(None),
+            rows: RefCell::new(Vec::new()),
         });
-        window.show_progress(false);
+        window.refresh_progress_row();
         window.bind_events();
         win32::subclass_main_window(window.frame.get_handle());
         window.load_profiles(open.as_deref());
+        if let Err(message) = &window.settings {
+            window.say(message);
+        }
         window.frame.centre();
         window.frame.show(true);
         window
@@ -313,7 +418,9 @@ impl MainWindow {
         self.frame.on_menu_highlighted(|event| event.skip(false));
 
         // Closing during a snapshot cancels it, so it asks first (TASK-8 #26); a close
-        // that cannot be refused, as at a shutdown, stops the snapshot without asking.
+        // that cannot be refused, as at a shutdown, stops the snapshot without asking. A
+        // compaction goes on: the window goes at once, and the process ends with it
+        // (TASK-9 #30).
         let w = Rc::clone(self);
         self.frame.on_close(move |data| {
             if let WindowEventData::General(event) = data {
@@ -329,6 +436,7 @@ impl MainWindow {
                     true
                 };
                 if may_close {
+                    w.finish_compaction_hidden();
                     event.skip(true);
                 } else {
                     event.veto();
@@ -337,17 +445,27 @@ impl MainWindow {
         });
 
         let w = Rc::clone(self);
-        self.timer.on_tick(move |_| w.poll_snapshot());
+        self.timer.on_tick(move |_| w.poll_jobs());
 
         let w = Rc::clone(self);
-        self.cancel_snapshot
-            .on_click(move |_| w.run(CommandId::CancelSnapshot));
+        self.cancel_button.on_click(move |_| match w.shown_job() {
+            ShownJob::Snapshot => w.run(CommandId::CancelSnapshot),
+            ShownJob::Compaction => w.run(CommandId::CancelCompaction),
+            ShownJob::None => {}
+        });
 
         let w = Rc::clone(self);
         self.profile.on_selection_changed(move |event| {
             let selected = event.get_selection().and_then(|i| usize::try_from(i).ok());
             w.show_profile(selected);
         });
+
+        // Deletion acts on the selected snapshots, so the commands know how many there are.
+        let w = Rc::clone(self);
+        self.snapshots.on_item_selected(move |_| w.sync_selection());
+        let w = Rc::clone(self);
+        self.snapshots
+            .on_item_deselected(move |_| w.sync_selection());
 
         // A right click: the list under the mouse has the focus by then.
         let w = Rc::clone(self);
@@ -366,13 +484,26 @@ impl MainWindow {
     }
 
     /// The access keys of the main window's labels and buttons, for `keyboard::route`:
-    /// those of the progress row only while it is shown.
+    /// those of the progress row only while it is shown, with the Cancel button's letter
+    /// being that of the command of the job shown.
     fn labels(&self) -> Vec<u8> {
-        let mut labels = vec![PROFILE_ACCESS, PROGRESS_ACCESS, cancel_snapshot_access()];
-        if self.job.borrow().is_none() {
-            labels.truncate(LABEL_PROGRESS);
+        match self.shown_job() {
+            ShownJob::Snapshot => vec![PROFILE_ACCESS, PROGRESS_ACCESS, cancel_snapshot_access()],
+            ShownJob::Compaction => {
+                vec![PROFILE_ACCESS, PROGRESS_ACCESS, cancel_compaction_access()]
+            }
+            ShownJob::None => vec![PROFILE_ACCESS],
         }
-        labels
+    }
+
+    fn shown_job(&self) -> ShownJob {
+        if self.job.borrow().is_some() {
+            ShownJob::Snapshot
+        } else if self.compaction.borrow().is_some() {
+            ShownJob::Compaction
+        } else {
+            ShownJob::None
+        }
     }
 
     /// Where the keyboard focus is, in the terms of `keyboard::route`.
@@ -406,6 +537,20 @@ impl MainWindow {
         }
     }
 
+    /// Where the keyboard focus is, as far as a snapshot's arrival cares.
+    fn focus_place(&self) -> FocusPlace {
+        let focused = win32::focused_window();
+        if focused == self.snapshots.get_handle() {
+            FocusPlace::SnapshotList
+        } else if focused == self.progress_text.get_handle()
+            || focused == self.cancel_button.get_handle()
+        {
+            FocusPlace::SnapshotProgress
+        } else {
+            FocusPlace::Elsewhere
+        }
+    }
+
     fn list(&self, pane: Pane) -> &ListCtrl {
         match pane {
             Pane::Snapshots => &self.snapshots,
@@ -422,7 +567,11 @@ impl MainWindow {
             Route::FocusPane(pane) => self.list(pane).set_focus(),
             Route::FocusLabel(LABEL_PROFILE) => self.profile.set_focus(),
             Route::FocusLabel(LABEL_PROGRESS) => self.progress_text.set_focus(),
-            Route::FocusLabel(LABEL_CANCEL_SNAPSHOT) => self.run(CommandId::CancelSnapshot),
+            Route::FocusLabel(LABEL_CANCEL) => match self.shown_job() {
+                ShownJob::Snapshot => self.run(CommandId::CancelSnapshot),
+                ShownJob::Compaction => self.run(CommandId::CancelCompaction),
+                ShownJob::None => {}
+            },
             Route::FocusLabel(_) => {}
             Route::ContextMenu(pane) => self.show_context_menu(pane, None),
             Route::Pass => {}
@@ -450,9 +599,13 @@ impl MainWindow {
             CommandId::NewProfile => self.new_profile(),
             CommandId::EditProfile => self.edit_profile(),
             CommandId::DeleteProfile => self.delete_profile(),
+            CommandId::Settings => self.settings(),
             CommandId::RestartAsAdmin => self.restart_as_admin(),
             CommandId::TakeSnapshot => self.take_snapshot(),
+            CommandId::Comment => self.comment(),
+            CommandId::DeleteSnapshots => self.delete_snapshots(),
             CommandId::CancelSnapshot => self.cancel_snapshot(),
+            CommandId::CancelCompaction => self.cancel_compaction(),
             CommandId::KeyboardShortcuts => help::show_shortcuts(&self.frame, s),
             CommandId::About => help::show_about(&self.frame, s),
             // Only the demo state gets here: the other commands' tasks are not done yet.
@@ -485,24 +638,35 @@ impl MainWindow {
         }
     }
 
+    // --- Profiles (TASK-7, TASK-9) ----------------------------------------------------
+
     /// Reads the profiles from the disk into the profile box, by the user's alphabet, and
-    /// opens the one in the file `open`, or else the first. Says which files of the folder
-    /// of profiles could not be opened.
+    /// opens the one in the file `open`, else the one opened last time, else the first.
+    /// Says which files of the folder of profiles could not be opened.
     fn load_profiles(&self, open: Option<&Path>) {
         let s = self.s;
-        let (mut found, unreadable) = match profiles::list(&self.profiles_dir) {
-            Ok(found) => found,
-            Err(e) => {
-                let folder = self.profiles_dir.to_string_lossy();
-                self.say(&s.profiles_not_listed(&folder, &s.failure(&failure::of_io(&e))));
-                (Vec::new(), Vec::new())
-            }
-        };
+        let (mut found, unreadable) = self.list_profiles();
         found.sort_by(|a, b| win32::compare_names(&a.name, &b.name));
+        let last = self
+            .settings
+            .as_ref()
+            .ok()
+            .and_then(|settings| settings.last_profile().ok().flatten());
         let selected = open
             .and_then(|path| found.iter().position(|p| p.path == path))
+            .or_else(|| {
+                let last = last?;
+                found
+                    .iter()
+                    .position(|p| file_name(&p.path).to_lowercase() == last.to_lowercase())
+            })
             .or((!found.is_empty()).then_some(0));
         self.profile.clear();
+        if found.is_empty() {
+            // The box says there is nothing to choose from (TASK-9 #17).
+            self.profile.append(s.no_profiles_item());
+            self.profile.set_selection(0);
+        }
         for profile in &found {
             self.profile.append(&profile.name);
         }
@@ -523,26 +687,98 @@ impl MainWindow {
         }
     }
 
-    /// Opens the profile at position `index` of the profile box, or none.
+    /// The profiles in the folder of profiles and the files there that could not be
+    /// opened. A profile whose database this revisor is compacting is known already; one
+    /// another revisor is compacting is waited for before the window shows (TASK-9 #30),
+    /// and reported as in use once it is shown.
+    fn list_profiles(&self) -> (Vec<ProfileFile>, Vec<Unreadable>) {
+        let s = self.s;
+        loop {
+            let (mut found, unreadable) = match profiles::list(&self.profiles_dir) {
+                Ok(listed) => listed,
+                Err(e) => {
+                    let folder = self.profiles_dir.to_string_lossy();
+                    self.say(&s.profiles_not_listed(&folder, &s.failure(&failure::of_io(&e))));
+                    return (Vec::new(), Vec::new());
+                }
+            };
+            let mut others = Vec::new();
+            let mut busy_elsewhere = Vec::new();
+            for u in unreadable {
+                if !profiles::is_busy(&u.error) {
+                    others.push(u);
+                    continue;
+                }
+                let compacting = self.compaction.borrow();
+                match compacting.as_ref().filter(|job| job.profile.path == u.path) {
+                    Some(job) => found.push(job.profile.clone()),
+                    None => busy_elsewhere.push(u),
+                }
+            }
+            if busy_elsewhere.is_empty() || self.frame.is_shown() {
+                others.extend(busy_elsewhere);
+                return (found, others);
+            }
+            thread::sleep(BUSY_RETRY);
+        }
+    }
+
+    /// Opens the profile at position `index` of the profile box, or none: the title, the
+    /// state, the snapshot list with the newest snapshot current, and the memory of the
+    /// profile for the next start.
     fn show_profile(&self, index: Option<usize>) {
+        let s = self.s;
         let open = index.and_then(|i| self.profiles.borrow().get(i).cloned());
         self.open_index.set(index.filter(|_| open.is_some()));
         self.frame
             .set_title(&window_title(open.as_ref().map(|p| p.name.as_str())));
+        if let (Ok(settings), Some(open)) = (&self.settings, &open) {
+            let _ = settings.set_last_profile(Some(&file_name(&open.path)));
+        }
+        let rows = match &open {
+            None => Vec::new(),
+            Some(open) => {
+                let compacting = self.compaction.borrow();
+                match compacting
+                    .as_ref()
+                    .filter(|job| job.profile.path == open.path)
+                {
+                    // Its database is closed meanwhile; the job knows its snapshots.
+                    Some(job) => job.rows.clone(),
+                    None => match profiles::snapshots_of(&open.path) {
+                        Ok(rows) => rows,
+                        Err(e) => {
+                            let reason = s.failure(&failure::of_store(&e));
+                            self.say(&s.profile_not_opened(&file_name(&open.path), &reason));
+                            Vec::new()
+                        }
+                    },
+                }
+            }
+        };
+        self.snapshots.delete_all_items();
+        for (i, row) in rows.iter().enumerate() {
+            self.insert_row(i, row);
+        }
+        if let Some(newest) = rows.len().checked_sub(1) {
+            win32::select_only(self.snapshots.get_handle(), newest);
+        }
         {
             let mut state = self.state.borrow_mut();
             state.profile = open.as_ref().map(|p| p.name.clone());
-            if !state.demo {
-                state.snapshots = open
-                    .as_ref()
-                    .and_then(|p| profiles::snapshot_count(&p.path).ok())
-                    .unwrap_or(0);
-            }
+            state.snapshots = rows.len();
             state.snapshotting_open_profile = match (&open, self.job.borrow().as_ref()) {
                 (Some(open), Some(job)) => open.path == job.profile.path,
                 _ => false,
             };
+            state.compacting_open_profile = match (&open, self.compaction.borrow().as_ref()) {
+                (Some(open), Some(job)) => open.path == job.profile.path,
+                _ => false,
+            };
         }
+        *self.rows.borrow_mut() = rows;
+        self.sync_selection();
+        self.update_empty_text();
         self.refresh_menus();
     }
 
@@ -647,6 +883,301 @@ impl MainWindow {
         }
     }
 
+    // --- The settings (TASK-9) --------------------------------------------------------
+
+    fn focus_after_snapshot(&self) -> FocusAfterSnapshot {
+        self.settings
+            .as_ref()
+            .ok()
+            .and_then(|settings| settings.focus_after_snapshot().ok())
+            .unwrap_or_default()
+    }
+
+    fn confirm_deletion(&self) -> bool {
+        self.settings
+            .as_ref()
+            .ok()
+            .and_then(|settings| settings.confirm_snapshot_deletion().ok())
+            .unwrap_or(true)
+    }
+
+    /// Shows the settings window and keeps what the user confirmed.
+    fn settings(&self) {
+        let s = self.s;
+        let title = s.command(CommandId::Settings);
+        let initial = Values {
+            focus_after_snapshot: self.focus_after_snapshot(),
+            confirm_snapshot_deletion: self.confirm_deletion(),
+        };
+        let Some(values) = settings_window::show(&self.frame, s, initial) else {
+            return;
+        };
+        let saved = match &self.settings {
+            Ok(settings) => settings
+                .set_focus_after_snapshot(values.focus_after_snapshot)
+                .and_then(|()| {
+                    settings.set_confirm_snapshot_deletion(values.confirm_snapshot_deletion)
+                })
+                .map_err(|e| s.failure(&failure::of_settings(&e))),
+            Err(message) => Err(message.clone()),
+        };
+        match saved {
+            Ok(()) => self.say(s.settings_saved()),
+            Err(reason) => tell(&self.frame, s, title, &s.settings_not_saved(&reason)),
+        }
+    }
+
+    // --- The snapshot list (TASK-9) ---------------------------------------------------
+
+    /// Puts a snapshot in the list at `index`: its name, then its comment.
+    fn insert_row(&self, index: usize, row: &SnapshotInfo) {
+        self.snapshots
+            .insert_item(index as i64, &win32::format_date_time(row.taken_at), None);
+        if let Some(comment) = &row.comment {
+            self.snapshots
+                .set_item_text_by_column(index as i64, 1, comment);
+        }
+    }
+
+    /// The current snapshot: the row with the focus rectangle, or the newest one when no
+    /// row has it.
+    fn current_row(&self) -> Option<usize> {
+        let count = self.rows.borrow().len();
+        win32::focused_row(self.snapshots.get_handle())
+            .filter(|&row| row < count)
+            .or_else(|| count.checked_sub(1))
+    }
+
+    /// Keeps the state's count of selected snapshots as the list has it.
+    fn sync_selection(&self) {
+        let selected = win32::selected_count(self.snapshots.get_handle());
+        self.state.borrow_mut().selected_snapshots = selected;
+    }
+
+    /// What the empty snapshot list says, in its area and in its name for screen readers:
+    /// that there are no profiles, or no snapshots, and which key makes the first one.
+    fn update_empty_text(&self) {
+        let s = self.s;
+        let key = |id| command(id).shortcut.map(|k| k.name(s)).unwrap_or_default();
+        let hint = if self.profiles.borrow().is_empty() {
+            Some(s.no_profiles_yet(&key(CommandId::NewProfile)))
+        } else if self.rows.borrow().is_empty() {
+            Some(s.no_snapshots_yet(&key(CommandId::TakeSnapshot)))
+        } else {
+            None
+        };
+        let list = self.snapshots.get_handle();
+        let name = match &hint {
+            Some(hint) => format!("{}. {hint}", s.pane(Pane::Snapshots)),
+            None => s.pane(Pane::Snapshots).to_string(),
+        };
+        win32::set_accessible_name(list, &name);
+        win32::set_empty_text(list, hint.as_deref().unwrap_or_default());
+    }
+
+    /// Adds a saved snapshot of the open profile to the end of the list; with `current`
+    /// it becomes the current snapshot, and with `focus` the keyboard focus moves to it.
+    fn append_row(&self, row: SnapshotInfo, current: bool, focus: bool) {
+        let index = {
+            let mut rows = self.rows.borrow_mut();
+            rows.push(row);
+            rows.len() - 1
+        };
+        self.insert_row(index, &self.rows.borrow()[index]);
+        self.state.borrow_mut().snapshots = index + 1;
+        if current {
+            win32::select_only(self.snapshots.get_handle(), index);
+        }
+        if focus {
+            self.snapshots.set_focus();
+        }
+        self.sync_selection();
+        self.update_empty_text();
+    }
+
+    /// Asks for the current snapshot's comment and keeps it (TASK-9 #7). While a snapshot
+    /// is being saved, the write waits for it (#29).
+    fn comment(&self) {
+        let s = self.s;
+        let title = s.command(CommandId::Comment);
+        let Some(open) = self.open_profile() else {
+            return;
+        };
+        let Some(row) = self.current_row() else {
+            return;
+        };
+        let info = self.rows.borrow()[row].clone();
+        let name = win32::format_date_time(info.taken_at);
+        let Some(text) = ask_text(
+            &self.frame,
+            s,
+            title,
+            &s.comment_of(&name),
+            COMMENT_ACCESS,
+            info.comment.as_deref().unwrap_or_default(),
+        ) else {
+            return;
+        };
+        let comment = (!text.is_empty()).then_some(text);
+        let written = Store::open_with_timeout(&open.path, COMMENT_TIMEOUT)
+            .and_then(|mut store| store.set_comment(info.id, comment.as_deref()));
+        match written {
+            Ok(()) => {
+                self.snapshots.set_item_text_by_column(
+                    row as i64,
+                    1,
+                    comment.as_deref().unwrap_or_default(),
+                );
+                let removed = comment.is_none();
+                self.rows.borrow_mut()[row].comment = comment;
+                self.say(if removed {
+                    s.comment_removed()
+                } else {
+                    s.comment_saved()
+                });
+            }
+            Err(e) => {
+                let reason = s.failure(&failure::of_store(&e));
+                tell(&self.frame, s, title, &s.comment_not_saved(&reason));
+            }
+        }
+    }
+
+    /// Deletes the selected snapshots, after the confirmation the settings ask for, and
+    /// compacts the profile's database in the background (TASK-9 #24–#27).
+    fn delete_snapshots(&self) {
+        let s = self.s;
+        let title = s.command(CommandId::DeleteSnapshots);
+        let Some(open) = self.open_profile() else {
+            return;
+        };
+        let list = self.snapshots.get_handle();
+        let selected = win32::selected_rows(list);
+        let chosen: Vec<SnapshotInfo> = {
+            let rows = self.rows.borrow();
+            selected
+                .iter()
+                .filter_map(|&i| rows.get(i).cloned())
+                .collect()
+        };
+        if chosen.is_empty() {
+            return;
+        }
+        if self.confirm_deletion() {
+            let question = match chosen.as_slice() {
+                [one] => s.delete_snapshot_question(
+                    &win32::format_date_time(one.taken_at),
+                    one.comment.as_deref(),
+                ),
+                many => s.delete_snapshots_question(many.len()),
+            };
+            let delete = (s.delete(), DELETE_ACCESS);
+            if !confirm(&self.frame, s, title, &question, delete, true) {
+                return;
+            }
+        }
+        let ids: Vec<i64> = chosen.iter().map(|row| row.id).collect();
+        let deleted = Store::open(&open.path).and_then(|mut store| {
+            store.delete_many(&ids)?;
+            Ok(store)
+        });
+        let store = match deleted {
+            Ok(store) => store,
+            Err(e) => {
+                let reason = s.failure(&failure::of_store(&e));
+                tell(&self.frame, s, title, &s.snapshots_not_deleted(&reason));
+                return;
+            }
+        };
+        // The rows go at once, from the bottom up so the positions hold; the focus goes to
+        // the row that followed them (#26).
+        let count = self.rows.borrow().len();
+        for &i in selected.iter().rev() {
+            self.snapshots.delete_item(i as i64);
+            self.rows.borrow_mut().remove(i);
+        }
+        if let Some(next) = row_after_deletion(&selected, count) {
+            win32::select_only(list, next);
+        }
+        let rows = self.rows.borrow().clone();
+        {
+            let mut state = self.state.borrow_mut();
+            state.snapshots = rows.len();
+            state.compaction_running = true;
+            state.compacting_open_profile = true;
+        }
+        self.sync_selection();
+        self.update_empty_text();
+        *self.compaction.borrow_mut() = Some(CompactionJob::start(open.clone(), rows, store));
+        self.refresh_progress_row();
+        self.say(&s.snapshots_deleted(chosen.len(), &open.name));
+    }
+
+    /// Asks the compaction to stop; its end comes through the timer, like any other.
+    fn cancel_compaction(&self) {
+        if let Some(job) = self.compaction.borrow().as_ref() {
+            job.interrupt.interrupt();
+        }
+    }
+
+    /// Reports the compaction once it is over.
+    fn poll_compaction(&self) {
+        let s = self.s;
+        let result = {
+            let job = self.compaction.borrow();
+            let Some(job) = job.as_ref() else {
+                return;
+            };
+            match job.done.try_recv() {
+                Ok(result) => Some(result),
+                Err(TryRecvError::Empty) => return,
+                Err(TryRecvError::Disconnected) => None,
+            }
+        };
+        let mut job = self
+            .compaction
+            .borrow_mut()
+            .take()
+            .expect("the job was there a moment ago");
+        job.wait();
+        self.end_compaction();
+        let name = &job.profile.name;
+        match result {
+            Some(Ok(compacted)) => {
+                let freed = win32::format_size(compacted.before.saturating_sub(compacted.after));
+                self.say(&s.compaction_done(name, &freed));
+            }
+            Some(Err(StoreError::Cancelled)) => self.say(&s.compaction_cancelled(name)),
+            Some(Err(e)) => {
+                let reason = s.failure(&failure::of_store(&e));
+                self.say(&s.compaction_failed(name, &reason));
+            }
+            None => self.say(&s.compaction_failed(name, s.compaction_stopped())),
+        }
+    }
+
+    /// Takes the window back to its state without a compaction.
+    fn end_compaction(&self) {
+        {
+            let mut state = self.state.borrow_mut();
+            state.compaction_running = false;
+            state.compacting_open_profile = false;
+        }
+        self.refresh_progress_row();
+        self.refresh_menus();
+    }
+
+    /// On closing: a compaction that is running goes on behind the hidden window, and the
+    /// process ends only when it has (TASK-9 #30).
+    fn finish_compaction_hidden(&self) {
+        let Some(mut job) = self.compaction.borrow_mut().take() else {
+            return;
+        };
+        self.timer.stop();
+        self.frame.show(false);
+        job.wait();
+    }
+
     // --- The snapshot being taken (TASK-8) ---------------------------------------------
 
     /// Starts a snapshot of the open profile on its own thread and shows its progress.
@@ -661,10 +1192,7 @@ impl MainWindow {
             state.snapshot_running = true;
             state.snapshotting_open_profile = true;
         }
-        self.progress_text
-            .change_value(&s.snapshot_progress(0, &win32::format_count(0), ""));
-        self.show_progress(true);
-        self.timer.start(PROGRESS_INTERVAL, false);
+        self.refresh_progress_row();
         self.say(s.snapshot_started());
     }
 
@@ -673,6 +1201,11 @@ impl MainWindow {
         if let Some(job) = self.job.borrow().as_ref() {
             job.cancel.store(true, Ordering::Relaxed);
         }
+    }
+
+    fn poll_jobs(&self) {
+        self.poll_snapshot();
+        self.poll_compaction();
     }
 
     /// Shows the progress of the snapshot and, once it is over, its outcome.
@@ -698,16 +1231,17 @@ impl MainWindow {
                 Err(TryRecvError::Disconnected) => None,
             }
         };
-        self.timer.stop();
         let mut job = self
             .job
             .borrow_mut()
             .take()
             .expect("the job was there a moment ago");
         job.wait();
+        // Where the focus was while the snapshot ran decides where it goes (TASK-9 #19).
+        let focus = self.focus_place();
         self.end_snapshot();
         match result {
-            Some(Ok(report)) => self.report_snapshot(&job.profile, &report, true),
+            Some(Ok(report)) => self.report_snapshot(&job.profile, &report, true, focus),
             Some(Err(SnapshotError::Cancelled)) => self.say(s.snapshot_cancelled()),
             Some(Err(SnapshotError::Store(e))) => {
                 self.snapshot_failed(&s.failure(&failure::of_store(&e)));
@@ -716,43 +1250,113 @@ impl MainWindow {
         }
     }
 
-    /// Takes the window back to its state without a snapshot: the progress row goes, and
-    /// the focus with it moves to the snapshot list.
+    /// Takes the window back to its state without a snapshot: the progress row goes,
+    /// unless a compaction keeps it, and the focus with it moves to the snapshot list.
     fn end_snapshot(&self) {
         {
             let mut state = self.state.borrow_mut();
             state.snapshot_running = false;
             state.snapshotting_open_profile = false;
         }
-        let focused = win32::focused_window();
-        if focused == self.progress_text.get_handle()
-            || focused == self.cancel_snapshot.get_handle()
-        {
-            self.snapshots.set_focus();
-        }
-        self.show_progress(false);
+        self.refresh_progress_row();
         self.refresh_menus();
     }
 
-    fn show_progress(&self, shown: bool) {
-        self.progress_label.show(shown);
-        self.progress_text.show(shown);
-        self.cancel_snapshot.show(shown);
+    /// Shows the progress row for the job it shows, with the Cancel button named after
+    /// that job's command, or hides it when there is none; the focus leaves a hidden row
+    /// for the snapshot list. The timer runs while any job does.
+    fn refresh_progress_row(&self) {
+        let s = self.s;
+        let shown = self.shown_job();
+        // The button is «Скасувати (N)» for a snapshot and, so that its letter is in its
+        // English name as everywhere, the command's own name for a compaction.
+        let (text, button) = match shown {
+            ShownJob::Snapshot => (
+                s.snapshot_progress(0, &win32::format_count(0), ""),
+                button_label(s, s.cancel(), cancel_snapshot_access(), false),
+            ),
+            ShownJob::Compaction => {
+                let profile = self.compaction.borrow();
+                let name = profile.as_ref().map(|job| job.profile.name.clone());
+                (
+                    s.compacting(&name.unwrap_or_default()),
+                    button_label(
+                        s,
+                        s.command(CommandId::CancelCompaction),
+                        cancel_compaction_access(),
+                        false,
+                    ),
+                )
+            }
+            ShownJob::None => (String::new(), String::new()),
+        };
+        if shown == ShownJob::None {
+            let focused = win32::focused_window();
+            if focused == self.progress_text.get_handle()
+                || focused == self.cancel_button.get_handle()
+            {
+                self.snapshots.set_focus();
+            }
+            self.timer.stop();
+        } else {
+            // A snapshot's text is replaced by its progress on the next tick.
+            if shown == ShownJob::Compaction || self.progress_text.get_value().is_empty() {
+                self.progress_text.change_value(&text);
+            }
+            self.cancel_button.set_label(&button);
+            if !self.timer.is_running() {
+                self.timer.start(PROGRESS_INTERVAL, false);
+            }
+        }
+        let visible = shown != ShownJob::None;
+        self.progress_label.show(visible);
+        self.progress_text.show(visible);
+        self.cancel_button.show(visible);
+        if !visible {
+            self.progress_text.change_value("");
+        }
         self.panel.layout();
     }
 
-    /// Says what the saved snapshot holds, names the folders it did not find, and, with
-    /// `offer_restart`, offers a restart as administrator when rights closed some entries
-    /// (TASK-8 #7, #16, #18).
-    fn report_snapshot(&self, profile: &ProfileFile, report: &Report, offer_restart: bool) {
+    /// Puts the saved snapshot in its list as the setting «Фокус після знімка» says
+    /// (TASK-9 #5, #19–#21), says what it holds, names the folders it did not find, and,
+    /// with `offer_restart`, offers a restart as administrator when rights closed some
+    /// entries (TASK-8 #7, #16, #18).
+    fn report_snapshot(
+        &self,
+        profile: &ProfileFile,
+        report: &Report,
+        offer_restart: bool,
+        focus: FocusPlace,
+    ) {
         let s = self.s;
-        if self
+        let of_open_profile = self
             .open_profile()
-            .is_some_and(|open| open.path == profile.path)
-        {
-            self.state.borrow_mut().snapshots += 1;
-            self.refresh_menus();
+            .is_some_and(|open| open.path == profile.path);
+        let row = SnapshotInfo {
+            id: report.id,
+            taken_at: report.taken_at,
+            comment: None,
+        };
+        match arrival(self.focus_after_snapshot(), focus, of_open_profile) {
+            Arrival::Nothing => {}
+            Arrival::Append => self.append_row(row, false, false),
+            Arrival::Current => self.append_row(row, true, false),
+            Arrival::Focus => self.append_row(row, true, true),
+            Arrival::OpenProfileAndFocus => {
+                let index = self
+                    .profiles
+                    .borrow()
+                    .iter()
+                    .position(|p| p.path == profile.path);
+                if let Some(index) = index {
+                    self.profile.set_selection(index as u32);
+                    self.show_profile(Some(index));
+                    self.snapshots.set_focus();
+                }
+            }
         }
+        self.refresh_menus();
         let mut text = s.snapshot_saved(report.entries, &win32::format_count(report.entries));
         if report.inaccessible > 0 {
             text.push(' ');
@@ -830,9 +1434,10 @@ impl MainWindow {
         };
         self.timer.stop();
         job.stop();
+        let focus = self.focus_place();
         self.end_snapshot();
         match job.done.try_recv() {
-            Ok(Ok(report)) => self.report_snapshot(&job.profile, &report, false),
+            Ok(Ok(report)) => self.report_snapshot(&job.profile, &report, false, focus),
             _ => self.say(self.s.snapshot_cancelled()),
         }
     }
@@ -980,11 +1585,9 @@ fn file_name(path: &Path) -> String {
         .into_owned()
 }
 
-/// Stand-in rows so the lists' keys and context menus can be checked with NVDA.
-fn fill_demo(s: &dyn Strings, state: &AppState, snapshots: &ListCtrl, difference: &ListCtrl) {
-    for n in 0..state.snapshots {
-        snapshots.insert_item(n as i64, &s.demo_snapshot(n + 1), None);
-    }
+/// Stand-in rows so the difference list's keys and context menu can be checked with NVDA
+/// before TASK-11; the snapshot list is the real one.
+fn fill_demo(s: &dyn Strings, difference: &ListCtrl) {
     for n in 0..3 {
         difference.insert_item(n as i64, &s.demo_change(n + 1), None);
     }
@@ -1009,21 +1612,30 @@ mod tests {
 
     #[test]
     fn the_labels_of_the_main_window_take_no_menu_letter_and_differ() {
-        let labels = [PROFILE_ACCESS, PROGRESS_ACCESS, cancel_snapshot_access()];
-        for (i, &label) in labels.iter().enumerate() {
-            assert!(MenuId::ALL.iter().all(|m| m.access() != label));
-            assert!(!labels[..i].contains(&label));
+        for labels in [
+            [PROFILE_ACCESS, PROGRESS_ACCESS, cancel_snapshot_access()],
+            [PROFILE_ACCESS, PROGRESS_ACCESS, cancel_compaction_access()],
+        ] {
+            for (i, &label) in labels.iter().enumerate() {
+                assert!(MenuId::ALL.iter().all(|m| m.access() != label));
+                assert!(!labels[..i].contains(&label));
+            }
+            assert_eq!(labels[LABEL_PROFILE], PROFILE_ACCESS);
+            assert_eq!(labels[LABEL_PROGRESS], PROGRESS_ACCESS);
         }
-        assert_eq!(labels[LABEL_PROFILE], PROFILE_ACCESS);
-        assert_eq!(labels[LABEL_PROGRESS], PROGRESS_ACCESS);
-        assert_eq!(labels[LABEL_CANCEL_SNAPSHOT], cancel_snapshot_access());
+        assert_ne!(cancel_snapshot_access(), cancel_compaction_access());
         // The letters are in the English names, as everywhere.
         let has = |name: &str, letter: u8| name.to_ascii_uppercase().contains(char::from(letter));
         assert!(has(En.profile(), PROFILE_ACCESS));
         assert!(has(En.progress(), PROGRESS_ACCESS));
         assert!(has(En.cancel(), cancel_snapshot_access()));
+        assert!(has(
+            En.command(CommandId::CancelCompaction),
+            cancel_compaction_access()
+        ));
         assert!(has(En.restart(), RESTART_ACCESS));
         assert!(has(En.close(), CLOSE_ACCESS));
         assert!(has(En.delete(), DELETE_ACCESS));
+        assert!(has(&En.comment_of("x"), COMMENT_ACCESS));
     }
 }

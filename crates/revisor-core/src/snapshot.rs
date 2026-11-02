@@ -30,6 +30,8 @@ const ERROR_ACCESS_DENIED: i32 = Foundation::ERROR_ACCESS_DENIED as i32;
 pub struct Report {
     /// The id of the saved snapshot.
     pub id: i64,
+    /// When the snapshot was started, as Unix time in milliseconds: its name (TASK-9).
+    pub taken_at: i64,
     pub entries: u64,
     /// Entries marked inaccessible.
     pub inaccessible: u64,
@@ -131,6 +133,7 @@ pub fn take(
     let id = store.save(&snapshot, cancel)?;
     Ok(Report {
         id,
+        taken_at,
         entries: totals.entries,
         inaccessible: totals.inaccessible,
         denied: totals.denied,
