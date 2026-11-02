@@ -284,6 +284,36 @@ fn records_symlink_without_entering() {
 }
 
 #[test]
+fn files_with_other_kinds_of_reparse_point_are_ordinary_files() {
+    // The aliases of Store apps (AppExecLink) are reparse points that name no other
+    // object: the scan keeps them as files and never takes them for links.
+    let Some(local) = std::env::var_os("LOCALAPPDATA") else {
+        return;
+    };
+    let aliases = Path::new(&local).join(r"Microsoft\WindowsApps");
+    if !aliases.is_dir() {
+        eprintln!("skipped: no WindowsApps folder");
+        return;
+    }
+
+    let scan = run_scan(&aliases, 2);
+
+    let reparse: Vec<&Entry> = scan.entries[1..]
+        .iter()
+        .filter(|e| e.attributes & FILE_ATTRIBUTE_REPARSE_POINT != 0)
+        .collect();
+    if reparse.is_empty() {
+        eprintln!("skipped: no app aliases installed");
+        return;
+    }
+    for alias in reparse {
+        assert_eq!(alias.kind, EntryKind::File, "{:?}", alias.name);
+        assert_eq!(alias.link_target, None, "{:?}", alias.name);
+        assert!(!alias.inaccessible, "{:?}", alias.name);
+    }
+}
+
+#[test]
 fn marks_unreadable_folder_and_goes_on() {
     let tmp = TempDir::new();
     let locked = tmp.path().join("locked");
