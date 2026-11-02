@@ -1,14 +1,18 @@
 //! The main window: the menu bar and context menus built from the command table, the
 //! status bar that speaks without moving the focus, the key handler, and the two parts of
-//! the window. The profile box and both lists are placeholders until TASK-9 and TASK-11
-//! fill them.
+//! the window. The profile box lists the profiles (TASK-7); both lists are placeholders
+//! until TASK-9 and TASK-11 fill them.
 
 use std::cell::{Cell, RefCell};
+use std::path::{Path, PathBuf};
 use std::rc::Rc;
 
+use revisor_core::profiles::{self, ProfileError, ProfileFile};
+use revisor_core::store::{ProfileSettings, StoreError};
 use wxdragon::prelude::*;
 
 use crate::commands::{COMMANDS, CommandId, CommandKind, MenuId, Pane, command};
+use crate::failure;
 use crate::help;
 use crate::i18n::Strings;
 use crate::keyboard::{Control, Focus, Route, route};
@@ -17,6 +21,8 @@ use crate::menus::{
     context_label, context_menu, field_label, menu_label, submenu_label, top_menu_label,
     window_title,
 };
+use crate::message_box::{confirm, tell};
+use crate::profile_window::{self, Purpose};
 use crate::state::{AppState, ChangeType, SortColumn};
 use crate::win32;
 
@@ -26,6 +32,9 @@ const FIRST_COMMAND_ID: i32 = 1000;
 /// The access key of the profile label. Labels of the main window do not take the letters
 /// of the menus, which would no longer open while the focus is in the panel.
 const PROFILE_ACCESS: u8 = b'R';
+
+/// The access key of «Видалити» in the question whether to delete a profile.
+const DELETE_ACCESS: u8 = b'D';
 
 fn wx_id(id: CommandId) -> i32 {
     let index = COMMANDS
@@ -49,10 +58,16 @@ pub struct MainWindow {
     profile: Choice,
     snapshots: ListCtrl,
     difference: ListCtrl,
+    /// The folder of profiles, `data\profiles` next to the exe.
+    profiles_dir: PathBuf,
+    /// The profiles in the order the profile box shows them.
+    profiles: RefCell<Vec<ProfileFile>>,
+    /// The open profile: its position in `profiles`.
+    open_index: Cell<Option<usize>>,
 }
 
 impl MainWindow {
-    pub fn open(s: &'static dyn Strings, state: AppState) -> Rc<Self> {
+    pub fn open(s: &'static dyn Strings, state: AppState, profiles_dir: PathBuf) -> Rc<Self> {
         let frame = Frame::builder()
             .with_title(&window_title(state.profile.as_deref()))
             .with_size(Size::new(900, 640))
@@ -84,7 +99,7 @@ impl MainWindow {
             win32::set_accessible_name(list.get_handle(), s.pane(pane));
         }
         if state.demo {
-            fill_demo(s, &state, &profile, &snapshots, &difference);
+            fill_demo(s, &state, &snapshots, &difference);
         }
 
         let profile_row = BoxSizer::builder(Orientation::Horizontal).build();
@@ -110,10 +125,13 @@ impl MainWindow {
             profile,
             snapshots,
             difference,
+            profiles_dir,
+            profiles: RefCell::new(Vec::new()),
+            open_index: Cell::new(None),
         });
         window.bind_events(&panel);
         win32::subclass_main_window(window.frame.get_handle());
-        window.refresh_menus();
+        window.load_profiles(None);
         window.frame.centre();
         window.frame.show(true);
         window
@@ -123,9 +141,7 @@ impl MainWindow {
         let w = Rc::clone(self);
         self.frame.on_char_hook(move |data| {
             if let WindowEventData::Keyboard(key) = data {
-                let code = key.get_key_code().unwrap_or_default();
-                let shortcut =
-                    Shortcut::from_wx(code, key.control_down(), key.shift_down(), key.alt_down());
+                let shortcut = Shortcut::from_event(&key);
                 let routed = route(shortcut, w.focus(), &w.state.borrow(), &[PROFILE_ACCESS]);
                 if routed == Route::Pass {
                     key.event.skip(true);
@@ -164,6 +180,12 @@ impl MainWindow {
         // Not skipped, so wxFrame does not put the item's help text in the status bar,
         // where it would overwrite the last message.
         self.frame.on_menu_highlighted(|event| event.skip(false));
+
+        let w = Rc::clone(self);
+        self.profile.on_selection_changed(move |event| {
+            let selected = event.get_selection().and_then(|i| usize::try_from(i).ok());
+            w.show_profile(selected);
+        });
 
         // A right click: the list under the mouse has the focus by then.
         let w = Rc::clone(self);
@@ -250,6 +272,9 @@ impl MainWindow {
                 self.frame.close(false);
                 return;
             }
+            CommandId::NewProfile => self.new_profile(),
+            CommandId::EditProfile => self.edit_profile(),
+            CommandId::DeleteProfile => self.delete_profile(),
             CommandId::KeyboardShortcuts => help::show_shortcuts(&self.frame, s),
             CommandId::About => help::show_about(&self.frame, s),
             // Only the demo state gets here: the other commands' tasks are not done yet.
@@ -279,6 +304,154 @@ impl MainWindow {
             CommandId::SortAscending => state.descending = false,
             CommandId::SortDescending => state.descending = true,
             _ => {}
+        }
+    }
+
+    /// Reads the profiles from the disk into the profile box, by the user's alphabet, and
+    /// opens the one in the file `open`, or else the first. Says which files of the folder
+    /// of profiles could not be opened.
+    fn load_profiles(&self, open: Option<&Path>) {
+        let s = self.s;
+        let (mut found, unreadable) = match profiles::list(&self.profiles_dir) {
+            Ok(found) => found,
+            Err(e) => {
+                let folder = self.profiles_dir.to_string_lossy();
+                self.say(&s.profiles_not_listed(&folder, &s.failure(&failure::of_io(&e))));
+                (Vec::new(), Vec::new())
+            }
+        };
+        found.sort_by(|a, b| win32::compare_names(&a.name, &b.name));
+        let selected = open
+            .and_then(|path| found.iter().position(|p| p.path == path))
+            .or((!found.is_empty()).then_some(0));
+        self.profile.clear();
+        for profile in &found {
+            self.profile.append(&profile.name);
+        }
+        if let Some(i) = selected {
+            self.profile.set_selection(i as u32);
+        }
+        *self.profiles.borrow_mut() = found;
+        self.show_profile(selected);
+        if !unreadable.is_empty() {
+            let messages: Vec<String> = unreadable
+                .iter()
+                .map(|u| {
+                    let reason = s.failure(&failure::of_store(&u.error));
+                    s.profile_not_opened(&file_name(&u.path), &reason)
+                })
+                .collect();
+            self.say(&messages.join(" "));
+        }
+    }
+
+    /// Opens the profile at position `index` of the profile box, or none.
+    fn show_profile(&self, index: Option<usize>) {
+        let name = index.and_then(|i| self.profiles.borrow().get(i).map(|p| p.name.clone()));
+        self.open_index.set(index.filter(|_| name.is_some()));
+        self.frame.set_title(&window_title(name.as_deref()));
+        self.state.borrow_mut().profile = name;
+        self.refresh_menus();
+    }
+
+    /// The open profile, if there is one.
+    fn open_profile(&self) -> Option<ProfileFile> {
+        let index = self.open_index.get()?;
+        self.profiles.borrow().get(index).cloned()
+    }
+
+    /// Reads something from the database of the open profile; when it cannot be read, says
+    /// why in a message box titled after the command `id`.
+    fn read_open<T>(
+        &self,
+        id: CommandId,
+        read: impl FnOnce(&Path) -> Result<T, StoreError>,
+    ) -> Option<(ProfileFile, T)> {
+        let s = self.s;
+        let open = self.open_profile()?;
+        match read(&open.path) {
+            Ok(value) => Some((open, value)),
+            Err(e) => {
+                let reason = s.failure(&failure::of_store(&e));
+                let text = s.profile_not_opened(&file_name(&open.path), &reason);
+                tell(&self.frame, s, s.command(id), &text);
+                None
+            }
+        }
+    }
+
+    fn new_profile(&self) {
+        let s = self.s;
+        let known = self.profiles.borrow().clone();
+        let dir = self.profiles_dir.clone();
+        let created = profile_window::show(
+            &self.frame,
+            s,
+            Purpose::New,
+            &ProfileSettings::new_profile(),
+            move |name| profiles::name_taken(&known, name, None),
+            move |settings| {
+                profiles::create(&dir, settings).map_err(|e| save_failure(s, settings, &e))
+            },
+        );
+        if let Some(file) = created {
+            self.load_profiles(Some(&file.path));
+            self.say(&s.profile_created(&file.name));
+        }
+    }
+
+    fn edit_profile(&self) {
+        let s = self.s;
+        let Some((open, initial)) = self.read_open(CommandId::EditProfile, profiles::settings_of)
+        else {
+            return;
+        };
+        let known = self.profiles.borrow().clone();
+        let path = open.path.clone();
+        let updated = profile_window::show(
+            &self.frame,
+            s,
+            Purpose::Edit,
+            &initial,
+            move |name| profiles::name_taken(&known, name, Some(&open.path)),
+            move |settings| {
+                profiles::update(&path, settings).map_err(|e| save_failure(s, settings, &e))
+            },
+        );
+        if let Some(file) = updated {
+            self.load_profiles(Some(&file.path));
+            self.say(&s.profile_changed(&file.name));
+        }
+    }
+
+    /// Deletes the open profile with all its snapshots, but only once the user confirms.
+    fn delete_profile(&self) {
+        let s = self.s;
+        let title = s.command(CommandId::DeleteProfile);
+        let Some((open, snapshots)) =
+            self.read_open(CommandId::DeleteProfile, profiles::snapshot_count)
+        else {
+            return;
+        };
+        let question = s.delete_profile_question(&open.name, snapshots);
+        let delete = (s.delete(), DELETE_ACCESS);
+        if !confirm(&self.frame, s, title, &question, delete, true) {
+            return;
+        }
+        match profiles::delete(&open.path) {
+            Ok(()) => {
+                self.load_profiles(None);
+                self.say(&s.profile_deleted(&open.name));
+            }
+            Err(e) => {
+                let reason = s.failure(&failure::of_io(&e));
+                tell(
+                    &self.frame,
+                    s,
+                    title,
+                    &s.profile_not_deleted(&open.name, &reason),
+                );
+            }
         }
     }
 
@@ -380,18 +553,26 @@ fn build_menu_bar(s: &dyn Strings) -> MenuBar {
     bar.build()
 }
 
+/// What the profile window says when a profile cannot be saved.
+fn save_failure(s: &dyn Strings, settings: &ProfileSettings, e: &ProfileError) -> String {
+    let failure = match e {
+        // Another copy of revisor may have taken the name meanwhile.
+        ProfileError::NameTaken => return s.name_taken(&settings.name),
+        ProfileError::Store(e) => failure::of_store(e),
+        ProfileError::Io(e) => failure::of_io(e),
+    };
+    s.profile_not_saved(&s.failure(&failure))
+}
+
+fn file_name(path: &Path) -> String {
+    path.file_name()
+        .unwrap_or(path.as_os_str())
+        .to_string_lossy()
+        .into_owned()
+}
+
 /// Stand-in rows so the lists' keys and context menus can be checked with NVDA.
-fn fill_demo(
-    s: &dyn Strings,
-    state: &AppState,
-    profile: &Choice,
-    snapshots: &ListCtrl,
-    difference: &ListCtrl,
-) {
-    if let Some(name) = &state.profile {
-        profile.append(name);
-        profile.set_selection(0);
-    }
+fn fill_demo(s: &dyn Strings, state: &AppState, snapshots: &ListCtrl, difference: &ListCtrl) {
     for n in 0..state.snapshots {
         snapshots.insert_item(n as i64, &s.demo_snapshot(n + 1), None);
     }

@@ -46,9 +46,27 @@ fn user_version(path: &Path) -> i64 {
         .unwrap()
 }
 
-/// Saves without a comment and without cancellation.
+fn settings() -> ProfileSettings {
+    ProfileSettings {
+        name: "Дім".into(),
+        scope: Scope {
+            folders: vec![r"C:\Program Files".into(), r"D:\Робота".into()],
+            exclusions: vec!["*.tmp".into(), r"%TEMP%".into()],
+        },
+    }
+}
+
+/// A new profile database with `settings()`.
+fn create(path: &Path) -> Store {
+    Store::create(path, &settings()).unwrap()
+}
+
+/// Saves with the profile's scope, without a comment and without cancellation.
 fn save(store: &mut Store, entries: &[Entry]) -> i64 {
-    store.save(None, entries, &AtomicBool::new(false)).unwrap()
+    let scope = store.settings().unwrap().scope;
+    store
+        .save(&scope, None, entries, &AtomicBool::new(false))
+        .unwrap()
 }
 
 fn ids(store: &Store) -> Vec<i64> {
@@ -68,13 +86,14 @@ fn wait_for_journal(tmp: &TempDir, mut still_running: impl FnMut() -> bool) {
 #[test]
 fn new_database_has_schema_version_1() {
     let tmp = TempDir::new();
-    Store::open(&tmp.db()).unwrap();
+    create(&tmp.db());
     assert_eq!(user_version(&tmp.db()), 1);
 }
 
 #[test]
 fn database_from_newer_revisor_is_refused() {
     let tmp = TempDir::new();
+    drop(create(&tmp.db()));
     let conn = rusqlite::Connection::open(tmp.db()).unwrap();
     conn.pragma_update(None, "user_version", 2).unwrap();
     drop(conn);
@@ -82,6 +101,94 @@ fn database_from_newer_revisor_is_refused() {
         Store::open(&tmp.db()),
         Err(StoreError::NewerSchema(2))
     ));
+}
+
+#[test]
+fn a_profile_keeps_its_settings_in_its_database() {
+    let tmp = TempDir::new();
+    drop(create(&tmp.db()));
+    assert_eq!(
+        Store::open(&tmp.db()).unwrap().settings().unwrap(),
+        settings()
+    );
+}
+
+#[test]
+fn changed_settings_replace_the_old_ones() {
+    let tmp = TempDir::new();
+    let mut store = create(&tmp.db());
+    let changed = ProfileSettings {
+        name: "Робота".into(),
+        scope: Scope {
+            folders: vec![r"E:\".into()],
+            exclusions: vec![],
+        },
+    };
+    store.set_settings(&changed).unwrap();
+    drop(store);
+    assert_eq!(Store::open(&tmp.db()).unwrap().settings().unwrap(), changed);
+}
+
+#[test]
+fn a_snapshot_keeps_the_folders_and_exclusions_it_was_taken_with() {
+    let tmp = TempDir::new();
+    let mut store = create(&tmp.db());
+    let before = save(&mut store, &sample());
+    let mut changed = settings();
+    changed.scope.folders.remove(0);
+    changed.scope.exclusions.push("Code Cache".into());
+    store.set_settings(&changed).unwrap();
+    let after = save(&mut store, &sample());
+
+    assert_eq!(store.snapshot_scope(before).unwrap(), settings().scope);
+    assert_eq!(store.snapshot_scope(after).unwrap(), changed.scope);
+    store.delete(before).unwrap();
+    assert_eq!(store.snapshot_scope(before).unwrap(), Scope::default());
+}
+
+#[test]
+fn only_an_existing_profile_database_opens() {
+    let tmp = TempDir::new();
+    assert!(Store::open(&tmp.db()).is_err());
+    assert!(!tmp.db().exists(), "opening creates nothing");
+
+    // Another program's SQLite database is not a profile.
+    let other = rusqlite::Connection::open(tmp.db()).unwrap();
+    other.execute_batch("CREATE TABLE t (x)").unwrap();
+    drop(other);
+    assert!(matches!(
+        Store::open(&tmp.db()),
+        Err(StoreError::NotAProfile)
+    ));
+}
+
+#[test]
+fn a_file_that_is_not_a_database_is_not_a_profile() {
+    let tmp = TempDir::new();
+    fs::write(tmp.db(), b"some text, not a database at all").unwrap();
+    assert!(matches!(
+        Store::open(&tmp.db()),
+        Err(StoreError::NotAProfile)
+    ));
+}
+
+#[test]
+fn a_profile_database_without_its_profile_row_is_not_a_profile() {
+    let tmp = TempDir::new();
+    drop(create(&tmp.db()));
+    let conn = rusqlite::Connection::open(tmp.db()).unwrap();
+    conn.execute("DELETE FROM profile", []).unwrap();
+    drop(conn);
+    let store = Store::open(&tmp.db()).unwrap();
+    assert!(matches!(store.settings(), Err(StoreError::NotAProfile)));
+}
+
+#[test]
+fn creating_a_profile_never_takes_over_an_existing_file() {
+    let tmp = TempDir::new();
+    fs::write(tmp.db(), b"someone's file").unwrap();
+    assert!(Store::create(&tmp.db(), &settings()).is_err());
+    assert_eq!(fs::read(tmp.db()).unwrap(), b"someone's file");
 }
 
 fn entry(parent: Option<u32>, name: OsString, kind: EntryKind) -> Entry {
@@ -143,9 +250,14 @@ fn assert_same(loaded: &[Entry], expected: &[Entry]) {
 #[test]
 fn saved_snapshot_loads_back_unchanged() {
     let tmp = TempDir::new();
-    let mut store = Store::open(&tmp.db()).unwrap();
+    let mut store = create(&tmp.db());
     let id = store
-        .save(Some("before install"), &sample(), &AtomicBool::new(false))
+        .save(
+            &settings().scope,
+            Some("before install"),
+            &sample(),
+            &AtomicBool::new(false),
+        )
         .unwrap();
     drop(store);
 
@@ -160,7 +272,7 @@ fn saved_snapshot_loads_back_unchanged() {
 #[test]
 fn snapshots_are_kept_apart() {
     let tmp = TempDir::new();
-    let mut store = Store::open(&tmp.db()).unwrap();
+    let mut store = create(&tmp.db());
     let small = save(&mut store, &sample());
     let big = save(&mut store, &synthetic(5000));
 
@@ -173,7 +285,7 @@ fn snapshots_are_kept_apart() {
 #[test]
 fn cancelled_save_leaves_nothing_behind() {
     let tmp = TempDir::new();
-    let mut store = Store::open(&tmp.db()).unwrap();
+    let mut store = create(&tmp.db());
     let kept = save(&mut store, &sample());
 
     let entries = synthetic(1_000_000);
@@ -186,7 +298,7 @@ fn cancelled_save_leaves_nothing_behind() {
             thread::sleep(Duration::from_millis(50));
             cancel.store(true, Ordering::Relaxed);
         });
-        let result = store.save(Some("cancelled"), &entries, &cancel);
+        let result = store.save(&settings().scope, Some("cancelled"), &entries, &cancel);
         saving.store(false, Ordering::Relaxed);
         result
     });
@@ -195,12 +307,13 @@ fn cancelled_save_leaves_nothing_behind() {
     assert_eq!(ids(&store), [kept]);
     assert_same(&store.load(kept).unwrap(), &sample());
     assert!(store.load(kept + 1).unwrap().is_empty());
+    assert_eq!(store.snapshot_scope(kept + 1).unwrap(), Scope::default());
 }
 
 #[test]
 fn deleted_snapshot_is_gone_and_vacuum_returns_its_space() {
     let tmp = TempDir::new();
-    let mut store = Store::open(&tmp.db()).unwrap();
+    let mut store = create(&tmp.db());
     let old = save(&mut store, &synthetic(20_000));
     let new = save(&mut store, &sample());
     let full = fs::metadata(tmp.db()).unwrap().len();
@@ -221,7 +334,7 @@ fn deleted_snapshot_is_gone_and_vacuum_returns_its_space() {
 #[test]
 fn id_of_deleted_snapshot_is_never_reused() {
     let tmp = TempDir::new();
-    let mut store = Store::open(&tmp.db()).unwrap();
+    let mut store = create(&tmp.db());
     let first = save(&mut store, &sample());
     store.delete(first).unwrap();
     assert_ne!(save(&mut store, &sample()), first);
@@ -241,14 +354,19 @@ fn killed_save_child() {
     let entries = synthetic(2_000_000);
     let mut store = Store::open(Path::new(&db)).unwrap();
     store
-        .save(Some("partial"), &entries, &AtomicBool::new(false))
+        .save(
+            &settings().scope,
+            Some("partial"),
+            &entries,
+            &AtomicBool::new(false),
+        )
         .unwrap();
 }
 
 #[test]
 fn killed_save_leaves_no_partial_snapshot() {
     let tmp = TempDir::new();
-    let kept = save(&mut Store::open(&tmp.db()).unwrap(), &sample());
+    let kept = save(&mut create(&tmp.db()), &sample());
 
     let mut child = Command::new(std::env::current_exe().unwrap())
         .args(["store::tests::killed_save_child", "--exact", "--ignored"])

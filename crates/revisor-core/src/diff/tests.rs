@@ -1,6 +1,6 @@
 use super::*;
 use crate::scan::{FileId, ScanOptions, scan, synthetic};
-use crate::store::Store;
+use crate::store::{ProfileSettings, Scope, Store};
 use std::collections::HashSet;
 use std::ffi::{OsStr, OsString};
 use std::fs;
@@ -626,11 +626,22 @@ fn unchanged_folder_scanned_twice_has_no_changes() {
     assert!(status.success());
 
     let no_cancel = AtomicBool::new(false);
-    let mut store = Store::open(&tmp.0.join("profile.db")).unwrap();
+    let settings = ProfileSettings {
+        name: "Diff".into(),
+        scope: Scope {
+            folders: vec![root.clone()],
+            exclusions: vec![],
+        },
+    };
+    let mut store = Store::create(&tmp.0.join("profile.db"), &settings).unwrap();
     let first = scan(&root, &ScanOptions::default(), &no_cancel).unwrap();
-    let a = store.save(None, &first.entries, &no_cancel).unwrap();
+    let a = store
+        .save(&settings.scope, None, &first.entries, &no_cancel)
+        .unwrap();
     let second = scan(&root, &ScanOptions::default(), &no_cancel).unwrap();
-    let b = store.save(None, &second.entries, &no_cancel).unwrap();
+    let b = store
+        .save(&settings.scope, None, &second.entries, &no_cancel)
+        .unwrap();
     let (old, new) = (store.load(a).unwrap(), store.load(b).unwrap());
     assert_eq!(old.len(), 1 + 10 * 4 + 2);
 

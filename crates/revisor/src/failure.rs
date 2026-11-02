@@ -1,0 +1,66 @@
+//! Failures of actions on files in the terms the interface explains them (brief, section
+//! 5): the causes revisor recognises get its own words, the rest keep the text and code of
+//! Windows or SQLite.
+
+use std::io;
+
+use revisor_core::store::StoreError;
+
+use crate::i18n::Failure;
+
+// Win32 error codes.
+const ERROR_ACCESS_DENIED: i32 = 5;
+const ERROR_SHARING_VIOLATION: i32 = 32;
+const ERROR_LOCK_VIOLATION: i32 = 33;
+const ERROR_HANDLE_DISK_FULL: i32 = 39;
+const ERROR_DISK_FULL: i32 = 112;
+// SQLite primary result codes.
+const SQLITE_PERM: i32 = 3;
+const SQLITE_BUSY: i32 = 5;
+const SQLITE_LOCKED: i32 = 6;
+const SQLITE_READONLY: i32 = 8;
+const SQLITE_FULL: i32 = 13;
+const SQLITE_NOTADB: i32 = 26;
+
+pub fn of_io(e: &io::Error) -> Failure {
+    match e.raw_os_error() {
+        Some(ERROR_ACCESS_DENIED) => Failure::AccessDenied,
+        Some(ERROR_SHARING_VIOLATION | ERROR_LOCK_VIOLATION) => Failure::InUse,
+        Some(ERROR_DISK_FULL | ERROR_HANDLE_DISK_FULL) => Failure::DiskFull,
+        code => {
+            // Rust adds " (os error N)"; the code is shown on its own.
+            let text = e.to_string();
+            let text = text.rfind(" (os error ").map_or(&*text, |at| &text[..at]);
+            Failure::Other {
+                text: text.trim_end_matches(['.', ' ']).to_string(),
+                code: code.map(i64::from),
+            }
+        }
+    }
+}
+
+pub fn of_store(e: &StoreError) -> Failure {
+    match e {
+        StoreError::Io(e) => of_io(e),
+        StoreError::NewerSchema(_) => Failure::NewerVersion,
+        StoreError::NotAProfile => Failure::NotAProfile,
+        StoreError::Sqlite(e) => {
+            let code = e.sqlite_error().map(|error| error.extended_code);
+            match code.map(|code| code & 0xff) {
+                Some(SQLITE_FULL) => Failure::DiskFull,
+                Some(SQLITE_BUSY | SQLITE_LOCKED) => Failure::InUse,
+                Some(SQLITE_PERM | SQLITE_READONLY) => Failure::AccessDenied,
+                Some(SQLITE_NOTADB) => Failure::NotAProfile,
+                _ => Failure::Other {
+                    text: e.to_string(),
+                    code: code.map(i64::from),
+                },
+            }
+        }
+        // Only a snapshot is cancelled (TASK-8), and it says so in its own words.
+        StoreError::Cancelled => Failure::Other {
+            text: e.to_string(),
+            code: None,
+        },
+    }
+}

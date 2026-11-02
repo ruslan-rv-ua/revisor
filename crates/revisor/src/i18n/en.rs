@@ -1,6 +1,9 @@
 //! English interface strings, the base language.
 
-use super::{Lang, Strings};
+use revisor_core::exclude::PatternError;
+
+use super::plural::{Category, category};
+use super::{Failure, Lang, Strings};
 use crate::commands::{CommandId, MenuId, Pane, Reason, SubmenuId};
 
 pub struct En;
@@ -138,6 +141,177 @@ impl Strings for En {
             "revisor {version}\nLicence: MIT\nhttps://github.com/ruslan-rv-ua/revisor\n\n\
              Third-party components and their licences:\n"
         )
+    }
+
+    fn profile_name(&self) -> &'static str {
+        "Name"
+    }
+
+    fn profile_folders(&self) -> &'static str {
+        "Folders"
+    }
+
+    fn add_folder(&self) -> &'static str {
+        "Add folder"
+    }
+
+    fn remove_folder(&self) -> &'static str {
+        "Remove folder"
+    }
+
+    fn profile_exclusions(&self) -> &'static str {
+        "Exclusions"
+    }
+
+    fn create(&self) -> &'static str {
+        "Create"
+    }
+
+    fn ok(&self) -> &'static str {
+        "OK"
+    }
+
+    fn cancel(&self) -> &'static str {
+        "Cancel"
+    }
+
+    fn choose_folder(&self) -> &'static str {
+        "Choose a folder for the profile"
+    }
+
+    fn name_missing(&self) -> &'static str {
+        "Enter a name for the profile."
+    }
+
+    fn name_taken(&self, name: &str) -> String {
+        format!("There is a profile called “{name}” already. Choose another name.")
+    }
+
+    fn no_folders(&self) -> &'static str {
+        "Add at least one folder to the profile."
+    }
+
+    fn bad_pattern(&self, line: usize, pattern: &str, error: PatternError) -> String {
+        let why = match error {
+            PatternError::NotFullPath => "a pattern with \\ is a full path, so it starts with \
+                a drive, such as C:\\, or with an environment variable, such as %TEMP%"
+                .to_string(),
+            PatternError::Slash => "paths are written with \\, not /".to_string(),
+            PatternError::Colon => {
+                "a colon comes only after the drive letter at the start of a path, as in C:\\"
+                    .to_string()
+            }
+            PatternError::Control(c) => {
+                format!("it has a control character (U+{:04X})", u32::from(c))
+            }
+            PatternError::BadChar(c) => format!("no file or folder name has the character {c}"),
+        };
+        format!("Line {line} of the exclusions, “{pattern}”: {why}.")
+    }
+
+    fn folder_covered(&self, folder: &str, by: &str) -> String {
+        format!(
+            "The folder “{folder}” was not added: the profile's folder “{by}” covers its \
+             files already."
+        )
+    }
+
+    fn folder_not_ntfs(&self, folder: &str, file_system: &str) -> String {
+        format!(
+            "The folder “{folder}” cannot be added: revisor supports NTFS volumes only, and \
+             this folder is on a {file_system} volume."
+        )
+    }
+
+    fn folder_on_network(&self, folder: &str) -> String {
+        format!(
+            "The folder “{folder}” cannot be added: revisor supports NTFS volumes of this \
+             computer only, and this is a network folder."
+        )
+    }
+
+    fn folder_not_examined(&self, folder: &str, reason: &str) -> String {
+        format!("The folder “{folder}” cannot be added: revisor cannot examine it: {reason}.")
+    }
+
+    fn replace_folders(&self, folder: &str, inside: &[String]) -> String {
+        let inside: Vec<String> = inside.iter().map(|f| format!("“{f}”")).collect();
+        format!(
+            "The folder “{folder}” holds folders of the profile: {}. Replace them with it?",
+            inside.join(", ")
+        )
+    }
+
+    fn replace(&self) -> &'static str {
+        "Replace"
+    }
+
+    fn delete_profile_question(&self, name: &str, snapshots: usize) -> String {
+        let snapshots = match (snapshots, category(Lang::En, (snapshots as u64).into())) {
+            (0, _) => {
+                return format!(
+                    "Delete the profile “{name}”? It has no snapshots. This cannot be undone."
+                );
+            }
+            (n, Category::One) => format!("{n} snapshot"),
+            (n, _) => format!("{n} snapshots"),
+        };
+        format!("Delete the profile “{name}” and its {snapshots}? This cannot be undone.")
+    }
+
+    fn delete(&self) -> &'static str {
+        "Delete"
+    }
+
+    fn profile_created(&self, name: &str) -> String {
+        format!("Profile “{name}” created.")
+    }
+
+    fn profile_changed(&self, name: &str) -> String {
+        format!("Profile “{name}” changed.")
+    }
+
+    fn profile_deleted(&self, name: &str) -> String {
+        format!("Profile “{name}” deleted.")
+    }
+
+    fn profile_not_saved(&self, reason: &str) -> String {
+        format!("The profile was not saved: {reason}.")
+    }
+
+    fn profile_not_deleted(&self, name: &str, reason: &str) -> String {
+        format!("The profile “{name}” was not deleted: {reason}.")
+    }
+
+    fn profile_not_opened(&self, file: &str, reason: &str) -> String {
+        format!("The profile file “{file}” cannot be opened: {reason}.")
+    }
+
+    fn profiles_not_listed(&self, folder: &str, reason: &str) -> String {
+        format!("The folder of profiles “{folder}” cannot be read: {reason}.")
+    }
+
+    fn failure(&self, failure: &Failure) -> String {
+        match failure {
+            Failure::AccessDenied => {
+                "access is denied: check the permissions of this file or folder".into()
+            }
+            Failure::InUse => "the file is open in another program, maybe another copy of \
+                revisor: close it and try again"
+                .into(),
+            Failure::DiskFull => "the disk is full: free some space and try again".into(),
+            Failure::NewerVersion => {
+                "a newer version of revisor made this profile: update revisor".into()
+            }
+            Failure::NotAProfile => {
+                "this is not a revisor profile file: move it out of the folder of profiles".into()
+            }
+            Failure::Other {
+                text,
+                code: Some(code),
+            } => format!("{text} (code {code})"),
+            Failure::Other { text, code: None } => text.clone(),
+        }
     }
 
     fn demo_snapshot(&self, n: usize) -> String {

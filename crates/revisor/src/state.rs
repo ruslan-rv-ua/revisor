@@ -39,7 +39,8 @@ pub struct AppState {
     pub sort: SortColumn,
     pub descending: bool,
     /// Debug-only stand-in state (REVISOR_DEMO=1) for checking the keyboard with NVDA
-    /// before TASK-7…14 exist: commands without a state of their own count as available.
+    /// before TASK-8…14 exist: commands without a state of their own count as available.
+    /// The profiles are the real ones.
     pub demo: bool,
 }
 

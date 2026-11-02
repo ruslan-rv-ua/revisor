@@ -19,6 +19,7 @@ use std::os::windows::ffi::OsStrExt;
 use std::path::PathBuf;
 use std::sync::atomic::{self, AtomicBool};
 
+use crate::names::upcase;
 use crate::scan::{Entry, EntryKind};
 
 const FILE_ATTRIBUTE_ARCHIVE: u32 = 0x20;
@@ -233,22 +234,6 @@ fn compare(units: &[u16], a: usize, n: usize, b: usize, m: usize) -> Ordering {
     units[a..a + n]
         .cmp(&units[b..b + m])
         .then_with(|| units[a + n..a + 2 * n].cmp(&units[b + m..b + 2 * m]))
-}
-
-/// Upper-cases one UTF-16 unit the way NTFS compares names: one unit to one unit, and
-/// units with no single-unit upper case stay as they are.
-fn upcase(unit: u16) -> u16 {
-    if unit < 0x80 {
-        return (unit as u8).to_ascii_uppercase().into();
-    }
-    let Some(c) = char::from_u32(unit.into()) else {
-        return unit;
-    };
-    let mut upper = c.to_uppercase();
-    match (upper.next(), upper.next()) {
-        (Some(u), None) if (u as u32) < 0x1_0000 => u as u16,
-        _ => unit,
-    }
 }
 
 /// An entry waiting to be compared.

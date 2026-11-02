@@ -16,8 +16,12 @@ use windows_sys::Win32::UI::Accessibility::{
 use windows_sys::Win32::UI::Controls::{
     LVIR_BOUNDS, LVM_GETITEMRECT, LVM_GETNEXTITEM, LVNI_FOCUSED,
 };
-use windows_sys::Win32::UI::Input::KeyboardAndMouse::{GetFocus, GetKeyboardLayout, VkKeyScanExW};
-use windows_sys::Win32::UI::Shell::{DefSubclassProc, RemoveWindowSubclass, SetWindowSubclass};
+use windows_sys::Win32::UI::Input::KeyboardAndMouse::{
+    GetFocus, GetKeyState, GetKeyboardLayout, VK_MENU, VkKeyScanExW,
+};
+use windows_sys::Win32::UI::Shell::{
+    DefSubclassProc, RemoveWindowSubclass, SetWindowSubclass, StrCmpLogicalW,
+};
 use windows_sys::Win32::UI::WindowsAndMessaging::{
     CHILDID_SELF, EVENT_OBJECT_LIVEREGIONCHANGED, GetClassNameW, GetMenuItemCount, GetMenuStringW,
     HMENU, MF_BYPOSITION, MF_SYSMENU, MNC_EXECUTE, OBJID_CLIENT, SendMessageW, SetMenuDefaultItem,
@@ -38,6 +42,15 @@ pub fn ui_language() -> Lang {
     } else {
         Lang::En
     }
+}
+
+/// Orders two names as File Explorer does: by the user's alphabet regardless of case, with
+/// numbers in names compared by their value ("Profile 2" before "Profile 10").
+pub fn compare_names(a: &str, b: &str) -> std::cmp::Ordering {
+    let wide = |s: &str| -> Vec<u16> { s.encode_utf16().chain([0]).collect() };
+    let (a, b) = (wide(a), wide(b));
+    // SAFETY: both strings are NUL-terminated.
+    unsafe { StrCmpLogicalW(a.as_ptr(), b.as_ptr()) }.cmp(&0)
 }
 
 // --- IAccPropServices -------------------------------------------------------------------
@@ -175,6 +188,12 @@ pub fn announce_status(status_bar: *mut c_void) {
 
 // --- Focus and list rows ----------------------------------------------------------------
 
+/// Whether Alt is held down, as far as the messages handled so far tell.
+pub fn alt_down() -> bool {
+    // SAFETY: no arguments but the key.
+    unsafe { GetKeyState(i32::from(VK_MENU)) < 0 }
+}
+
 /// The window that has the keyboard focus in this thread, or null.
 pub fn focused_window() -> *mut c_void {
     // SAFETY: no arguments.
@@ -302,4 +321,17 @@ fn menu_item_by_key_position(ch: u16, menu: HMENU) -> Option<usize> {
         })
         .collect();
     find_access_key(&items, vk)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::cmp::Ordering;
+
+    #[test]
+    fn names_are_ordered_as_file_explorer_orders_them() {
+        assert_eq!(compare_names("профіль 2", "Профіль 10"), Ordering::Less);
+        assert_eq!(compare_names("Дім", "дім"), Ordering::Equal);
+        assert_eq!(compare_names("Home", "home 1"), Ordering::Less);
+    }
 }

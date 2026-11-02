@@ -65,10 +65,7 @@ pub fn route(key: Shortcut, focus: Focus, state: &AppState, labels: &[u8]) -> Ro
     {
         return Route::ContextMenu(pane);
     }
-    if let Key::Letter(letter) = key.key
-        && key.alt
-        && !key.ctrl
-        && !key.shift
+    if let Some(letter) = key.access_letter()
         && let Some(label) = labels.iter().position(|&l| l == letter)
     {
         return Route::FocusLabel(label);

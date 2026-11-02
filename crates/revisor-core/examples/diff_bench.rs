@@ -18,7 +18,7 @@ use std::time::Instant;
 
 use revisor_core::diff::{ChangeKind, diff, path};
 use revisor_core::scan::{Entry, EntryKind, ScanOptions, scan, synthetic};
-use revisor_core::store::Store;
+use revisor_core::store::{ProfileSettings, Scope, Store};
 use windows_sys::Win32::System::ProcessStatus::{GetProcessMemoryInfo, PROCESS_MEMORY_COUNTERS};
 use windows_sys::Win32::System::Threading::GetCurrentProcess;
 
@@ -95,10 +95,14 @@ fn prepare(input: &Input, db: &Path) -> Result<(), Box<dyn std::error::Error>> {
     );
 
     let _ = fs::remove_file(db);
-    let mut store = Store::open(db)?;
+    let settings = ProfileSettings {
+        name: "diff_bench".into(),
+        scope: Scope::default(),
+    };
+    let mut store = Store::create(db, &settings)?;
     let started = Instant::now();
-    store.save(Some("old"), &old, &no_cancel)?;
-    store.save(Some("new"), &new, &no_cancel)?;
+    store.save(&settings.scope, Some("old"), &old, &no_cancel)?;
+    store.save(&settings.scope, Some("new"), &new, &no_cancel)?;
     println!(
         "save both:     {:.2} s to {}",
         started.elapsed().as_secs_f64(),

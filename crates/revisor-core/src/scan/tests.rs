@@ -1,4 +1,5 @@
 use super::*;
+use crate::exclude::SystemEnvironment;
 use std::collections::BTreeSet;
 use std::fs;
 use std::os::windows::fs::MetadataExt;
@@ -33,6 +34,7 @@ fn run_scan(root: &Path, threads: usize) -> Scan {
     let options = ScanOptions {
         threads,
         read_versions: true,
+        exclusions: Exclusions::default(),
     };
     scan(root, &options, &AtomicBool::new(false)).unwrap()
 }
@@ -238,6 +240,38 @@ fn parallel_scan_finds_the_same_tree() {
     let many = run_scan(tmp.path(), 8);
     assert_eq!(one.entries.len(), 1 + 20 + 100 + 100);
     assert_eq!(paths(&one), paths(&many));
+}
+
+#[test]
+fn excluded_files_and_folders_stay_out_with_all_they_hold() {
+    let tmp = TempDir::new();
+    let write = |rel: &str| {
+        let path = tmp.path().join(rel);
+        fs::create_dir_all(path.parent().unwrap()).unwrap();
+        fs::write(path, b"x").unwrap();
+    };
+    write(r"app\Code Cache\deep\x.bin");
+    write(r"app\report.TMP");
+    write(r"app\keep.txt");
+    write(r"logs\old\a.log");
+    write(r"logs\new.log");
+    // The temp folder may be written with 8.3 names; the pattern still finds the folder.
+    let old_logs = tmp.path().join(r"logs\old");
+    let patterns = ["code cache", "*.tmp", &old_logs.to_string_lossy()];
+    let options = ScanOptions {
+        threads: 2,
+        read_versions: false,
+        exclusions: Exclusions::new(&patterns, &SystemEnvironment),
+    };
+
+    let scan = scan(tmp.path(), &options, &AtomicBool::new(false)).unwrap();
+
+    let paths: BTreeSet<String> = (1..scan.entries.len())
+        .map(|i| rel_path(&scan, i))
+        .collect();
+    let expected = ["app", r"app\keep.txt", "logs", r"logs\new.log"];
+    assert_eq!(paths, expected.map(String::from).into());
+    assert_eq!((scan.stats.dirs, scan.stats.files), (3, 2));
 }
 
 #[test]
