@@ -162,6 +162,20 @@ impl fmt::Display for StoreError {
 
 impl std::error::Error for StoreError {}
 
+impl StoreError {
+    /// Whether the database is busy with another connection's write, such as another
+    /// revisor compacting it: a reader may then wait and try again (TASK-9).
+    pub fn is_busy(&self) -> bool {
+        match self {
+            StoreError::Sqlite(e) => matches!(
+                e.sqlite_error_code(),
+                Some(ErrorCode::DatabaseBusy | ErrorCode::DatabaseLocked)
+            ),
+            _ => false,
+        }
+    }
+}
+
 impl From<rusqlite::Error> for StoreError {
     fn from(e: rusqlite::Error) -> Self {
         StoreError::Sqlite(e)
@@ -388,11 +402,6 @@ impl Store {
             conn,
             path: path.to_path_buf(),
         })
-    }
-
-    /// The database file.
-    pub fn path(&self) -> &Path {
-        &self.path
     }
 
     /// The profile's settings. A database without its profile row is not a profile.

@@ -99,6 +99,7 @@ impl Strings for Uk {
             Reason::SnapshotNotRunning => "знімок зараз не триває",
             Reason::ComparisonNotRunning => "порівняння зараз не триває",
             Reason::CompactionNotRunning => "стискання зараз не триває",
+            Reason::CompactionRunning => "триває стискання бази, а водночас іде лише одне",
             Reason::CompactionOfThisProfile => "триває стискання бази цього профілю",
             Reason::NoSelection => "жодного знімка не виділено",
             Reason::AlreadyAdmin => "revisor уже працює від імені адміністратора",
@@ -444,11 +445,11 @@ impl Strings for Uk {
     }
 
     fn no_snapshots_yet(&self, key: &str) -> String {
-        format!("Знімків ще немає. Натисніть {key}, щоб зробити перший знімок.")
+        format!("Знімків ще немає. Натисніть клавішу {key}, щоб зробити перший знімок.")
     }
 
     fn no_profiles_yet(&self, key: &str) -> String {
-        format!("Профілів ще немає. Натисніть {key}, щоб створити перший профіль.")
+        format!("Профілів ще немає. Натисніть клавіші {key}, щоб створити перший профіль.")
     }
 
     fn no_profiles_item(&self) -> &'static str {

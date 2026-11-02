@@ -300,13 +300,15 @@ mod tests {
 
     #[test]
     fn the_empty_list_hints_name_the_keys() {
+        // In a sentence the word «клавіша» comes before the key's name (document
+        // «Клавіатура й меню»).
         assert_eq!(
             Uk.no_snapshots_yet("F5"),
-            "Знімків ще немає. Натисніть F5, щоб зробити перший знімок."
+            "Знімків ще немає. Натисніть клавішу F5, щоб зробити перший знімок."
         );
         assert_eq!(
             Uk.no_profiles_yet("Ctrl+N"),
-            "Профілів ще немає. Натисніть Ctrl+N, щоб створити перший профіль."
+            "Профілів ще немає. Натисніть клавіші Ctrl+N, щоб створити перший профіль."
         );
         assert_eq!(
             En.no_snapshots_yet("F5"),

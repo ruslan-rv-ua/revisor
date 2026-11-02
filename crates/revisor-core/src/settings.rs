@@ -7,7 +7,7 @@
 use std::fmt;
 use std::fs;
 use std::io;
-use std::path::{Path, PathBuf};
+use std::path::Path;
 use std::time::Duration;
 
 use rusqlite::types::Value;
@@ -100,7 +100,6 @@ impl FocusAfterSnapshot {
 /// The settings database, open for the life of the window.
 pub struct Settings {
     conn: Connection,
-    path: PathBuf,
 }
 
 impl Settings {
@@ -123,10 +122,7 @@ impl Settings {
                 Some(ErrorCode::NotADatabase) => SettingsError::NotSettings,
                 _ => SettingsError::Sqlite(e),
             })?;
-        let settings = Settings {
-            conn,
-            path: path.to_path_buf(),
-        };
+        let settings = Settings { conn };
         if app == APPLICATION_ID {
             let version: i64 = settings
                 .conn
@@ -159,11 +155,6 @@ impl Settings {
             }
         }
         Ok(settings)
-    }
-
-    /// The file the settings are in.
-    pub fn path(&self) -> &Path {
-        &self.path
     }
 
     /// The file name of the profile opened last, in the folder of profiles.

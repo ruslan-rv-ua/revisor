@@ -1,5 +1,6 @@
 use super::*;
 use std::fs;
+use std::path::PathBuf;
 use std::sync::atomic::{AtomicUsize, Ordering};
 
 use crate::store::{ProfileSettings, Store};

@@ -226,9 +226,9 @@ fn a_database_another_connection_holds_is_busy() {
     let error = Store::open_with_timeout(&home.path, std::time::Duration::from_millis(50))
         .and_then(|store| store.list())
         .unwrap_err();
-    assert!(is_busy(&error), "{error:?}");
-    assert!(!is_busy(&StoreError::NotAProfile));
-    assert!(!is_busy(&StoreError::Cancelled));
+    assert!(error.is_busy(), "{error:?}");
+    assert!(!StoreError::NotAProfile.is_busy());
+    assert!(!StoreError::Cancelled.is_busy());
 
     holder.execute_batch("COMMIT").unwrap();
     assert!(snapshots_of(&home.path).unwrap().is_empty());

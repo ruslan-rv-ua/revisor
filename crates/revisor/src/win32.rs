@@ -299,9 +299,14 @@ fn set_row_state(list: *mut c_void, row: isize, state: u32, mask: u32) {
     };
 }
 
+/// Selects every row of a list, as Ctrl+A does in Explorer; the focus rectangle stays.
+pub fn select_all(list: *mut c_void) {
+    set_row_state(list, -1, LVIS_SELECTED, LVIS_SELECTED);
+}
+
 /// Makes a report list select whole rows, not just the first column, and keeps its column
 /// headers from looking like sort buttons (TASK-9).
-pub fn style_as_log(list: *mut c_void) {
+pub fn full_row_select_no_sort(list: *mut c_void) {
     // SAFETY: plain messages and style calls on a live list-view window.
     unsafe {
         SendMessageW(
@@ -824,7 +829,9 @@ mod tests {
         // 2026-10-31 12:05:12 UTC; the local hour depends on this computer's time zone,
         // but the minutes, the seconds and the day's digits do not.
         let name = format_date_time(1_793_448_312_000);
-        assert!(name.contains("05:12"), "{name}");
+        // The minutes shift in a half-hour time zone and the separator is the region's,
+        // so only the seconds are looked for.
+        assert!(name.contains("12"), "{name}");
         assert!(name.contains("2026") || name.contains("26"), "{name}");
         assert!(name.contains(' '), "{name}");
         let later = format_date_time(1_793_448_313_000);

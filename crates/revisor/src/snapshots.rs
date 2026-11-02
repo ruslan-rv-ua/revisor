@@ -41,6 +41,11 @@ pub fn arrival(setting: FocusAfterSnapshot, focus: FocusPlace, of_open_profile: 
         (FocusAfterSnapshot::Never, true) => Arrival::Append,
         (FocusAfterSnapshot::IfInList, true) if waiting => Arrival::Focus,
         (FocusAfterSnapshot::IfInList, true) => Arrival::Current,
+        // On the progress of a snapshot of another profile the user waits for it too, so
+        // the focus follows it there (#19).
+        (FocusAfterSnapshot::IfInList, false) if focus == FocusPlace::SnapshotProgress => {
+            Arrival::OpenProfileAndFocus
+        }
         (FocusAfterSnapshot::Always, true) => Arrival::Focus,
         (FocusAfterSnapshot::Always, false) => Arrival::OpenProfileAndFocus,
         (FocusAfterSnapshot::Never | FocusAfterSnapshot::IfInList, false) => Arrival::Nothing,
@@ -73,9 +78,15 @@ mod tests {
         assert_eq!(arrival(IfInList, SnapshotList, true), Arrival::Focus);
         assert_eq!(arrival(IfInList, SnapshotProgress, true), Arrival::Focus);
         assert_eq!(arrival(IfInList, Elsewhere, true), Arrival::Current);
-        // Of another profile: nothing moves, and the profile stays.
+        // Of another profile: the focus follows only from the snapshot's own progress;
+        // elsewhere nothing moves, and the profile stays.
+        assert_eq!(
+            arrival(IfInList, SnapshotProgress, false),
+            Arrival::OpenProfileAndFocus
+        );
+        assert_eq!(arrival(IfInList, SnapshotList, false), Arrival::Nothing);
+        assert_eq!(arrival(IfInList, Elsewhere, false), Arrival::Nothing);
         for focus in [SnapshotList, SnapshotProgress, Elsewhere] {
-            assert_eq!(arrival(IfInList, focus, false), Arrival::Nothing);
             assert_eq!(arrival(Never, focus, false), Arrival::Nothing);
             assert_eq!(arrival(Never, focus, true), Arrival::Append);
             assert_eq!(arrival(Always, focus, true), Arrival::Focus);

@@ -551,9 +551,12 @@ fn an_interrupted_compaction_leaves_the_database_whole() {
             let result = store.compact();
             (store, result)
         });
-        // Let the rebuild get going before interrupting it.
-        thread::sleep(Duration::from_millis(100));
-        interrupt.interrupt();
+        // An interrupt before the rebuild starts is lost, so it is repeated until the
+        // rebuild has answered it.
+        while !compaction.is_finished() {
+            interrupt.interrupt();
+            thread::sleep(Duration::from_millis(10));
+        }
         compaction.join().unwrap()
     });
     assert!(matches!(result, Err(StoreError::Cancelled)), "{result:?}");

@@ -96,6 +96,9 @@ impl Strings for En {
             Reason::SnapshotNotRunning => "no snapshot is being taken",
             Reason::ComparisonNotRunning => "no comparison is running",
             Reason::CompactionNotRunning => "no compaction is running",
+            Reason::CompactionRunning => {
+                "a database is being compacted, and only one goes at a time"
+            }
             Reason::CompactionOfThisProfile => "the database of this profile is being compacted",
             Reason::NoSelection => "no snapshot is selected",
             Reason::AlreadyAdmin => "revisor is already running as administrator",
@@ -271,16 +274,15 @@ impl Strings for En {
     }
 
     fn delete_profile_question(&self, name: &str, snapshots: usize) -> String {
-        let snapshots = match (snapshots, category(Lang::En, (snapshots as u64).into())) {
-            (0, _) => {
-                return format!(
-                    "Delete the profile “{name}”? It has no snapshots. This cannot be undone."
-                );
-            }
-            (n, Category::One) => format!("{n} snapshot"),
-            (n, _) => format!("{n} snapshots"),
-        };
-        format!("Delete the profile “{name}” and its {snapshots}? This cannot be undone.")
+        if snapshots == 0 {
+            return format!(
+                "Delete the profile “{name}”? It has no snapshots. This cannot be undone."
+            );
+        }
+        format!(
+            "Delete the profile “{name}” and its {}? This cannot be undone.",
+            self.snapshots(snapshots)
+        )
     }
 
     fn delete(&self) -> &'static str {

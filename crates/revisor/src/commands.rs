@@ -109,6 +109,9 @@ pub enum Reason {
     SnapshotNotRunning,
     ComparisonNotRunning,
     CompactionNotRunning,
+    /// A profile's database is being compacted, and only one compaction goes at a time
+    /// (TASK-9).
+    CompactionRunning,
     /// The open profile's database is being compacted, which closes it to everything
     /// (TASK-9).
     CompactionOfThisProfile,
@@ -224,8 +227,9 @@ fn profile_free(state: &AppState) -> Result<(), Reason> {
     not_compacting(state)
 }
 
-/// Snapshots of the open profile can be deleted: there are selected ones, and the profile
-/// is neither being snapshotted nor compacted (TASK-9).
+/// Snapshots of the open profile can be deleted: there are selected ones, the profile is
+/// not being snapshotted, and no database is being compacted, since the deletion starts
+/// a compaction and only one goes at a time (TASK-9).
 fn snapshots_deletable(state: &AppState) -> Result<(), Reason> {
     has_snapshots(state)?;
     require(
@@ -233,6 +237,7 @@ fn snapshots_deletable(state: &AppState) -> Result<(), Reason> {
         Reason::SnapshotOfThisProfile,
     )?;
     not_compacting(state)?;
+    require(!state.compaction_running, Reason::CompactionRunning)?;
     require(state.selected_snapshots > 0, Reason::NoSelection)
 }
 
@@ -261,10 +266,11 @@ fn has_difference(state: &AppState) -> Result<(), Reason> {
     require(state.has_difference, Reason::NoDifference)
 }
 
-/// For the commands on snapshots whose tasks are not done: they need snapshots, and then
-/// their own task.
+/// For the commands on snapshots whose tasks are not done: they need snapshots and the
+/// profile's database open (TASK-9 #28), and then their own task.
 fn snapshots_not_yet(state: &AppState) -> Result<(), Reason> {
     has_snapshots(state)?;
+    not_compacting(state)?;
     not_yet(state)
 }
 
@@ -763,6 +769,10 @@ mod tests {
             CommandId::DeleteSnapshots,
             CommandId::EditProfile,
             CommandId::DeleteProfile,
+            // The comparisons of TASK-11 inherit the check (#28).
+            CommandId::CompareWithPrevious,
+            CommandId::CompareWith,
+            CommandId::SnapshotAndCompare,
         ] {
             assert_eq!(
                 available(id, &compacting),
@@ -770,7 +780,8 @@ mod tests {
                 "{id:?}"
             );
         }
-        // Another profile is open meanwhile: everything of it works.
+        // Another profile is open meanwhile: everything of it works, except a deletion,
+        // which would start a second compaction.
         let other_open = AppState {
             compacting_open_profile: false,
             ..compacting
@@ -778,13 +789,16 @@ mod tests {
         for id in [
             CommandId::TakeSnapshot,
             CommandId::Comment,
-            CommandId::DeleteSnapshots,
             CommandId::EditProfile,
             CommandId::DeleteProfile,
             CommandId::CancelCompaction,
         ] {
             assert_eq!(available(id, &other_open), Ok(()), "{id:?}");
         }
+        assert_eq!(
+            available(CommandId::DeleteSnapshots, &other_open),
+            Err(Reason::CompactionRunning)
+        );
     }
 
     #[test]
