@@ -34,6 +34,9 @@ pub enum Route {
     FocusPane(Pane),
     /// Shift+F10 or the context menu key in a list: open that list's context menu.
     ContextMenu(Pane),
+    /// Ctrl+A in a list: select all its rows, which the list control does not do by
+    /// itself (TASK-9 #9).
+    SelectAll(Pane),
     /// Alt with a label's access key: focus the control the label names.
     FocusLabel(usize),
     /// Not revisor's key: the focused control and Windows get it.
@@ -64,6 +67,12 @@ pub fn route(key: Shortcut, focus: Focus, state: &AppState, labels: &[u8]) -> Ro
         && let Some(pane) = focus.part
     {
         return Route::ContextMenu(pane);
+    }
+    if key == Shortcut::new(Key::Letter(b'A')).ctrl()
+        && focus.control == Control::MainList
+        && let Some(pane) = focus.part
+    {
+        return Route::SelectAll(pane);
     }
     if let Some(letter) = key.access_letter()
         && let Some(label) = labels.iter().position(|&l| l == letter)
@@ -254,6 +263,23 @@ mod tests {
             assert_eq!(route(menu_key, FILTER_FIELD, &state, &[]), Route::Pass);
             assert_eq!(route(menu_key, PROFILE_BOX, &state, &[]), Route::Pass);
         }
+    }
+
+    #[test]
+    fn ctrl_a_selects_all_rows_of_a_list_and_stays_the_controls_elsewhere() {
+        let ctrl_a = key(Key::Letter(b'A')).ctrl();
+        let state = AppState::new();
+        assert_eq!(
+            route(ctrl_a, SNAPSHOT_LIST, &state, &[]),
+            Route::SelectAll(Pane::Snapshots)
+        );
+        assert_eq!(
+            route(ctrl_a, DIFFERENCE_LIST, &state, &[]),
+            Route::SelectAll(Pane::Difference)
+        );
+        // Text fields select their text with it; the profile box has no use for it.
+        assert_eq!(route(ctrl_a, FILTER_FIELD, &state, &[]), Route::Pass);
+        assert_eq!(route(ctrl_a, PROFILE_BOX, &state, &[]), Route::Pass);
     }
 
     #[test]

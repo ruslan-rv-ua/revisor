@@ -11,6 +11,8 @@ mod main_window;
 mod menus;
 mod message_box;
 mod profile_window;
+mod settings_window;
+mod snapshots;
 mod state;
 mod win32;
 
@@ -30,7 +32,7 @@ fn main() {
     // An administrator reads with the backup privilege (TASK-8); a standard user has no
     // such privilege, and nothing changes for them.
     let _ = elevation::enable_backup_privilege();
-    // REVISOR_DEMO=1 in a debug build stands in for the state TASK-9…14 will bring, so
+    // REVISOR_DEMO=1 in a debug build stands in for the state TASK-11…14 will bring, so
     // the keyboard and the status bar can be checked with NVDA.
     let demo = cfg!(debug_assertions) && std::env::var_os("REVISOR_DEMO").is_some_and(|v| v == "1");
     let mut state = if demo {
@@ -42,19 +44,16 @@ fn main() {
     let open = profile_argument();
     wxdragon::main(move |_| {
         // The frame's event handlers hold the window, so it lives as long as the frame.
-        MainWindow::open(strings, state, profiles_dir(), open);
+        MainWindow::open(strings, state, data_dir(), open);
     })
     .expect("failed to start the GUI");
 }
 
-/// The folder of profiles: revisor is portable, so all its data is in `data` next to the
-/// exe.
-fn profiles_dir() -> PathBuf {
+/// The data folder: revisor is portable, so all its data — the profiles and the settings
+/// — is in `data` next to the exe.
+fn data_dir() -> PathBuf {
     let exe = std::env::current_exe().unwrap_or_default();
-    exe.parent()
-        .unwrap_or(Path::new(""))
-        .join("data")
-        .join("profiles")
+    exe.parent().unwrap_or(Path::new("")).join("data")
 }
 
 /// The profile file named on the command line as `--profile <path>`: a revisor restarted

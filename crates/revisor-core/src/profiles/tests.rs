@@ -199,6 +199,42 @@ fn files_that_are_not_profiles_are_listed_apart() {
 }
 
 #[test]
+fn a_profiles_snapshots_are_listed_oldest_first() {
+    let tmp = TempDir::new();
+    let home = create(&tmp.profiles(), &settings("Дім")).unwrap();
+    assert!(snapshots_of(&home.path).unwrap().is_empty());
+    let mut store = Store::open(&home.path).unwrap();
+    let snapshot = Snapshot::of_tree(crate::scan::synthetic(10));
+    let first = store.save(&snapshot, &AtomicBool::new(false)).unwrap();
+    let second = store.save(&snapshot, &AtomicBool::new(false)).unwrap();
+    drop(store);
+    let ids: Vec<i64> = snapshots_of(&home.path)
+        .unwrap()
+        .iter()
+        .map(|s| s.id)
+        .collect();
+    assert_eq!(ids, [first, second]);
+}
+
+#[test]
+fn a_database_another_connection_holds_is_busy() {
+    let tmp = TempDir::new();
+    let home = create(&tmp.profiles(), &settings("Дім")).unwrap();
+    let holder = rusqlite::Connection::open(&home.path).unwrap();
+    holder.execute_batch("BEGIN EXCLUSIVE").unwrap();
+
+    let error = Store::open_with_timeout(&home.path, std::time::Duration::from_millis(50))
+        .and_then(|store| store.list())
+        .unwrap_err();
+    assert!(error.is_busy(), "{error:?}");
+    assert!(!StoreError::NotAProfile.is_busy());
+    assert!(!StoreError::Cancelled.is_busy());
+
+    holder.execute_batch("COMMIT").unwrap();
+    assert!(snapshots_of(&home.path).unwrap().is_empty());
+}
+
+#[test]
 fn a_missing_folder_holds_no_profiles() {
     let tmp = TempDir::new();
     let (profiles, unreadable) = list(&tmp.profiles()).unwrap();

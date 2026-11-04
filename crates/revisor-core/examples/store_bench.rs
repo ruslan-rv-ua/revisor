@@ -137,13 +137,12 @@ fn run(input: &Input, wal: bool, db: &Path) -> Result<(), Box<dyn std::error::Er
     );
 
     let started = Instant::now();
-    store.vacuum()?;
-    let vacuumed = db_size(db);
+    let compacted = store.compact()?;
     println!(
         "vacuum:        {:.2} s, database {:.1} MiB, {:.1} MiB returned",
         started.elapsed().as_secs_f64(),
-        vacuumed as f64 / MIB,
-        two.saturating_sub(vacuumed) as f64 / MIB
+        compacted.after as f64 / MIB,
+        two.saturating_sub(compacted.after) as f64 / MIB
     );
     Ok(())
 }

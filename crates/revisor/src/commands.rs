@@ -109,6 +109,14 @@ pub enum Reason {
     SnapshotNotRunning,
     ComparisonNotRunning,
     CompactionNotRunning,
+    /// A profile's database is being compacted, and only one compaction goes at a time
+    /// (TASK-9).
+    CompactionRunning,
+    /// The open profile's database is being compacted, which closes it to everything
+    /// (TASK-9).
+    CompactionOfThisProfile,
+    /// No snapshot is selected in the snapshot list, so there is nothing to delete.
+    NoSelection,
     /// revisor already runs as administrator.
     AlreadyAdmin,
     /// The command's own task has not been done yet.
@@ -199,13 +207,45 @@ fn has_profile(state: &AppState) -> Result<(), Reason> {
     state.profile.as_ref().map(|_| ()).ok_or(Reason::NoProfiles)
 }
 
-/// The open profile can be changed or deleted unless it is being snapshotted (TASK-8).
+/// The open profile's database is open to reading and writing: it is not being compacted
+/// (TASK-9).
+fn not_compacting(state: &AppState) -> Result<(), Reason> {
+    require(
+        !state.compacting_open_profile,
+        Reason::CompactionOfThisProfile,
+    )
+}
+
+/// The open profile can be changed or deleted unless it is being snapshotted (TASK-8) or
+/// its database is being compacted (TASK-9).
 fn profile_free(state: &AppState) -> Result<(), Reason> {
     has_profile(state)?;
     require(
         !state.snapshotting_open_profile,
         Reason::SnapshotOfThisProfile,
-    )
+    )?;
+    not_compacting(state)
+}
+
+/// Snapshots of the open profile can be deleted: there are selected ones, the profile is
+/// not being snapshotted, and no database is being compacted, since the deletion starts
+/// a compaction and only one goes at a time (TASK-9).
+fn snapshots_deletable(state: &AppState) -> Result<(), Reason> {
+    has_snapshots(state)?;
+    require(
+        !state.snapshotting_open_profile,
+        Reason::SnapshotOfThisProfile,
+    )?;
+    not_compacting(state)?;
+    require(!state.compaction_running, Reason::CompactionRunning)?;
+    require(state.selected_snapshots > 0, Reason::NoSelection)
+}
+
+/// The current snapshot's comment can change: even while the profile is being
+/// snapshotted, but not while its database is being compacted (TASK-9).
+fn comment_possible(state: &AppState) -> Result<(), Reason> {
+    has_snapshots(state)?;
+    not_compacting(state)
 }
 
 fn no_snapshot_running(state: &AppState) -> Result<(), Reason> {
@@ -226,10 +266,11 @@ fn has_difference(state: &AppState) -> Result<(), Reason> {
     require(state.has_difference, Reason::NoDifference)
 }
 
-/// For the commands on snapshots whose tasks are not done: they need snapshots, and then
-/// their own task.
+/// For the commands on snapshots whose tasks are not done: they need snapshots and the
+/// profile's database open (TASK-9 #28), and then their own task.
 fn snapshots_not_yet(state: &AppState) -> Result<(), Reason> {
     has_snapshots(state)?;
+    not_compacting(state)?;
     not_yet(state)
 }
 
@@ -327,7 +368,10 @@ pub static COMMANDS: &[Command] = &[
         available: profile_free,
         ..item(CommandId::DeleteProfile, place(MenuId::File, 0), b'D')
     },
-    item(CommandId::Settings, place(MenuId::File, 1), b'S'),
+    Command {
+        available: always,
+        ..item(CommandId::Settings, place(MenuId::File, 1), b'S')
+    },
     Command {
         available: not_elevated,
         ..item(CommandId::RestartAsAdmin, place(MenuId::File, 1), b'R')
@@ -340,10 +384,12 @@ pub static COMMANDS: &[Command] = &[
     // Snapshot
     Command {
         shortcut: Some(key(Key::F(5))),
-        // Needs a profile, and only one snapshot goes at a time (TASK-8).
+        // Needs a profile whose database is open, and only one snapshot goes at a time
+        // (TASK-8, TASK-9).
         available: |s| {
             has_profile(s)?;
-            no_snapshot_running(s)
+            no_snapshot_running(s)?;
+            not_compacting(s)
         },
         ..item(CommandId::TakeSnapshot, place(MenuId::Snapshot, 0), b'T')
     },
@@ -363,7 +409,7 @@ pub static COMMANDS: &[Command] = &[
             pane: Pane::Snapshots,
             group: 1,
         }),
-        available: snapshots_not_yet,
+        available: comment_possible,
         ..item(CommandId::Comment, place(MenuId::Snapshot, 1), b'C')
     },
     Command {
@@ -373,7 +419,7 @@ pub static COMMANDS: &[Command] = &[
             pane: Pane::Snapshots,
             group: 2,
         }),
-        available: snapshots_not_yet,
+        available: snapshots_deletable,
         ..item(CommandId::DeleteSnapshots, place(MenuId::Snapshot, 1), b'D')
     },
     Command {
@@ -626,19 +672,23 @@ mod tests {
 
     #[test]
     fn outside_the_demo_only_the_commands_of_finished_tasks_run() {
-        // A profile with snapshots, as a standard user, with nothing running.
+        // A profile with snapshots, one selected, as a standard user, with nothing running.
         let state = AppState {
             profile: Some("Дім".into()),
             snapshots: 2,
+            selected_snapshots: 1,
             ..AppState::new()
         };
         let finished = [
             CommandId::NewProfile,
             CommandId::EditProfile,
             CommandId::DeleteProfile,
+            CommandId::Settings,
             CommandId::RestartAsAdmin,
             CommandId::Exit,
             CommandId::TakeSnapshot,
+            CommandId::Comment,
+            CommandId::DeleteSnapshots,
             CommandId::KeyboardShortcuts,
             CommandId::About,
         ];
@@ -648,12 +698,107 @@ mod tests {
                 assert_eq!(available, Ok(()), "{:?}", c.id);
             } else if c.id == CommandId::CancelSnapshot {
                 assert_eq!(available, Err(Reason::SnapshotNotRunning));
+            } else if c.id == CommandId::CancelCompaction {
+                assert_eq!(available, Err(Reason::CompactionNotRunning));
             } else {
                 assert!(available.is_err(), "{:?} runs before its task", c.id);
             }
         }
         let take = command(CommandId::TakeSnapshot).available;
         assert_eq!(take(&AppState::new()), Err(Reason::NoProfiles));
+    }
+
+    #[test]
+    fn deleting_snapshots_needs_a_selection_and_a_profile_at_rest() {
+        let available = |id, state: &AppState| (command(id).available)(state);
+        let selected = AppState {
+            profile: Some("Дім".into()),
+            snapshots: 2,
+            selected_snapshots: 2,
+            ..AppState::new()
+        };
+        assert_eq!(available(CommandId::DeleteSnapshots, &selected), Ok(()));
+        let none_selected = AppState {
+            selected_snapshots: 0,
+            ..selected.clone()
+        };
+        assert_eq!(
+            available(CommandId::DeleteSnapshots, &none_selected),
+            Err(Reason::NoSelection)
+        );
+        // Comments change while the profile is being snapshotted; deletion waits.
+        let snapshotting = AppState {
+            snapshot_running: true,
+            snapshotting_open_profile: true,
+            ..selected.clone()
+        };
+        assert_eq!(available(CommandId::Comment, &snapshotting), Ok(()));
+        assert_eq!(
+            available(CommandId::DeleteSnapshots, &snapshotting),
+            Err(Reason::SnapshotOfThisProfile)
+        );
+        let no_snapshots = AppState {
+            snapshots: 0,
+            selected_snapshots: 0,
+            ..selected
+        };
+        for id in [CommandId::Comment, CommandId::DeleteSnapshots] {
+            assert_eq!(
+                available(id, &no_snapshots),
+                Err(Reason::NoSnapshots),
+                "{id:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn a_compaction_closes_the_open_profile_but_not_the_others() {
+        let available = |id, state: &AppState| (command(id).available)(state);
+        let compacting = AppState {
+            profile: Some("Дім".into()),
+            snapshots: 2,
+            selected_snapshots: 1,
+            compaction_running: true,
+            compacting_open_profile: true,
+            ..AppState::new()
+        };
+        assert_eq!(available(CommandId::CancelCompaction, &compacting), Ok(()));
+        for id in [
+            CommandId::TakeSnapshot,
+            CommandId::Comment,
+            CommandId::DeleteSnapshots,
+            CommandId::EditProfile,
+            CommandId::DeleteProfile,
+            // The comparisons of TASK-11 inherit the check (#28).
+            CommandId::CompareWithPrevious,
+            CommandId::CompareWith,
+            CommandId::SnapshotAndCompare,
+        ] {
+            assert_eq!(
+                available(id, &compacting),
+                Err(Reason::CompactionOfThisProfile),
+                "{id:?}"
+            );
+        }
+        // Another profile is open meanwhile: everything of it works, except a deletion,
+        // which would start a second compaction.
+        let other_open = AppState {
+            compacting_open_profile: false,
+            ..compacting
+        };
+        for id in [
+            CommandId::TakeSnapshot,
+            CommandId::Comment,
+            CommandId::EditProfile,
+            CommandId::DeleteProfile,
+            CommandId::CancelCompaction,
+        ] {
+            assert_eq!(available(id, &other_open), Ok(()), "{id:?}");
+        }
+        assert_eq!(
+            available(CommandId::DeleteSnapshots, &other_open),
+            Err(Reason::CompactionRunning)
+        );
     }
 
     #[test]
