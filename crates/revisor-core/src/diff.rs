@@ -301,22 +301,11 @@ struct Keys {
 }
 
 impl Keys {
-    /// Takes the children of `parent` that no exclusion leaves out, given where the
-    /// parent stands against the exclusions.
-    fn fill(
-        &mut self,
-        tree: &Tree<'_>,
-        parent: u32,
-        exclusions: Option<&Exclusions>,
-        branch: &Branch,
-    ) {
+    fn fill(&mut self, tree: &Tree<'_>, parent: u32) {
         self.spans.clear();
         self.units.clear();
         for &child in tree.children(parent) {
             let name = &tree.entries[child as usize].name;
-            if exclusions.is_some_and(|ex| ex.child(branch, name).is_none()) {
-                continue;
-            }
             let start = self.units.len();
             self.units.extend(name.encode_wide());
             let len = self.units.len() - start;
@@ -501,8 +490,8 @@ impl Walk<'_, '_> {
         }
     }
 
-    /// Matches the children of a folder by name and queues them. With `skip_unmatched`,
-    /// children found on one side only are dropped.
+    /// Matches the children of a folder by name and queues them, except the excluded ones.
+    /// With `skip_unmatched`, children found on one side only are dropped.
     fn push_children(
         &mut self,
         old: Option<u32>,
@@ -510,13 +499,12 @@ impl Walk<'_, '_> {
         skip_unmatched: bool,
         branch: Branch,
     ) {
-        let exclusions = self.rules.exclusions;
         match old {
-            Some(a) => self.old_keys.fill(&self.old, a, exclusions, &branch),
+            Some(a) => self.old_keys.fill(&self.old, a),
             None => self.old_keys.spans.clear(),
         }
         match new {
-            Some(b) => self.new_keys.fill(&self.new, b, exclusions, &branch),
+            Some(b) => self.new_keys.fill(&self.new, b),
             None => self.new_keys.spans.clear(),
         }
         let (ok, nk) = (&self.old_keys, &self.new_keys);
@@ -558,6 +546,15 @@ impl Walk<'_, '_> {
         }
         if skip_unmatched {
             items.retain(|item| matches!(item, Item::Both(..)));
+        }
+        // Checked after matching, once per path rather than once per side: matching is
+        // cheap next to a check against the dozens of exclusions a profile has.
+        if let Some(exclusions) = self.rules.exclusions {
+            let name = |item: &Item| match *item {
+                Item::Both(a, _) | Item::Old(a) => &self.old.entries[a as usize].name,
+                Item::New(b) => &self.new.entries[b as usize].name,
+            };
+            items.retain(|item| exclusions.child(&branch, name(item)).is_some());
         }
         items.reverse();
         self.frames.push(Frame {

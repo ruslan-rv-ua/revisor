@@ -18,8 +18,9 @@ use std::time::Instant;
 
 use revisor_core::compare::compare;
 use revisor_core::diff::{ChangeKind, path};
+use revisor_core::exclude::{DEFAULT_EXCLUSIONS, SystemEnvironment, expand};
 use revisor_core::scan::{Entry, EntryKind, Progress, ScanOptions, scan, synthetic};
-use revisor_core::store::{ProfileSettings, Scope, Snapshot, Store};
+use revisor_core::store::{ProfileSettings, Scope, Snapshot, SnapshotExclusion, Store};
 use windows_sys::Win32::System::ProcessStatus::{GetProcessMemoryInfo, PROCESS_MEMORY_COUNTERS};
 use windows_sys::Win32::System::Threading::GetCurrentProcess;
 
@@ -102,10 +103,22 @@ fn prepare(input: &Input, db: &Path) -> Result<(), Box<dyn std::error::Error>> {
         scope: Scope::default(),
     };
     let mut store = Store::create(db, &settings)?;
+    // The default exclusions, as a profile has them: the comparison matches every entry
+    // against them, which costs time too.
+    let exclusions: Vec<SnapshotExclusion> = DEFAULT_EXCLUSIONS
+        .iter()
+        .map(|pattern| SnapshotExclusion {
+            pattern: pattern.to_string(),
+            applied: expand(pattern, &SystemEnvironment)
+                .applied()
+                .map(String::from),
+        })
+        .collect();
     let started = Instant::now();
     for (comment, entries) in [("old", old), ("new", new)] {
         let mut snapshot = Snapshot::of_tree(entries);
         snapshot.comment = Some(comment.into());
+        snapshot.exclusions = exclusions.clone();
         store.save(&snapshot, &no_cancel)?;
     }
     println!(
