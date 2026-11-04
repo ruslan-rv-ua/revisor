@@ -17,7 +17,7 @@ use std::time::Duration;
 
 use revisor_core::profiles::{self, ProfileError, ProfileFile, Unreadable};
 use revisor_core::scan::Progress;
-use revisor_core::settings::{FocusAfterSnapshot, Settings};
+use revisor_core::settings::{FocusAfterSnapshot, Language, Settings};
 use revisor_core::snapshot::{self, Report, SnapshotError};
 use revisor_core::store::{
     Compacted, FolderState, Interrupt, ProfileSettings, SnapshotInfo, Store, StoreError,
@@ -35,7 +35,7 @@ use crate::menus::{
     button_label, context_label, context_menu, field_label, menu_label, submenu_label,
     top_menu_label, window_title,
 };
-use crate::message_box::{ask_text, confirm, tell};
+use crate::message_box::{ask_text, choose, confirm, tell};
 use crate::profile_window::{self, Purpose};
 use crate::settings_window::{self, Values};
 use crate::snapshots::{Arrival, FocusPlace, arrival, row_after_deletion};
@@ -64,7 +64,7 @@ const SAVED_GRACE: Duration = Duration::from_secs(2);
 const BUSY_RETRY: Duration = Duration::from_secs(1);
 
 /// The file of the application's settings in the data folder (ADR-0007).
-const SETTINGS_FILE: &str = "settings.db";
+pub const SETTINGS_FILE: &str = "settings.db";
 
 /// The widths of the snapshot list's columns: the name is fixed, the comment takes the rest.
 const DATE_TIME_WIDTH: i32 = 190;
@@ -100,6 +100,9 @@ const LABEL_CANCEL: usize = 2;
 const DELETE_ACCESS: u8 = b'D';
 const RESTART_ACCESS: u8 = b'R';
 const CLOSE_ACCESS: u8 = b'C';
+/// The buttons of the question after the interface language changed (TASK-16).
+const RESTART_NOW_ACCESS: u8 = b'R';
+const LATER_ACCESS: u8 = b'L';
 
 fn wx_id(id: CommandId) -> i32 {
     let index = COMMANDS
@@ -951,11 +954,22 @@ impl MainWindow {
             .unwrap_or(true)
     }
 
-    /// Shows the settings window and keeps what the user confirmed.
+    fn language(&self) -> Language {
+        self.settings
+            .as_ref()
+            .ok()
+            .and_then(|settings| settings.language().ok())
+            .unwrap_or_default()
+    }
+
+    /// Shows the settings window and keeps what the user confirmed. When the language
+    /// setting makes the next start speak another language, offers to restart now
+    /// (TASK-16 #3).
     fn settings(&self) {
         let s = self.s;
         let title = s.command(CommandId::Settings);
         let initial = Values {
+            language: self.language(),
             focus_after_snapshot: self.focus_after_snapshot(),
             confirm_snapshot_deletion: self.confirm_deletion(),
         };
@@ -964,7 +978,8 @@ impl MainWindow {
         };
         let saved = match &self.settings {
             Ok(settings) => settings
-                .set_focus_after_snapshot(values.focus_after_snapshot)
+                .set_language(values.language)
+                .and_then(|()| settings.set_focus_after_snapshot(values.focus_after_snapshot))
                 .and_then(|()| {
                     settings.set_confirm_snapshot_deletion(values.confirm_snapshot_deletion)
                 })
@@ -973,7 +988,37 @@ impl MainWindow {
         };
         match saved {
             Ok(()) => self.say(s.settings_saved()),
-            Err(reason) => tell(&self.frame, s, title, &s.settings_not_saved(&reason)),
+            Err(reason) => {
+                tell(&self.frame, s, title, &s.settings_not_saved(&reason));
+                return;
+            }
+        }
+        // «Same as Windows» is read now, not at the start: the language of Windows may
+        // have changed meanwhile, and the next start would take the new one.
+        let next = crate::language_of(values.language, win32::ui_language);
+        if next == s.lang() {
+            return;
+        }
+        let restart_now = choose(
+            &self.frame,
+            s,
+            title,
+            s.language_changes_after_restart(),
+            (s.restart_now(), RESTART_NOW_ACCESS),
+            Some((s.later(), LATER_ACCESS)),
+            false,
+        );
+        if !restart_now {
+            return;
+        }
+        // During a snapshot, the same question as closing revisor asks (TASK-16 #4).
+        let agreed = self.stop_snapshot_if_agreed(
+            s.command(CommandId::Exit),
+            s.close_during_snapshot(),
+            (s.close(), CLOSE_ACCESS),
+        );
+        if agreed {
+            self.restart_with_same_rights(self.open_profile().as_ref());
         }
     }
 
@@ -1564,6 +1609,25 @@ impl MainWindow {
         }
     }
 
+    /// Starts revisor again with the rights this one has, on `profile`, and closes this
+    /// one (TASK-16 #4): a child process inherits the token of its parent, so a revisor
+    /// run as administrator starts another administrator, without the UAC prompt, and
+    /// a standard one another standard one.
+    fn restart_with_same_rights(&self, profile: Option<&ProfileFile>) {
+        let s = self.s;
+        let started = std::env::current_exe().and_then(|exe| {
+            let mut command = std::process::Command::new(exe);
+            if let Some(profile) = profile {
+                command.arg("--profile").arg(&profile.path);
+            }
+            command.spawn().map(drop)
+        });
+        match started {
+            Ok(()) => self.frame.close(true),
+            Err(e) => self.say(&s.restart_failed(&s.failure(&failure::of_io(&e)))),
+        }
+    }
+
     /// Greys out the commands that cannot run now and sets the check and radio marks.
     fn refresh_menus(&self) {
         let state = self.state.borrow();
@@ -1729,6 +1793,9 @@ mod tests {
             cancel_compaction_access()
         ));
         assert!(has(En.restart(), RESTART_ACCESS));
+        assert!(has(En.restart_now(), RESTART_NOW_ACCESS));
+        assert!(has(En.later(), LATER_ACCESS));
+        assert_ne!(RESTART_NOW_ACCESS, LATER_ACCESS);
         assert!(has(En.close(), CLOSE_ACCESS));
         assert!(has(En.delete(), DELETE_ACCESS));
         assert!(has(&En.comment_of("x"), COMMENT_ACCESS));

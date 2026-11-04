@@ -11,7 +11,7 @@ pub use en::En;
 pub use uk::Uk;
 
 use revisor_core::exclude::PatternError;
-use revisor_core::settings::FocusAfterSnapshot;
+use revisor_core::settings::{FocusAfterSnapshot, Language};
 
 use crate::commands::{CommandId, MenuId, Pane, Reason, SubmenuId};
 
@@ -186,6 +186,16 @@ pub trait Strings {
     fn settings_not_saved(&self, reason: &str) -> String;
     /// The settings file could not be used, so the defaults are.
     fn settings_not_opened(&self, file: &str, reason: &str) -> String;
+
+    // The interface language (TASK-16).
+    /// The label of the language box, without access key or colon.
+    fn language(&self) -> &'static str;
+    /// A value of the language setting; each language is named in itself.
+    fn language_option(&self, value: Language) -> &'static str;
+    /// Said once the setting makes the next start speak another language.
+    fn language_changes_after_restart(&self) -> &'static str;
+    fn restart_now(&self) -> &'static str;
+    fn later(&self) -> &'static str;
 
     // The debug-only demo state (REVISOR_DEMO=1).
     fn demo_change(&self, n: usize) -> String;

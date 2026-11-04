@@ -23,10 +23,12 @@ use std::path::{Path, PathBuf};
 use i18n::{En, Lang, Strings, Uk};
 use main_window::MainWindow;
 use revisor_core::elevation;
+use revisor_core::settings::{Language, Settings};
 use state::AppState;
 
 fn main() {
-    let strings: &'static dyn Strings = match win32::ui_language() {
+    let data_dir = data_dir();
+    let strings: &'static dyn Strings = match interface_language(&data_dir) {
         Lang::Uk => &Uk,
         Lang::En => &En,
     };
@@ -45,9 +47,29 @@ fn main() {
     let open = profile_argument();
     wxdragon::main(move |_| {
         // The frame's event handlers hold the window, so it lives as long as the frame.
-        MainWindow::open(strings, state, data_dir(), open);
+        MainWindow::open(strings, state, data_dir, open);
     })
     .expect("failed to start the GUI");
+}
+
+/// The language the interface speaks for this run (TASK-16): the setting «Language», read
+/// before any window is made; «Same as Windows», and a settings file that cannot be read,
+/// take the interface language of Windows. The main window reports the unusable file.
+fn interface_language(data_dir: &Path) -> Lang {
+    let chosen = Settings::open(&data_dir.join(main_window::SETTINGS_FILE))
+        .and_then(|settings| settings.language())
+        .unwrap_or_default();
+    language_of(chosen, win32::ui_language)
+}
+
+/// The language a value of the setting stands for; `windows` is read only when it is
+/// needed, as it is a system call.
+pub fn language_of(chosen: Language, windows: impl FnOnce() -> Lang) -> Lang {
+    match chosen {
+        Language::SameAsWindows => windows(),
+        Language::English => Lang::En,
+        Language::Ukrainian => Lang::Uk,
+    }
 }
 
 /// The data folder: revisor is portable, so all its data — the profiles and the settings
@@ -67,4 +89,20 @@ fn profile_argument() -> Option<PathBuf> {
         }
     }
     None
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn the_setting_picks_the_language_and_only_same_as_windows_asks_windows() {
+        assert_eq!(language_of(Language::SameAsWindows, || Lang::Uk), Lang::Uk);
+        assert_eq!(language_of(Language::SameAsWindows, || Lang::En), Lang::En);
+        assert_eq!(language_of(Language::English, || unreachable!()), Lang::En);
+        assert_eq!(
+            language_of(Language::Ukrainian, || unreachable!()),
+            Lang::Uk
+        );
+    }
 }

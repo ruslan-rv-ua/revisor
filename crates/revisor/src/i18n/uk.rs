@@ -2,7 +2,7 @@
 //! (document «Клавіатура й меню», section «Назви клавіш»).
 
 use revisor_core::exclude::PatternError;
-use revisor_core::settings::FocusAfterSnapshot;
+use revisor_core::settings::{FocusAfterSnapshot, Language};
 
 use super::plural::{Category, category};
 use super::{Failure, Lang, Strings};
@@ -554,6 +554,30 @@ impl Strings for Uk {
             "Файл налаштувань «{file}» не вдалося відкрити: {reason}. Використано типові \
              налаштування, а їхні зміни не зберігаються."
         )
+    }
+
+    fn language(&self) -> &'static str {
+        "Мова"
+    }
+
+    fn language_option(&self, value: Language) -> &'static str {
+        match value {
+            Language::SameAsWindows => "Як у Windows",
+            Language::English => "English",
+            Language::Ukrainian => "Українська",
+        }
+    }
+
+    fn language_changes_after_restart(&self) -> &'static str {
+        "Мова інтерфейсу зміниться після перезапуску revisor. Перезапустити зараз?"
+    }
+
+    fn restart_now(&self) -> &'static str {
+        "Перезапустити зараз"
+    }
+
+    fn later(&self) -> &'static str {
+        "Пізніше"
     }
 
     fn demo_change(&self, n: usize) -> String {
