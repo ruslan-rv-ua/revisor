@@ -11,7 +11,7 @@ use std::path::{Path, PathBuf};
 use std::rc::Rc;
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
-use std::sync::mpsc::{self, Receiver, TryRecvError};
+use std::sync::mpsc::{self, Receiver, RecvTimeoutError, TryRecvError};
 use std::thread::{self, JoinHandle};
 use std::time::Duration;
 
@@ -52,6 +52,12 @@ const PROGRESS_INTERVAL: i32 = 100;
 /// How long a comment waits for the snapshot that is writing the profile's database
 /// (TASK-9 #29): the save's commit is a matter of seconds.
 const COMMENT_TIMEOUT: Duration = Duration::from_secs(60);
+
+/// How long the window waits for the result of a snapshot whose save is already over:
+/// its thread only closes the database and reports, a matter of milliseconds. A command
+/// that waited for that save then reports the snapshot's end together with its own
+/// outcome instead of leaving it to the next tick (TASK-21).
+const SAVED_GRACE: Duration = Duration::from_secs(2);
 
 /// How long a revisor started while another compacts a profile waits between its looks
 /// at the profile (TASK-9 #30).
@@ -1306,6 +1312,16 @@ impl MainWindow {
             self.progress_text.change_value(&text);
             match job.done.try_recv() {
                 Ok(result) => Some(result),
+                // The save is over: the result is a moment away, so it is waited for
+                // rather than left to the next tick, which would say it apart from
+                // the message of this moment (TASK-21).
+                Err(TryRecvError::Empty) if job.progress.saved() => {
+                    match job.done.recv_timeout(SAVED_GRACE) {
+                        Ok(result) => Some(result),
+                        Err(RecvTimeoutError::Timeout) => return,
+                        Err(RecvTimeoutError::Disconnected) => None,
+                    }
+                }
                 Err(TryRecvError::Empty) => return,
                 Err(TryRecvError::Disconnected) => None,
             }

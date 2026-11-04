@@ -130,7 +130,9 @@ pub fn take(
         exclusions,
     };
     progress.set_saving(true);
-    let id = store.save(&snapshot, cancel)?;
+    let saved = store.save(&snapshot, cancel);
+    progress.set_saved(true);
+    let id = saved?;
     Ok(Report {
         id,
         taken_at,

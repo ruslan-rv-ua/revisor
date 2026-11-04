@@ -109,6 +109,7 @@ fn a_snapshot_covers_every_folder_of_the_profile_and_reports_each() {
     assert_eq!(not_found, [gone.as_path(), nowhere.as_path()]);
     assert_eq!(progress.entries(), report.entries);
     assert!(progress.saving());
+    assert!(progress.saved());
 
     let store = Store::open(&tmp.db()).unwrap();
     let saved = store.list().unwrap();
