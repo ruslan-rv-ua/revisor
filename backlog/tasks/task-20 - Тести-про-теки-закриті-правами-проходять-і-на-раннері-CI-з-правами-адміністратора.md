@@ -3,10 +3,10 @@ id: TASK-20
 title: >-
   Тести про теки, закриті правами, проходять і на раннері CI з правами
   адміністратора
-status: In Progress
+status: Done
 assignee: []
 created_date: '2026-11-04 18:49'
-updated_date: '2026-11-04 18:58'
+updated_date: '2026-11-04 19:02'
 labels: []
 milestone: m-1
 dependencies:
@@ -19,6 +19,7 @@ references:
   - crates/revisor-core/src/scan/tests.rs
   - crates/revisor-core/src/snapshot/tests.rs
   - .github/workflows/ci.yml
+  - 'https://github.com/ruslan-rv-ua/revisor/actions/runs/41892551712'
 modified_files:
   - crates/revisor-core/src/elevation.rs
 type: bug
@@ -37,7 +38,7 @@ CI на develop червоний від злиття TASK-8 (2026-11-02): зап
 
 ## Acceptance Criteria
 <!-- AC:BEGIN -->
-- [ ] #1 `cargo test --workspace --locked` проходить на раннері GitHub (windows-2025, процес від імені адміністратора): запуск CI на develop зелений на всіх кроках, зокрема Clippy і «Licences are up to date».
+- [x] #1 `cargo test --workspace --locked` проходить на раннері GitHub (windows-2025, процес від імені адміністратора): запуск CI на develop зелений на всіх кроках, зокрема Clippy і «Licences are up to date».
 - [x] #2 Ті самі тести проходять на машині звичайного користувача без SeBackupPrivilege, як і досі, і в консолі, запущеній від імені адміністратора.
 - [x] #3 Тести про теки, закриті правами, і далі доводять, що без привілею резервного копіювання сканер позначає таку теку недоступною, а знімок рахує її серед закритих правами; їх не пропущено й не послаблено до перевірки, яка проходить завжди.
 - [x] #4 Тест привілею резервного копіювання не змінює стану, від якого залежать інші тести, у якому б порядку чи потоці вони не йшли.
@@ -48,7 +49,7 @@ CI на develop червоний від злиття TASK-8 (2026-11-02): зап
 - [x] #1 Тести (cargo test) проходять
 - [x] #2 cargo clippy і cargo fmt --check без зауважень
 - [ ] #3 Зміни інтерфейсу перевірено вручну з NVDA в українському інтерфейсі (якщо задача їх містить)
-- [ ] #4 Нотатки виконання й підсумок задачі заповнено
+- [x] #4 Нотатки виконання й підсумок задачі заповнено
 - [ ] #5 Бриф і ADR чи README оновлено (якщо задача змінила поведінку чи рішення)
 - [ ] #6 Нові вікна й контроли мають клавіші доступу за документом «Клавіатура й меню» (якщо задача їх додає)
 <!-- DOD:END -->
@@ -80,4 +81,13 @@ CI на develop червоний від злиття TASK-8 (2026-11-02): зап
 - Звичайний користувач: `cargo test -p revisor-core --locked` — 115 passed, 1 ignored; `cargo clippy --workspace --all-targets -- -D warnings` і `cargo fmt --check` без зауважень.
 - Процес від імені адміністратора (бінарник тестів ядра запущено через `Start-Process -Verb RunAs`): 115 passed, три тести про закриті теки зелені; `whoami /priv` у тому самому підвищеному сеансі показує SeBackupPrivilege Disabled.
 - AC #1 (зелений CI на develop) підтверджується після злиття гілки й пушу.
+
+- CI на develop після злиття (запуск 41892551712, коміт 578071d, 2026-11-04): усі кроки зелені — Format, Test, Clippy, «Licences are up to date». AC #1 виконано.
+- DoD #3, #5, #6 не стосуються задачі: інтерфейс, бриф, ADR і документ «Клавіатура й меню» не змінювалися.
 <!-- SECTION:NOTES:END -->
+
+## Final Summary
+
+<!-- SECTION:FINAL_SUMMARY:BEGIN -->
+CI на develop знову зелений. Тест `an_administrator_gets_the_backup_privilege_and_nobody_fails` у `crates/revisor-core/src/elevation.rs` вмикав SeBackupPrivilege для всього процесу тестів, і на раннері GitHub (адміністратор) три тести про теки, закриті правами, читали ці теки через резервну семантику й падали. Тепер тест вмикає привілей на копії токена, яку через `ImpersonateSelf` має лише його потік, повертається через `RevertToSelf` і перевіряє, що токен процесу лишився без привілею. Вмикання привілею винесено у внутрішню функцію з параметром-токеном; публічна `enable_backup_privilege` і поведінка revisor не змінилися. Тести про закриті теки не ослаблено. Перевірено як звичайний користувач і в підвищеному процесі локально (115 тестів ядра зелені, SeBackupPrivilege процесу Disabled), а також на CI: запуск 41892551712 зелений на всіх кроках. Гілка `bugfix/backup-privilege-test-thread-token` злита в develop через git flow і запушена.
+<!-- SECTION:FINAL_SUMMARY:END -->
