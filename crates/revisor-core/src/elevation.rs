@@ -15,10 +15,11 @@ use windows_sys::Win32::Security::{
 };
 use windows_sys::Win32::System::Threading::{GetCurrentProcess, OpenProcessToken};
 
-/// The access token of this process, closed on drop.
+/// An access token of this process, closed on drop.
 struct Token(HANDLE);
 
 impl Token {
+    /// The primary token of the process.
     fn open(access: u32) -> io::Result<Token> {
         let mut handle: HANDLE = ptr::null_mut();
         // SAFETY: the pseudo-handle of the current process needs no closing; `handle` is a
@@ -65,6 +66,11 @@ pub fn is_elevated() -> bool {
 /// get it enabled, standard users do not have it at all.
 pub fn enable_backup_privilege() -> io::Result<bool> {
     let token = Token::open(TOKEN_ADJUST_PRIVILEGES | TOKEN_QUERY)?;
+    enable_backup_privilege_on(&token)
+}
+
+/// The LUID of the backup privilege on this system.
+fn backup_privilege() -> io::Result<LUID> {
     let mut luid = LUID {
         LowPart: 0,
         HighPart: 0,
@@ -73,10 +79,15 @@ pub fn enable_backup_privilege() -> io::Result<bool> {
     if unsafe { LookupPrivilegeValueW(ptr::null(), SE_BACKUP_NAME, &mut luid) } == 0 {
         return Err(io::Error::last_os_error());
     }
+    Ok(luid)
+}
+
+/// Enables the backup privilege on `token`, opened with `TOKEN_ADJUST_PRIVILEGES`.
+fn enable_backup_privilege_on(token: &Token) -> io::Result<bool> {
     let privileges = TOKEN_PRIVILEGES {
         PrivilegeCount: 1,
         Privileges: [LUID_AND_ATTRIBUTES {
-            Luid: luid,
+            Luid: backup_privilege()?,
             Attributes: SE_PRIVILEGE_ENABLED,
         }],
     };
@@ -98,11 +109,107 @@ pub fn enable_backup_privilege() -> io::Result<bool> {
 mod tests {
     use super::*;
 
+    use windows_sys::Win32::Security::{
+        ImpersonateSelf, RevertToSelf, SecurityImpersonation, TokenPrivileges,
+    };
+    use windows_sys::Win32::System::Threading::{GetCurrentThread, OpenThreadToken};
+
+    /// The test thread impersonating the process's own identity, on a copy of the process
+    /// token that is the thread's alone, reverted on drop.
+    struct SelfImpersonation;
+
+    impl SelfImpersonation {
+        fn start() -> io::Result<SelfImpersonation> {
+            // SAFETY: plain FFI call.
+            if unsafe { ImpersonateSelf(SecurityImpersonation) } == 0 {
+                return Err(io::Error::last_os_error());
+            }
+            Ok(SelfImpersonation)
+        }
+
+        /// The impersonation token of this thread.
+        fn token(&self, access: u32) -> io::Result<Token> {
+            let mut handle: HANDLE = ptr::null_mut();
+            // SAFETY: the pseudo-handle of the current thread needs no closing; `handle` is
+            // a valid out pointer.
+            let ok = unsafe { OpenThreadToken(GetCurrentThread(), access, 1, &mut handle) };
+            if ok == 0 {
+                return Err(io::Error::last_os_error());
+            }
+            Ok(Token(handle))
+        }
+    }
+
+    impl Drop for SelfImpersonation {
+        fn drop(&mut self) {
+            // SAFETY: plain FFI call.
+            unsafe { RevertToSelf() };
+        }
+    }
+
+    /// Whether `token` holds the backup privilege enabled.
+    fn backup_privilege_is_enabled_on(token: &Token) -> bool {
+        let luid = backup_privilege().unwrap();
+        let mut needed = 0u32;
+        // SAFETY: a NULL buffer of size 0 only asks for the size needed.
+        unsafe { GetTokenInformation(token.0, TokenPrivileges, ptr::null_mut(), 0, &mut needed) };
+        let mut buffer = vec![0u8; needed as usize];
+        // SAFETY: the buffer is as large as the previous call asked for.
+        let ok = unsafe {
+            GetTokenInformation(
+                token.0,
+                TokenPrivileges,
+                buffer.as_mut_ptr().cast(),
+                needed,
+                &mut needed,
+            )
+        };
+        assert_ne!(ok, 0, "{}", io::Error::last_os_error());
+        // SAFETY: the buffer starts with a TOKEN_PRIVILEGES whose `Privileges` array of
+        // `PrivilegeCount` entries follows the count in the same buffer.
+        let count = unsafe { buffer.as_ptr().cast::<TOKEN_PRIVILEGES>().read_unaligned() }
+            .PrivilegeCount as usize;
+        let first = size_of::<u32>();
+        (0..count)
+            .map(|i| {
+                let at = first + i * size_of::<LUID_AND_ATTRIBUTES>();
+                // SAFETY: entry `i` of `count` lies inside the buffer the system filled.
+                unsafe {
+                    buffer
+                        .as_ptr()
+                        .add(at)
+                        .cast::<LUID_AND_ATTRIBUTES>()
+                        .read_unaligned()
+                }
+            })
+            .any(|p| {
+                p.Luid.LowPart == luid.LowPart
+                    && p.Luid.HighPart == luid.HighPart
+                    && p.Attributes & SE_PRIVILEGE_ENABLED != 0
+            })
+    }
+
     #[test]
     fn an_administrator_gets_the_backup_privilege_and_nobody_fails() {
+        // The privilege is enabled on a token this thread alone holds, never on the
+        // process: the tests about folders closed by rights run in the same process, and
+        // on an administrator's machine (the CI runner) the privilege would open those
+        // folders to them whatever order or thread the tests ran in (TASK-20).
+        let this_thread = SelfImpersonation::start().unwrap();
+        let token = this_thread
+            .token(TOKEN_ADJUST_PRIVILEGES | TOKEN_QUERY)
+            .unwrap();
         // An administrator has SeBackupPrivilege and gets it enabled; a standard user
         // usually has none (a Backup Operator does), and the call still succeeds.
-        let enabled = enable_backup_privilege().unwrap();
+        let enabled = enable_backup_privilege_on(&token).unwrap();
         assert!(enabled || !is_elevated());
+        assert_eq!(backup_privilege_is_enabled_on(&token), enabled);
+        drop(this_thread);
+
+        let process = Token::open(TOKEN_QUERY).unwrap();
+        assert!(
+            !backup_privilege_is_enabled_on(&process),
+            "the process token must stay as it was"
+        );
     }
 }
