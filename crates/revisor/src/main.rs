@@ -14,6 +14,7 @@ mod profile_window;
 mod settings_window;
 mod snapshots;
 mod state;
+mod status;
 mod win32;
 
 use std::ffi::OsStr;

@@ -151,6 +151,7 @@ pub struct Progress {
     entries: AtomicU64,
     folder: Mutex<PathBuf>,
     saving: AtomicBool,
+    saved: AtomicBool,
 }
 
 impl Progress {
@@ -175,6 +176,17 @@ impl Progress {
 
     pub fn set_saving(&self, saving: bool) {
         self.saving.store(saving, Ordering::Relaxed);
+    }
+
+    /// Whether the save is over, well or not, so the database is free again and the
+    /// snapshot's result is a moment away: whoever waited for the database can wait for
+    /// the result too and report both at once (TASK-21).
+    pub fn saved(&self) -> bool {
+        self.saved.load(Ordering::Relaxed)
+    }
+
+    pub fn set_saved(&self, saved: bool) {
+        self.saved.store(saved, Ordering::Relaxed);
     }
 
     fn set_folder(&self, folder: &Path) {
