@@ -425,6 +425,15 @@ fn changed_link_target_is_a_change() {
     let mut new = sample();
     new.get("link").link_target = Some(OsStr::new(r"C:\Other").into());
     assert_eq!(lines(&old.0, &new.0), ["~ link target"]);
+    // The times and attributes of a link count too, as those of a file do.
+    let link = new.get("link");
+    link.created = 1;
+    link.modified = 2;
+    link.attributes |= FILE_ATTRIBUTE_HIDDEN;
+    assert_eq!(
+        lines(&old.0, &new.0),
+        ["~ link created,modified,attributes,target"]
+    );
 }
 
 #[test]
