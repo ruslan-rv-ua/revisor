@@ -40,6 +40,7 @@ use crate::profile_window::{self, Purpose};
 use crate::settings_window::{self, Values};
 use crate::snapshots::{Arrival, FocusPlace, arrival, row_after_deletion};
 use crate::state::{AppState, ChangeType, SortColumn};
+use crate::status::Announcer;
 use crate::win32;
 
 /// The wx id of the first command; the others follow in table order.
@@ -214,6 +215,8 @@ pub struct MainWindow {
     state: RefCell<AppState>,
     menu_bar: MenuBar,
     status: StatusBar,
+    /// Joins the messages of one event into one (TASK-21).
+    announcer: Announcer,
     panel: Panel,
     profile: Choice,
     /// The progress of the snapshot being taken, or of the compaction, shown only while
@@ -354,6 +357,7 @@ impl MainWindow {
             state: RefCell::new(state),
             menu_bar,
             status,
+            announcer: Announcer::default(),
             panel,
             profile,
             progress_label,
@@ -586,23 +590,54 @@ impl MainWindow {
         }
     }
 
-    /// Shows a message in the status bar; screen readers read it without the focus moving.
+    /// Says a message in the status bar; screen readers read it without the focus
+    /// moving. During a command or a tick of the jobs' timer the message waits for the
+    /// event's end and is shown with the others of that event, as one (TASK-21).
     pub fn say(&self, text: &str) {
+        if let Some(text) = self.announcer.say(text) {
+            self.show(&text);
+        }
+    }
+
+    fn show(&self, text: &str) {
         self.status.set_status_text(text, 0);
         win32::announce_status(self.status.get_handle());
     }
 
+    /// Runs an event whose messages are said together, once it is over: the messages of
+    /// one moment would otherwise replace each other before a screen reader read them.
+    fn speaking<T>(&self, event: impl FnOnce() -> T) -> T {
+        let (answer, text) = self.announcer.gather(event);
+        if let Some(text) = text {
+            self.show(&text);
+        }
+        answer
+    }
+
+    /// Runs a command, then looks at the jobs: one that ended meanwhile, under the
+    /// command's dialog or while the command waited for its write, is reported together
+    /// with the command's own outcome (TASK-21).
     fn run(&self, id: CommandId) {
+        self.speaking(|| {
+            if self.run_command(id) {
+                self.poll_jobs();
+            }
+        });
+    }
+
+    /// Runs the command; returns whether the window goes on, which it does not after
+    /// «Вихід».
+    fn run_command(&self, id: CommandId) -> bool {
         let s = self.s;
         let available = (command(id).available)(&self.state.borrow());
         if let Err(reason) = available {
             self.say(&s.unavailable(s.command(id), s.reason(reason)));
-            return;
+            return true;
         }
         match id {
             CommandId::Exit => {
                 self.frame.close(false);
-                return;
+                return false;
             }
             CommandId::NewProfile => self.new_profile(),
             CommandId::EditProfile => self.edit_profile(),
@@ -623,6 +658,7 @@ impl MainWindow {
             }
         }
         self.refresh_menus();
+        true
     }
 
     /// What the demo state does for a command: the filter and sort items keep their marks.
@@ -1243,9 +1279,12 @@ impl MainWindow {
         }
     }
 
+    /// Reports the jobs that have ended, together when both have.
     fn poll_jobs(&self) {
-        self.poll_snapshot();
-        self.poll_compaction();
+        self.speaking(|| {
+            self.poll_snapshot();
+            self.poll_compaction();
+        });
     }
 
     /// Shows the progress of the snapshot and, once it is over, its outcome.
