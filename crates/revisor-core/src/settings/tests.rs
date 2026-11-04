@@ -42,6 +42,7 @@ fn a_new_settings_file_is_made_with_the_defaults() {
         FocusAfterSnapshot::IfInList
     );
     assert!(settings.confirm_snapshot_deletion().unwrap());
+    assert_eq!(settings.language().unwrap(), Language::SameAsWindows);
     let conn = rusqlite::Connection::open(tmp.db()).unwrap();
     let version: i64 = conn
         .pragma_query_value(None, "user_version", |r| r.get(0))
@@ -59,9 +60,11 @@ fn settings_survive_a_restart() {
             .set_focus_after_snapshot(FocusAfterSnapshot::Never)
             .unwrap();
         settings.set_confirm_snapshot_deletion(false).unwrap();
+        settings.set_language(Language::Ukrainian).unwrap();
     }
     let settings = Settings::open(&tmp.db()).unwrap();
     assert_eq!(settings.last_profile().unwrap().as_deref(), Some("Дім.db"));
+    assert_eq!(settings.language().unwrap(), Language::Ukrainian);
     assert_eq!(
         settings.focus_after_snapshot().unwrap(),
         FocusAfterSnapshot::Never
@@ -73,7 +76,9 @@ fn settings_survive_a_restart() {
         .set_focus_after_snapshot(FocusAfterSnapshot::Always)
         .unwrap();
     settings.set_confirm_snapshot_deletion(true).unwrap();
+    settings.set_language(Language::English).unwrap();
     settings.set_last_profile(None).unwrap();
+    assert_eq!(settings.language().unwrap(), Language::English);
     assert_eq!(
         settings.focus_after_snapshot().unwrap(),
         FocusAfterSnapshot::Always
@@ -108,6 +113,11 @@ fn a_value_no_revisor_wrote_falls_back_to_the_default() {
         [],
     )
     .unwrap();
+    conn.execute(
+        "INSERT OR REPLACE INTO setting VALUES ('language', 'fr')",
+        [],
+    )
+    .unwrap();
     drop(conn);
     let settings = Settings::open(&tmp.db()).unwrap();
     assert_eq!(
@@ -115,6 +125,7 @@ fn a_value_no_revisor_wrote_falls_back_to_the_default() {
         FocusAfterSnapshot::IfInList
     );
     assert!(settings.confirm_snapshot_deletion().unwrap());
+    assert_eq!(settings.language().unwrap(), Language::SameAsWindows);
 }
 
 #[test]

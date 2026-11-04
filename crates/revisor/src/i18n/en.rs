@@ -1,7 +1,7 @@
 //! English interface strings, the base language.
 
 use revisor_core::exclude::PatternError;
-use revisor_core::settings::FocusAfterSnapshot;
+use revisor_core::settings::{FocusAfterSnapshot, Language};
 
 use super::plural::{Category, category};
 use super::{Failure, Lang, Strings};
@@ -556,6 +556,30 @@ impl Strings for En {
             "The settings file “{file}” cannot be opened: {reason}. The default settings are \
              used, and changes to them are not kept."
         )
+    }
+
+    fn language(&self) -> &'static str {
+        "Language"
+    }
+
+    fn language_option(&self, value: Language) -> &'static str {
+        match value {
+            Language::SameAsWindows => "Same as Windows",
+            Language::English => "English",
+            Language::Ukrainian => "Українська",
+        }
+    }
+
+    fn language_changes_after_restart(&self) -> &'static str {
+        "The interface language changes once revisor is restarted. Restart it now?"
+    }
+
+    fn restart_now(&self) -> &'static str {
+        "Restart now"
+    }
+
+    fn later(&self) -> &'static str {
+        "Later"
     }
 
     fn demo_change(&self, n: usize) -> String {

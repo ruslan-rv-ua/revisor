@@ -1,6 +1,7 @@
 //! The application's own settings (ADR-0007): one SQLite database in the data folder, apart
 //! from the profiles, for what belongs to no profile — the profile opened last, what the
-//! focus does when a snapshot ends, whether deleting snapshots asks first (TASK-9). Each
+//! focus does when a snapshot ends, whether deleting snapshots asks first (TASK-9), the
+//! interface language (TASK-16). Each
 //! setting is one row of a key–value table, read and written through typed methods, so a
 //! later setting needs no change of the schema.
 
@@ -32,6 +33,7 @@ CREATE TABLE setting (
 const KEY_LAST_PROFILE: &str = "last_profile";
 const KEY_FOCUS_AFTER_SNAPSHOT: &str = "focus_after_snapshot";
 const KEY_CONFIRM_SNAPSHOT_DELETION: &str = "confirm_snapshot_deletion";
+const KEY_LANGUAGE: &str = "language";
 
 #[derive(Debug)]
 pub enum SettingsError {
@@ -89,6 +91,35 @@ impl FocusAfterSnapshot {
             Self::IfInList => "if_in_list",
             Self::Always => "always",
             Self::Never => "never",
+        }
+    }
+
+    pub fn parse(text: &str) -> Option<Self> {
+        Self::ALL.into_iter().find(|v| v.as_str() == text)
+    }
+}
+
+/// The interface language the user chose (TASK-16). The application maps it to a language
+/// of its strings when it starts; a new value takes effect at the next start.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub enum Language {
+    /// The interface language of Windows: Ukrainian gives Ukrainian, any other English.
+    #[default]
+    SameAsWindows,
+    English,
+    Ukrainian,
+}
+
+impl Language {
+    /// Every value, in the order the settings window lists them.
+    pub const ALL: [Self; 3] = [Self::SameAsWindows, Self::English, Self::Ukrainian];
+
+    /// The value as the database stores it.
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::SameAsWindows => "windows",
+            Self::English => "en",
+            Self::Ukrainian => "uk",
         }
     }
 
@@ -194,6 +225,18 @@ impl Settings {
 
     pub fn set_confirm_snapshot_deletion(&self, confirm: bool) -> Result<(), SettingsError> {
         self.set(KEY_CONFIRM_SNAPSHOT_DELETION, i64::from(confirm))
+    }
+
+    /// The interface language the user chose; «Same as Windows» when nothing is stored.
+    pub fn language(&self) -> Result<Language, SettingsError> {
+        Ok(match self.get(KEY_LANGUAGE)? {
+            Some(Value::Text(text)) => Language::parse(&text).unwrap_or_default(),
+            _ => Language::default(),
+        })
+    }
+
+    pub fn set_language(&self, value: Language) -> Result<(), SettingsError> {
+        self.set(KEY_LANGUAGE, value.as_str())
     }
 
     fn get(&self, key: &str) -> Result<Option<Value>, SettingsError> {

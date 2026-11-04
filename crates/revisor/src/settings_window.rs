@@ -1,10 +1,11 @@
 //! The settings window (TASK-9): the application's own settings (ADR-0007) that have a
-//! control of their own — what the focus does when a snapshot ends, and whether deleting
-//! snapshots asks first. The profile opened last is kept without a control.
+//! control of their own — the interface language (TASK-16), what the focus does when a
+//! snapshot ends, and whether deleting snapshots asks first. The profile opened last is
+//! kept without a control.
 
 use std::rc::Rc;
 
-use revisor_core::settings::FocusAfterSnapshot;
+use revisor_core::settings::{FocusAfterSnapshot, Language};
 use wxdragon::prelude::*;
 
 use crate::commands::CommandId;
@@ -15,6 +16,7 @@ use crate::menus::{button_label, field_label};
 /// The settings the window edits.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct Values {
+    pub language: Language,
     pub focus_after_snapshot: FocusAfterSnapshot,
     pub confirm_snapshot_deletion: bool,
 }
@@ -23,16 +25,22 @@ pub struct Values {
 /// access keys, as Enter and Esc press them.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 enum Control {
+    Language,
     FocusAfterSnapshot,
     ConfirmDeletion,
 }
 
 impl Control {
-    const ALL: [Control; 2] = [Self::FocusAfterSnapshot, Self::ConfirmDeletion];
+    const ALL: [Control; 3] = [
+        Self::Language,
+        Self::FocusAfterSnapshot,
+        Self::ConfirmDeletion,
+    ];
 
     /// The access key, as the document «Клавіатура й меню» lists it.
     const fn access(self) -> u8 {
         match self {
+            Self::Language => b'L',
             Self::FocusAfterSnapshot => b'F',
             Self::ConfirmDeletion => b'C',
         }
@@ -40,6 +48,7 @@ impl Control {
 
     fn name(self, s: &dyn Strings) -> &'static str {
         match self {
+            Self::Language => s.language(),
             Self::FocusAfterSnapshot => s.focus_after_snapshot(),
             Self::ConfirmDeletion => s.confirm_snapshot_deletion(),
         }
@@ -50,13 +59,14 @@ impl Control {
     fn label(self, s: &dyn Strings) -> String {
         let (name, access) = (self.name(s), self.access());
         match self {
-            Self::FocusAfterSnapshot => field_label(s, name, access),
+            Self::Language | Self::FocusAfterSnapshot => field_label(s, name, access),
             Self::ConfirmDeletion => button_label(s, name, access, false),
         }
     }
 }
 
 struct Window {
+    language: Choice,
     focus: Choice,
     confirm: CheckBox,
 }
@@ -67,6 +77,18 @@ pub fn show(parent: &Frame, s: &'static dyn Strings, initial: Values) -> Option<
     let dialog = Dialog::builder(parent, s.command(CommandId::Settings)).build();
     // Made in tab order. The label comes right before its control, so screen readers name
     // the control after it.
+    let language_label = StaticText::builder(&dialog)
+        .with_label(&Control::Language.label(s))
+        .build();
+    let language = Choice::builder(&dialog).build();
+    for value in Language::ALL {
+        language.append(s.language_option(value));
+    }
+    let chosen = Language::ALL
+        .iter()
+        .position(|&v| v == initial.language)
+        .unwrap_or(0);
+    language.set_selection(chosen as u32);
     let focus_label = StaticText::builder(&dialog)
         .with_label(&Control::FocusAfterSnapshot.label(s))
         .build();
@@ -96,7 +118,9 @@ pub fn show(parent: &Frame, s: &'static dyn Strings, initial: Values) -> Option<
 
     let sizer = BoxSizer::builder(Orientation::Vertical).build();
     let side = SizerFlag::Left | SizerFlag::Right;
-    sizer.add(&focus_label, 0, side | SizerFlag::Top, 12);
+    sizer.add(&language_label, 0, side | SizerFlag::Top, 12);
+    sizer.add(&language, 0, SizerFlag::Expand | SizerFlag::All, 12);
+    sizer.add(&focus_label, 0, side, 12);
     sizer.add(&focus, 0, SizerFlag::Expand | SizerFlag::All, 12);
     sizer.add(&confirm, 0, side | SizerFlag::Bottom, 12);
     let commit_row = BoxSizer::builder(Orientation::Horizontal).build();
@@ -110,7 +134,11 @@ pub fn show(parent: &Frame, s: &'static dyn Strings, initial: Values) -> Option<
     );
     dialog.set_sizer_and_fit(sizer, true);
 
-    let window = Rc::new(Window { focus, confirm });
+    let window = Rc::new(Window {
+        language,
+        focus,
+        confirm,
+    });
     // Access keys by the key's position, so they work in the Ukrainian layout too
     // (document «Клавіатура й меню»).
     let w = Rc::clone(&window);
@@ -124,7 +152,7 @@ pub fn show(parent: &Frame, s: &'static dyn Strings, initial: Values) -> Option<
     });
 
     dialog.centre();
-    window.focus.set_focus();
+    window.language.set_focus();
     let confirmed = dialog.show_modal() == ID_OK;
     let values = window.values();
     // A plain wxDragon Dialog is not destroyed when dropped; its handlers, which hold the
@@ -141,6 +169,7 @@ impl Window {
             return false;
         };
         match control {
+            Control::Language => self.language.set_focus(),
             Control::FocusAfterSnapshot => self.focus.set_focus(),
             Control::ConfirmDeletion => {
                 self.confirm.set_value(!self.confirm.get_value());
@@ -151,8 +180,10 @@ impl Window {
     }
 
     fn values(&self) -> Values {
+        let language = self.language.get_selection().unwrap_or(0) as usize;
         let chosen = self.focus.get_selection().unwrap_or(0) as usize;
         Values {
+            language: Language::ALL.get(language).copied().unwrap_or_default(),
             focus_after_snapshot: FocusAfterSnapshot::ALL
                 .get(chosen)
                 .copied()
@@ -182,6 +213,8 @@ mod tests {
                 "{control:?}"
             );
         }
+        assert_eq!(Control::Language.label(&En), "&Language:");
+        assert_eq!(Control::Language.label(&Uk), "Мова (&L):");
         assert_eq!(
             Control::FocusAfterSnapshot.label(&En),
             "&Focus after a snapshot:"
@@ -198,6 +231,22 @@ mod tests {
             Control::ConfirmDeletion.label(&Uk),
             "Підтверджувати видалення знімків (&C)"
         );
+    }
+
+    #[test]
+    fn each_language_is_named_in_itself_whatever_the_interface_speaks() {
+        // WCAG 2.2, 3.1.2: a reader of either language finds their own by its name.
+        let uk: Vec<&str> = Language::ALL
+            .iter()
+            .map(|&v| Uk.language_option(v))
+            .collect();
+        assert_eq!(uk, ["Як у Windows", "English", "Українська"]);
+        let en: Vec<&str> = Language::ALL
+            .iter()
+            .map(|&v| En.language_option(v))
+            .collect();
+        assert_eq!(en, ["Same as Windows", "English", "Українська"]);
+        assert_eq!(Language::ALL[0], Language::default());
     }
 
     #[test]
