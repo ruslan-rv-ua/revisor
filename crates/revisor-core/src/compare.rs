@@ -15,8 +15,8 @@ use std::os::windows::ffi::OsStringExt;
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicBool, Ordering};
 
-use crate::diff::{self, Diff, Inaccessible, Rules, Subtree};
-use crate::exclude::{Branch, Exclusions, RecordedEnvironment};
+use crate::diff::{self, Diff, Filter, Inaccessible, Rules, Subtree};
+use crate::exclude::{Exclusions, RecordedEnvironment};
 use crate::folders;
 use crate::names::{eq_ignore_case, eq_ignore_case_os};
 use crate::scan::{Entry, EntryKind};
@@ -174,12 +174,13 @@ pub fn compare(
         store.snapshot_exclusions(ids[0])?,
         store.snapshot_exclusions(ids[1])?,
     ];
-    let applied: Vec<&str> = exclusions
-        .iter()
-        .flatten()
-        .filter_map(|e| e.applied.as_deref())
-        .collect();
-    let matcher = Exclusions::new(&applied, &RecordedEnvironment);
+    // The exclusions of each snapshot as they applied, and both together: what either
+    // snapshot left out, the comparison leaves out of both.
+    let own = exclusions
+        .each_ref()
+        .map(|e| Exclusions::new(&applied(e), &RecordedEnvironment));
+    let both: Vec<&str> = exclusions.iter().flat_map(|e| applied(e)).collect();
+    let union = Exclusions::new(&both, &RecordedEnvironment);
 
     let mut warnings = Vec::new();
     let mut compared = Vec::new();
@@ -193,12 +194,21 @@ pub fn compare(
                 side,
             }),
             Pairing::Both(pair) => {
+                let paired = [&folders[0][pair.earlier], &folders[1][pair.later]];
                 let comparison = FolderComparison {
                     store,
                     ids,
                     pair,
-                    folders: [&folders[0][pair.earlier], &folders[1][pair.later]],
-                    exclusions: &matcher,
+                    folders: paired,
+                    relative: match pair.wider {
+                        Some(side) => relative_parts(
+                            &paired[side.index()].path,
+                            &paired[side.other().index()].path,
+                        ),
+                        None => Vec::new(),
+                    },
+                    union: &union,
+                    own: own.each_ref(),
                     cancel,
                 };
                 if let Some(difference) = comparison.run(&mut warnings)? {
@@ -207,6 +217,11 @@ pub fn compare(
             }
         }
     }
+    // A snapshot deleted meanwhile loads as empty trees, which would look like a folder
+    // emptied: the comparison is only as good as both snapshots still being there.
+    for id in ids {
+        info(id)?;
+    }
     warnings.extend(exclusion_warnings(&exclusions[0], &exclusions[1]));
     Ok(Difference {
         earlier,
@@ -214,6 +229,15 @@ pub fn compare(
         folders: compared,
         warnings,
     })
+}
+
+/// The exclusions of a snapshot as they applied, for [`Exclusions::new`] with
+/// [`RecordedEnvironment`].
+fn applied(exclusions: &[SnapshotExclusion]) -> Vec<&str> {
+    exclusions
+        .iter()
+        .filter_map(|e| e.applied.as_deref())
+        .collect()
 }
 
 /// A folder of the earlier snapshot and one of the later that cover the same place, by
@@ -299,7 +323,13 @@ struct FolderComparison<'a> {
     pair: Pair,
     /// The earlier and the later folder.
     folders: [&'a SnapshotFolder; 2],
-    exclusions: &'a Exclusions,
+    /// The parts of the compared folder's path below the wider folder's; none without a
+    /// wider folder.
+    relative: Vec<OsString>,
+    /// The exclusions of both snapshots together, as they applied.
+    union: &'a Exclusions,
+    /// The exclusions of the earlier and of the later snapshot, as they applied.
+    own: [&'a Exclusions; 2],
     cancel: &'a AtomicBool,
 }
 
@@ -307,13 +337,6 @@ impl FolderComparison<'_> {
     /// Compares the pair, adding its warnings; `None` when nothing could be compared.
     fn run(&self, warnings: &mut Vec<Warning>) -> Result<Option<FolderDifference>, CompareError> {
         let compared = self.compared();
-        if let Some(side) = self.pair.wider {
-            warnings.push(Warning::FolderNarrowed {
-                wider: self.folder(side).path.clone(),
-                side,
-                compared: compared.path.clone(),
-            });
-        }
         let mut unavailable = false;
         for side in [Side::Earlier, Side::Later] {
             let folder = self.folder(side);
@@ -329,6 +352,22 @@ impl FolderComparison<'_> {
         if unavailable {
             return Ok(None);
         }
+        if let Some(side) = self.pair.wider {
+            // Left out by the wider snapshot's own exclusions on the way down: that
+            // snapshot holds nothing of the folder, so only the other one has it.
+            if self.excluded_on_the_way_down(side) {
+                warnings.push(Warning::FolderOnlyIn {
+                    path: compared.path.clone(),
+                    side: side.other(),
+                });
+                return Ok(None);
+            }
+            warnings.push(Warning::FolderNarrowed {
+                wider: self.folder(side).path.clone(),
+                side,
+                compared: compared.path.clone(),
+            });
+        }
         for side in [Side::Earlier, Side::Later] {
             let folder = self.folder(side);
             if folder.state == FolderState::Missing {
@@ -338,7 +377,10 @@ impl FolderComparison<'_> {
                 });
             }
         }
-        let file_ids = match self.folders.map(|f| scanned(f).map(|(serial, _)| serial)) {
+        let file_ids = match self
+            .folders
+            .map(|f| f.state.scanned().map(|(serial, _)| serial))
+        {
             [Some(earlier), Some(later)] if earlier != later => {
                 warnings.push(Warning::DifferentVolumes {
                     path: compared.path.clone(),
@@ -349,19 +391,19 @@ impl FolderComparison<'_> {
             }
             _ => true,
         };
-        // The compared folder itself matches an exclusion: nothing to compare.
-        let Some(branch) = self.branch() else {
-            return Ok(None);
-        };
         let old = self
             .store
             .load_folder(self.ids[0], self.pair.earlier, self.cancel)?;
         let new = self
             .store
             .load_folder(self.ids[1], self.pair.later, self.cancel)?;
+        // The compared roots are never excluded, as the root of a scan is not: the
+        // exclusions apply below them, from where the folder really was.
         let rules = Rules {
-            exclusions: Some(self.exclusions),
-            branch,
+            filter: Some(Filter {
+                exclusions: self.union,
+                branch: self.union.branch(&self.real_path()),
+            }),
             file_ids,
         };
         let diff = match [
@@ -384,7 +426,7 @@ impl FolderComparison<'_> {
                 }],
             },
             [Located::Unknown, _] | [_, Located::Unknown] => Diff::default(),
-            [o, n] => diff::diff_with(o.subtree(&old), n.subtree(&new), &rules, self.cancel)?,
+            [o, n] => diff::diff(o.subtree(&old), n.subtree(&new), &rules, self.cancel)?,
         };
         Ok(Some(FolderDifference {
             path: compared.path.clone(),
@@ -406,40 +448,44 @@ impl FolderComparison<'_> {
         }
     }
 
-    /// The parts of the compared folder's path below the wider folder's; none without a
-    /// wider folder.
-    fn relative(&self) -> Vec<OsString> {
-        let Some(side) = self.pair.wider else {
-            return Vec::new();
+    /// Whether the exclusions of the wider snapshot left the compared folder out on the
+    /// way down from the wider folder, so that snapshot holds nothing of it. The scan of
+    /// the wider folder applied them there; the scan of the compared folder applied its
+    /// own below its root only, never to the root itself, so they do not count here.
+    fn excluded_on_the_way_down(&self, wider: Side) -> bool {
+        let Some((_, real)) = self.folder(wider).state.scanned() else {
+            return false;
         };
-        let depth = folders::parts(&self.folder(side).path).len();
-        folders::parts(&self.folder(side.other()).path)[depth..]
-            .iter()
-            .map(|part| OsString::from_wide(part))
-            .collect()
+        let own = self.own[wider.index()];
+        let mut branch = own.branch(real);
+        for part in &self.relative {
+            match own.child(&branch, part) {
+                Some(below) => branch = below,
+                None => return true,
+            }
+        }
+        false
     }
 
-    /// Where the compared roots stand against the exclusions, matched from where the
-    /// folder really was, as the scan matched them; `None` when the compared folder
-    /// itself is excluded. The roots of the profile's folders are never excluded, as in a
-    /// scan: only the way down from a wider folder is checked.
-    fn branch(&self) -> Option<Branch> {
-        let base = match self.pair.wider {
-            Some(side) => self.folder(side),
-            None => self
-                .folders
-                .iter()
-                .rev()
-                .copied()
-                .find(|f| scanned(f).is_some())
-                .unwrap_or(self.folders[1]),
-        };
-        let real = scanned(base).map_or(base.path.as_path(), |(_, real)| real);
-        let mut branch = self.exclusions.branch(real);
-        for part in self.relative() {
-            branch = self.exclusions.child(&branch, &part)?;
+    /// Where the compared folder really was: the place path exclusions are matched from,
+    /// as the scans matched them. The wider folder's real location with the way down to
+    /// the compared folder, else a scanned folder's own, else the path as written.
+    fn real_path(&self) -> PathBuf {
+        let real =
+            |folder: &SnapshotFolder| folder.state.scanned().map(|(_, real)| real.to_path_buf());
+        if let Some(side) = self.pair.wider {
+            if let Some(mut path) = real(self.folder(side)) {
+                path.extend(&self.relative);
+                return path;
+            }
+            let compared = self.compared();
+            return real(compared).unwrap_or_else(|| compared.path.clone());
         }
-        Some(branch)
+        self.folders
+            .iter()
+            .rev()
+            .find_map(|folder| real(folder))
+            .unwrap_or_else(|| self.folders[1].path.clone())
     }
 
     /// Where the compared folder is in the tree of `side`.
@@ -447,22 +493,21 @@ impl FolderComparison<'_> {
         if entries.is_empty() {
             Located::Absent
         } else if self.pair.wider == Some(side) {
-            locate(entries, &self.relative())
+            locate(entries, &self.relative)
         } else {
             Located::Found(0)
         }
     }
 }
 
-/// The serial number and the real location of a scanned folder.
-fn scanned(folder: &SnapshotFolder) -> Option<(u64, &Path)> {
-    match &folder.state {
-        FolderState::Scanned {
-            volume_serial,
-            real_path,
-        } => Some((*volume_serial, real_path)),
-        _ => None,
-    }
+/// The parts of the path of `nested` below the path of `wider`, upper-cased, as the parts
+/// of a path compare.
+fn relative_parts(wider: &Path, nested: &Path) -> Vec<OsString> {
+    let depth = folders::parts(wider).len();
+    folders::parts(nested)[depth..]
+        .iter()
+        .map(|part| OsString::from_wide(part))
+        .collect()
 }
 
 /// Where a folder stands in a tree.
@@ -471,8 +516,8 @@ enum Located {
     Found(u32),
     /// The tree holds nothing at its path.
     Absent,
-    /// A folder on the way to it could not be listed, or is a link that was not
-    /// followed: whether it was there is unknown.
+    /// A folder on the way to it could not be listed, or it or a folder on the way is a
+    /// link that was not followed: what was there is unknown.
     Unknown,
 }
 
@@ -505,7 +550,12 @@ fn locate(entries: &[Entry], parts: &[OsString]) -> Located {
             None => return Located::Absent,
         }
     }
-    Located::Found(at)
+    // A profile folder that is a junction was scanned through its target, but the wider
+    // folder's scan recorded the junction itself and never followed it.
+    match entries[at as usize].kind {
+        EntryKind::Link => Located::Unknown,
+        _ => Located::Found(at),
+    }
 }
 
 /// Warnings about the exclusions of one snapshot that the other does not have, or that

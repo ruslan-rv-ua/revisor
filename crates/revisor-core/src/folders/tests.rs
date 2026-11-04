@@ -1,38 +1,6 @@
 use super::*;
-use std::fs;
+use crate::testing::{TempDir, junction};
 use std::process::Command;
-use std::sync::atomic::{AtomicUsize, Ordering};
-
-/// A fresh folder under the system temp folder, removed on drop.
-struct TempDir(PathBuf);
-
-impl TempDir {
-    fn new() -> Self {
-        static NEXT: AtomicUsize = AtomicUsize::new(0);
-        let n = NEXT.fetch_add(1, Ordering::Relaxed);
-        let path = std::env::temp_dir().join(format!("revisor-folders-{}-{n}", std::process::id()));
-        let _ = fs::remove_dir_all(&path);
-        fs::create_dir_all(&path).unwrap();
-        Self(path)
-    }
-
-    fn path(&self) -> &Path {
-        &self.0
-    }
-
-    /// Creates a folder under this one and returns its path.
-    fn folder(&self, rel: &str) -> PathBuf {
-        let path = self.0.join(rel);
-        fs::create_dir_all(&path).unwrap();
-        path
-    }
-}
-
-impl Drop for TempDir {
-    fn drop(&mut self) {
-        let _ = fs::remove_dir_all(&self.0);
-    }
-}
 
 /// A drive letter `subst` gives to a folder for the length of a test.
 struct SubstDrive(char);
@@ -82,23 +50,9 @@ fn addition(existing: &[&Path], new: &Path) -> Addition {
     check_addition(&existing, &located(new))
 }
 
-/// Makes `link` a junction to `target`.
-fn junction(link: &Path, target: &Path) {
-    let status = Command::new("cmd")
-        .arg("/c")
-        .arg("mklink")
-        .arg("/J")
-        .arg(link)
-        .arg(target)
-        .output()
-        .unwrap()
-        .status;
-    assert!(status.success());
-}
-
 #[test]
 fn a_folder_already_in_the_profile_is_covered_however_it_is_written() {
-    let tmp = TempDir::new();
+    let tmp = TempDir::new("folders");
     let data = tmp.folder("Data");
     let upper = PathBuf::from(data.to_string_lossy().to_uppercase());
     let slash = PathBuf::from(format!("{}\\", data.display()));
@@ -108,7 +62,7 @@ fn a_folder_already_in_the_profile_is_covered_however_it_is_written() {
 
 #[test]
 fn a_folder_inside_a_profile_folder_is_covered() {
-    let tmp = TempDir::new();
+    let tmp = TempDir::new("folders");
     let other = tmp.folder("Other");
     let data = tmp.folder("Data");
     let inner = tmp.folder(r"Data\a\b");
@@ -117,7 +71,7 @@ fn a_folder_inside_a_profile_folder_is_covered() {
 
 #[test]
 fn a_folder_whose_name_only_starts_the_same_is_not_inside() {
-    let tmp = TempDir::new();
+    let tmp = TempDir::new("folders");
     let data = tmp.folder("Data");
     let data2 = tmp.folder("Data2");
     assert_eq!(addition(&[&data], &data2), Addition::New);
@@ -126,7 +80,7 @@ fn a_folder_whose_name_only_starts_the_same_is_not_inside() {
 
 #[test]
 fn a_folder_that_holds_profile_folders_would_replace_them() {
-    let tmp = TempDir::new();
+    let tmp = TempDir::new("folders");
     let x = tmp.folder(r"Data\x");
     let other = tmp.folder("Other");
     let z = tmp.folder(r"Data\y\z");
@@ -139,7 +93,7 @@ fn a_folder_that_holds_profile_folders_would_replace_them() {
 
 #[test]
 fn a_folder_reached_through_a_junction_is_where_its_target_is() {
-    let tmp = TempDir::new();
+    let tmp = TempDir::new("folders");
     let data = tmp.folder("Data");
     let target = tmp.folder(r"Data\inner");
     let link = tmp.path().join("link");
@@ -150,7 +104,7 @@ fn a_folder_reached_through_a_junction_is_where_its_target_is() {
 
 #[test]
 fn a_folder_reached_through_a_subst_drive_is_where_its_target_is() {
-    let tmp = TempDir::new();
+    let tmp = TempDir::new("folders");
     let data = tmp.folder(r"Data\a");
     let drive = SubstDrive::new(tmp.path());
     assert_eq!(
@@ -165,7 +119,7 @@ fn a_folder_reached_through_a_subst_drive_is_where_its_target_is() {
 
 #[test]
 fn a_profile_folder_that_is_gone_from_the_disk_is_compared_by_its_path() {
-    let tmp = TempDir::new();
+    let tmp = TempDir::new("folders");
     let data = tmp.folder("Data");
     let existing = [ProfileFolder::new(data.join("gone"))];
     assert!(existing[0].location.is_none());
@@ -181,7 +135,7 @@ fn a_profile_folder_that_is_gone_from_the_disk_is_compared_by_its_path() {
 
 #[test]
 fn a_folder_that_is_missing_cannot_be_located() {
-    let tmp = TempDir::new();
+    let tmp = TempDir::new("folders");
     assert!(matches!(
         locate(&tmp.path().join("missing")),
         Err(LocateError::Io(_))
@@ -210,7 +164,7 @@ fn only_local_ntfs_volumes_are_supported() {
 
 #[test]
 fn the_real_path_of_a_junction_is_its_target() {
-    let tmp = TempDir::new();
+    let tmp = TempDir::new("folders");
     let target = tmp.folder("target");
     let link = tmp.path().join("link");
     junction(&link, &target);

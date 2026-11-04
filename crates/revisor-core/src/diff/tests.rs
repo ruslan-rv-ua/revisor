@@ -2,12 +2,11 @@ use super::*;
 use crate::exclude::RecordedEnvironment;
 use crate::scan::{FileId, Progress, ScanOptions, Version, VersionInfo, scan, synthetic};
 use crate::store::{ProfileSettings, Scope, Snapshot, Store};
-use crate::testing::{TempDir, Tree, entry, field_names, rel_path, renumber};
+use crate::testing::{TempDir, Tree, entry, field_names, junction, rel_path, renumber};
 use std::collections::HashSet;
 use std::ffi::{OsStr, OsString};
 use std::fs;
 use std::path::Path;
-use std::process::Command;
 
 const FILE_ATTRIBUTE_HIDDEN: u32 = 0x2;
 const FILE_ATTRIBUTE_DIRECTORY: u32 = 0x10;
@@ -26,16 +25,16 @@ fn version(parts: [u16; 4]) -> VersionInfo {
     })
 }
 
-/// The diff as lines: `+ path`, `- path`, `~ path fields`, then `? path` for the
-/// inaccessible entries. Paths of removed, modified and inaccessible entries are those in
-/// the older snapshot.
+/// The diff of two whole trees as lines: `+ path`, `- path`, `~ path fields`, then
+/// `? path` for the inaccessible entries. Paths of deleted, modified and inaccessible
+/// entries are those in the older snapshot.
 fn lines(old: &[Entry], new: &[Entry]) -> Vec<String> {
     lines_with(old, new, &Rules::plain())
 }
 
 /// [`lines`] of the whole trees compared by `rules`.
 fn lines_with(old: &[Entry], new: &[Entry], rules: &Rules<'_>) -> Vec<String> {
-    let diff = diff_with(
+    let diff = diff(
         Subtree::whole(old),
         Subtree::whole(new),
         rules,
@@ -47,7 +46,7 @@ fn lines_with(old: &[Entry], new: &[Entry], rules: &Rules<'_>) -> Vec<String> {
         .iter()
         .map(|c| match c.kind {
             ChangeKind::Added => format!("+ {}", rel_path(new, c.new.unwrap())),
-            ChangeKind::Removed => format!("- {}", rel_path(old, c.old.unwrap())),
+            ChangeKind::Deleted => format!("- {}", rel_path(old, c.old.unwrap())),
             ChangeKind::Modified => format!(
                 "~ {} {}",
                 rel_path(old, c.old.unwrap()),
@@ -85,11 +84,14 @@ fn fill_app(t: &mut Tree, prefix: &str) {
     t.add(&format!(r"{prefix}data\b.dat"), EntryKind::File);
 }
 
-/// The exclusions as a snapshot recorded them, applied to trees under `C:\Data`.
-fn rules<'a>(exclusions: &'a Exclusions) -> Rules<'a> {
+/// Rules with these exclusions, as a snapshot recorded them, for trees whose roots are
+/// at `root`.
+fn rules<'a>(exclusions: &'a Exclusions, root: &str) -> Rules<'a> {
     Rules {
-        exclusions: Some(exclusions),
-        branch: exclusions.branch(Path::new(r"C:\Data")),
+        filter: Some(Filter {
+            exclusions,
+            branch: exclusions.branch(Path::new(root)),
+        }),
         file_ids: true,
     }
 }
@@ -111,21 +113,21 @@ fn entries_matching_an_exclusion_are_left_out_with_their_subtrees() {
         &RecordedEnvironment,
     );
     assert_eq!(
-        lines_with(&old.0, &new.0, &rules(&exclusions)),
+        lines_with(&old.0, &new.0, &rules(&exclusions, r"C:\Data")),
         [r"- app\readme.txt"]
     );
 
     // An excluded folder goes with everything in it, whatever changed there.
     let exclusions = Exclusions::new(&["data"], &RecordedEnvironment);
     assert_eq!(
-        lines_with(&old.0, &new.0, &rules(&exclusions)),
+        lines_with(&old.0, &new.0, &rules(&exclusions, r"C:\Data")),
         [r"- app\readme.txt", r"+ app\x.tmp"]
     );
 
     // The roots are never excluded, as in a scan.
     let exclusions = Exclusions::new(&[r"C:\Data"], &RecordedEnvironment);
     assert_eq!(
-        lines_with(&old.0, &new.0, &rules(&exclusions)),
+        lines_with(&old.0, &new.0, &rules(&exclusions, r"C:\Data")),
         [
             r"~ app\data\a.dat size",
             r"+ app\data\Code Cache",
@@ -161,16 +163,12 @@ fn a_folder_of_one_tree_is_compared_with_the_whole_of_another() {
     wide.get(r"app\readme.txt").size = 7;
     let no_cancel = AtomicBool::new(false);
     let changes = |old: Subtree<'_>, new: Subtree<'_>, rules: &Rules<'_>| -> Vec<String> {
-        diff_with(old, new, rules, &no_cancel)
+        diff(old, new, rules, &no_cancel)
             .unwrap()
             .changes
             .iter()
             .map(|c| {
-                let full = match (c.old, c.new) {
-                    (Some(a), _) => path(old.entries, a),
-                    (None, Some(b)) => path(new.entries, b),
-                    (None, None) => unreachable!(),
-                };
+                let full = c.path(old.entries, new.entries);
                 format!("{:?} {} {}", c.kind, full.display(), field_names(c.fields))
             })
             .collect()
@@ -190,21 +188,30 @@ fn a_folder_of_one_tree_is_compared_with_the_whole_of_another() {
     assert_eq!(
         changes(in_wide, Subtree::whole(&narrow.0), &Rules::plain()),
         [
-            r"Removed C:\Data\app\new.txt ",
+            r"Deleted C:\Data\app\new.txt ",
             r"Modified C:\Data\app\readme.txt size"
         ]
     );
     // Exclusions apply from where the compared roots stand.
     let exclusions = Exclusions::new(&[r"C:\Data\app\new.txt"], &RecordedEnvironment);
-    let rules = Rules {
-        exclusions: Some(&exclusions),
-        branch: exclusions.branch(Path::new(r"C:\Data\app")),
-        file_ids: true,
-    };
     assert_eq!(
-        changes(Subtree::whole(&narrow.0), in_wide, &rules),
+        changes(
+            Subtree::whole(&narrow.0),
+            in_wide,
+            &rules(&exclusions, r"C:\Data\app")
+        ),
         [r"Modified C:\Data\app\readme.txt size"]
     );
+}
+
+/// The diff of two whole trees by [`Rules::plain`].
+fn diff_whole(old: &[Entry], new: &[Entry], cancel: &AtomicBool) -> Result<Diff, Cancelled> {
+    diff(
+        Subtree::whole(old),
+        Subtree::whole(new),
+        &Rules::plain(),
+        cancel,
+    )
 }
 
 #[test]
@@ -213,7 +220,7 @@ fn same_snapshot_has_no_changes() {
     assert_eq!(lines(&t.0, &t.0), Vec::<String>::new());
     let big = synthetic(10_000);
     assert!(
-        diff(&big, &big, &AtomicBool::new(false))
+        diff_whole(&big, &big, &AtomicBool::new(false))
             .unwrap()
             .changes
             .is_empty()
@@ -221,7 +228,7 @@ fn same_snapshot_has_no_changes() {
 }
 
 #[test]
-fn added_and_removed_files() {
+fn added_and_deleted_files() {
     let old = sample();
     let mut new = sample();
     new.add(r"app\new.dll", EntryKind::File);
@@ -230,7 +237,7 @@ fn added_and_removed_files() {
 }
 
 #[test]
-fn added_and_removed_folders_list_every_entry_inside() {
+fn added_and_deleted_folders_list_every_entry_inside() {
     let old = sample();
     let mut new = sample();
     new.add("plugins", EntryKind::Dir);
@@ -421,7 +428,7 @@ fn changed_link_target_is_a_change() {
 }
 
 #[test]
-fn changed_kind_is_removed_and_added() {
+fn changed_kind_is_deleted_and_added() {
     let old = sample();
     let mut new = sample();
     let notes = new.get("Notes.txt");
@@ -478,7 +485,7 @@ fn known_fields_of_inaccessible_entries_are_compared() {
 }
 
 #[test]
-fn inaccessible_entries_are_never_added_or_removed() {
+fn inaccessible_entries_are_never_added_or_deleted() {
     let mut old = sample();
     old.add("locked", EntryKind::Dir).inaccessible = true;
     let mut new = sample();
@@ -487,7 +494,7 @@ fn inaccessible_entries_are_never_added_or_removed() {
 }
 
 #[test]
-fn children_of_an_unreadable_folder_are_not_added_or_removed() {
+fn children_of_an_unreadable_folder_are_not_added_or_deleted() {
     let old = sample();
     // The folder could not be listed this time: only part of it is known.
     let mut new = sample();
@@ -525,7 +532,7 @@ fn empty_snapshots() {
 #[test]
 fn cancelled_diff_returns_cancelled() {
     let t = synthetic(1000);
-    assert!(diff(&t, &t, &AtomicBool::new(true)).is_err());
+    assert!(diff_whole(&t, &t, &AtomicBool::new(true)).is_err());
 }
 
 /// Two snapshots with known changes, made from a generated tree; returns them with the
@@ -546,27 +553,27 @@ fn known_changes(count: usize) -> (Vec<Entry>, Vec<Entry>, HashSet<String>) {
     let is_dir = |e: &Entry| e.kind == EntryKind::Dir;
 
     // Parents come before their children, so one pass sees the parent's fate first.
-    // Removed folders go with their subtrees. Folders that cannot be listed in the newer
+    // Deleted folders go with their subtrees. Folders that cannot be listed in the newer
     // snapshot lose their files there; those are skipped by the diff, so nothing is
-    // expected for them, and no folder is removed right under such a folder.
+    // expected for them, and no folder is deleted right under such a folder.
     let mut new = old.clone();
-    let mut removed = vec![false; n];
+    let mut deleted = vec![false; n];
     let mut taken = vec![false; n];
     for i in 1..n {
         let parent = old[i].parent.unwrap() as usize;
-        if removed[parent] {
-            removed[i] = true;
+        if deleted[parent] {
+            deleted[i] = true;
         } else if new[parent].inaccessible {
             if !is_dir(&old[i]) {
-                removed[i] = true;
+                deleted[i] = true;
             }
         } else if is_dir(&old[i]) && i % 50 == 3 {
-            removed[i] = true;
+            deleted[i] = true;
         } else if is_dir(&old[i]) && i % 50 == 4 {
             new[i].inaccessible = true;
             expected.insert(format!("? {}", p(&old, i)));
         }
-        if removed[i] {
+        if deleted[i] {
             taken[i] = true;
             if !new[parent].inaccessible {
                 expected.insert(format!("- {}", p(&old, i)));
@@ -637,7 +644,7 @@ fn known_changes(count: usize) -> (Vec<Entry>, Vec<Entry>, HashSet<String>) {
                 Some("name")
             }
             7 => {
-                removed[i] = true;
+                deleted[i] = true;
                 expected.insert(format!("- {path}"));
                 None
             }
@@ -671,9 +678,9 @@ fn known_changes(count: usize) -> (Vec<Entry>, Vec<Entry>, HashSet<String>) {
         }
     }
 
-    // Drop removed entries from the newer snapshot and renumber the rest.
-    removed.resize(new.len(), false);
-    (old, renumber(new, &removed), expected)
+    // Drop deleted entries from the newer snapshot and renumber the rest.
+    deleted.resize(new.len(), false);
+    (old, renumber(new, &deleted), expected)
 }
 
 #[test]
@@ -726,16 +733,7 @@ fn unchanged_folder_scanned_twice_has_no_changes() {
         root.join("k.dll"),
     )
     .unwrap();
-    let status = Command::new("cmd")
-        .arg("/c")
-        .arg("mklink")
-        .arg("/J")
-        .arg(root.join("link"))
-        .arg(root.join("d0"))
-        .output()
-        .unwrap()
-        .status;
-    assert!(status.success());
+    junction(&root.join("link"), &root.join("d0"));
 
     let no_cancel = AtomicBool::new(false);
     let settings = ProfileSettings {
@@ -761,7 +759,7 @@ fn unchanged_folder_scanned_twice_has_no_changes() {
     );
     assert_eq!(old.len(), 1 + 10 * 4 + 2);
 
-    let diff = diff(&old, &new, &no_cancel).unwrap();
+    let diff = diff_whole(&old, &new, &no_cancel).unwrap();
     assert!(diff.changes.is_empty(), "{:?}", lines(&old, &new));
     assert!(diff.inaccessible.is_empty());
 }

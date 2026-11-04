@@ -6,9 +6,9 @@
 //! very same name are matched first, then the rest without regard to case, as NTFS
 //! compares names: a folder made case-sensitive may hold both `a.txt` and `A.txt`. A
 //! change is found from metadata alone:
-//! - an entry only in the newer tree is added, one only in the older is removed, with
+//! - an entry only in the newer tree is added, one only in the older is deleted, with
 //!   every entry of its subtree;
-//! - an entry whose kind changed (file, folder, link) is removed and added again;
+//! - an entry whose kind changed (file, folder, link) is deleted and added again;
 //! - an entry is modified when its name case, size, creation time, last write time,
 //!   attributes, version, link target or NTFS file ID differ. Another file ID at the same
 //!   path means the entry was deleted and made again: it is replaced. The archive, normal
@@ -17,7 +17,7 @@
 //!
 //! Entries that match an exclusion are left out with their subtrees; the compared roots
 //! never are. Entries inaccessible in at least one tree are listed apart and are never
-//! added or removed. Children of a folder inaccessible on one side that are missing on
+//! added or deleted. Children of a folder inaccessible on one side that are missing on
 //! the other side are skipped: it is unknown whether they were there.
 
 use std::cmp::Ordering;
@@ -56,7 +56,7 @@ const CANCEL_CHECK: usize = 4096;
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum ChangeKind {
     Added,
-    Removed,
+    Deleted,
     Modified,
 }
 
@@ -101,7 +101,7 @@ impl std::ops::BitOrAssign for Fields {
 }
 
 /// One changed entry. `old` and `new` are indices into the compared trees; an added
-/// entry has only `new`, a removed one only `old`.
+/// entry has only `new`, a deleted one only `old`.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct Change {
     pub kind: ChangeKind,
@@ -109,6 +109,18 @@ pub struct Change {
     pub new: Option<u32>,
     /// What differs; empty unless the entry is modified.
     pub fields: Fields,
+}
+
+impl Change {
+    /// The path of the changed entry: in the newer tree for an added entry, in the older
+    /// one otherwise.
+    pub fn path(&self, old: &[Entry], new: &[Entry]) -> PathBuf {
+        match (self.old, self.new) {
+            (Some(a), _) => path(old, a),
+            (None, Some(b)) => path(new, b),
+            (None, None) => unreachable!("a change is in at least one tree"),
+        }
+    }
 }
 
 /// An entry inaccessible in at least one tree, by its indices in the trees it is in.
@@ -155,15 +167,21 @@ impl<'a> Subtree<'a> {
     }
 }
 
+/// Exclusions applied to a comparison: an entry that matches one is left out with its
+/// subtree, and the compared roots never are.
+#[derive(Clone, Debug)]
+pub struct Filter<'a> {
+    /// The exclusions of both snapshots as they applied.
+    pub exclusions: &'a Exclusions,
+    /// Where the compared roots stand against them, as [`Exclusions::branch`] gives it.
+    pub branch: Branch,
+}
+
 /// What a comparison applies beyond the trees themselves.
 #[derive(Clone, Debug)]
 pub struct Rules<'a> {
-    /// The exclusions of both snapshots as they applied: an entry that matches one is
-    /// left out with its subtree. `None` leaves nothing out.
-    pub exclusions: Option<&'a Exclusions>,
-    /// Where the compared roots stand against the exclusions, as
-    /// [`Exclusions::branch`] gives it.
-    pub branch: Branch,
+    /// `None` leaves nothing out.
+    pub filter: Option<Filter<'a>>,
     /// Whether file IDs are compared: only when both trees lie on the same volume, where
     /// the IDs are unique.
     pub file_ids: bool,
@@ -173,27 +191,15 @@ impl Rules<'_> {
     /// No exclusions, and file IDs compared: two trees of the same volume.
     pub fn plain() -> Self {
         Rules {
-            exclusions: None,
-            branch: Branch::default(),
+            filter: None,
             file_ids: true,
         }
     }
 }
 
-/// Compares two whole trees laid out like [`crate::scan::Scan::entries`] by
-/// [`Rules::plain`]. Setting `cancel` stops with [`Cancelled`].
-pub fn diff(old: &[Entry], new: &[Entry], cancel: &AtomicBool) -> Result<Diff, Cancelled> {
-    diff_with(
-        Subtree::whole(old),
-        Subtree::whole(new),
-        &Rules::plain(),
-        cancel,
-    )
-}
-
 /// Compares the subtree `old` with the subtree `new`: their roots are always matched
 /// with each other. Setting `cancel` stops with [`Cancelled`].
-pub fn diff_with(
+pub fn diff(
     old: Subtree<'_>,
     new: Subtree<'_>,
     rules: &Rules<'_>,
@@ -212,7 +218,11 @@ pub fn diff_with(
         diff: Diff::default(),
         frames: vec![Frame {
             items: roots,
-            branch: rules.branch.clone(),
+            branch: rules
+                .filter
+                .as_ref()
+                .map(|f| f.branch.clone())
+                .unwrap_or_default(),
             of_roots: true,
         }],
         old_keys: Keys::default(),
@@ -287,9 +297,16 @@ impl<'a> Tree<'a> {
     }
 }
 
-/// A child of a folder in [`Keys`]: its index, and where its key and name start in
-/// `units` and how long each is.
-type Span = (u32, usize, usize);
+/// A child of a folder in [`Keys`].
+#[derive(Clone, Copy)]
+struct Span {
+    /// Index of the child in its tree.
+    child: u32,
+    /// Where its key starts in `units`; its name follows the key.
+    start: usize,
+    /// The length of the key, and of the name.
+    len: usize,
+}
 
 /// Names of the children of one folder, ready to be sorted for matching. Kept between
 /// folders so their buffers are reused.
@@ -313,15 +330,15 @@ impl Keys {
             for u in &mut self.units[start..start + len] {
                 *u = upcase(*u);
             }
-            self.spans.push((child, start, len));
+            self.spans.push(Span { child, start, len });
         }
         let units = &self.units;
         self.spans
-            .sort_unstable_by(|&(_, a, n), &(_, b, m)| compare(units, a, n, b, m));
+            .sort_unstable_by(|&a, &b| order_keys(units, a, b));
     }
 
     fn key(&self, span: Span) -> &[u16] {
-        &self.units[span.1..span.1 + span.2]
+        &self.units[span.start..span.start + span.len]
     }
 
     /// Where the run of children whose key is that of the child at `i` ends.
@@ -334,31 +351,39 @@ impl Keys {
     }
 }
 
+/// Orders children by key, and children whose keys are equal — possible only in folders
+/// that are case-sensitive — by exact name.
+fn order_keys(units: &[u16], a: Span, b: Span) -> Ordering {
+    let key = |s: Span| &units[s.start..s.start + s.len];
+    let name = |s: Span| &units[s.start + s.len..s.start + 2 * s.len];
+    key(a).cmp(key(b)).then_with(|| name(a).cmp(name(b)))
+}
+
 /// Matches children of two folders whose names are the same regardless of case, in the
 /// order [`Keys`] sorted them: those with the very same name first, then the rest in
 /// order, so `a.txt` and `A.txt` of a case-sensitive folder are not confused.
 fn match_run(old: &Tree<'_>, olds: &[Span], new: &Tree<'_>, news: &[Span], items: &mut Vec<Item>) {
     let mut taken = vec![false; news.len()];
     let mut unmatched = Vec::new();
-    for &(a, ..) in olds {
-        let name = &old.entries[a as usize].name;
+    for a in olds {
+        let name = &old.entries[a.child as usize].name;
         let same = news
             .iter()
             .enumerate()
-            .find(|&(k, &(b, ..))| !taken[k] && new.entries[b as usize].name == *name);
+            .find(|&(k, b)| !taken[k] && new.entries[b.child as usize].name == *name);
         match same {
-            Some((k, &(b, ..))) => {
+            Some((k, b)) => {
                 taken[k] = true;
-                items.push(Item::Both(a, b));
+                items.push(Item::Both(a.child, b.child));
             }
-            None => unmatched.push(a),
+            None => unmatched.push(a.child),
         }
     }
     let mut rest = news
         .iter()
         .zip(&taken)
         .filter(|&(_, &taken)| !taken)
-        .map(|(&(b, ..), _)| b);
+        .map(|(b, _)| b.child);
     for a in unmatched {
         items.push(match rest.next() {
             Some(b) => Item::Both(a, b),
@@ -366,14 +391,6 @@ fn match_run(old: &Tree<'_>, olds: &[Span], new: &Tree<'_>, news: &[Span], items
         });
     }
     items.extend(rest.map(Item::New));
-}
-
-/// Orders children by key, and children whose keys are equal — possible only in folders
-/// that are case-sensitive — by exact name.
-fn compare(units: &[u16], a: usize, n: usize, b: usize, m: usize) -> Ordering {
-    units[a..a + n]
-        .cmp(&units[b..b + m])
-        .then_with(|| units[a + n..a + 2 * n].cmp(&units[b + m..b + 2 * m]))
 }
 
 /// An entry waiting to be compared.
@@ -417,7 +434,7 @@ impl Walk<'_, '_> {
                 if entry.inaccessible {
                     self.inaccessible(Some(a), None);
                 } else {
-                    self.change(ChangeKind::Removed, Some(a), None, Fields::default());
+                    self.change(ChangeKind::Deleted, Some(a), None, Fields::default());
                     if entry.kind == EntryKind::Dir {
                         let branch = self.branch_of(&entry.name);
                         self.push_children(Some(a), None, false, branch);
@@ -443,7 +460,7 @@ impl Walk<'_, '_> {
         let (old, new) = (&self.old.entries[a as usize], &self.new.entries[b as usize]);
         let frame = self.frames.last().expect("an item comes from a frame");
         if old.kind != new.kind {
-            // Visited in this order: removed first, then added.
+            // Visited in this order: deleted first, then added.
             self.frames.push(Frame {
                 items: vec![Item::New(b), Item::Old(a)],
                 branch: frame.branch.clone(),
@@ -482,8 +499,9 @@ impl Walk<'_, '_> {
     /// exclusions.
     fn branch_of(&self, name: &OsStr) -> Branch {
         let frame = self.frames.last().expect("an item comes from a frame");
-        match self.rules.exclusions {
-            Some(exclusions) if !frame.of_roots => exclusions
+        match &self.rules.filter {
+            Some(filter) if !frame.of_roots => filter
+                .exclusions
                 .child(&frame.branch, name)
                 .expect("an excluded child is never queued"),
             _ => frame.branch.clone(),
@@ -522,7 +540,7 @@ impl Walk<'_, '_> {
                     // folder that is case-sensitive.
                     let (i2, j2) = (ok.run_end(i), nk.run_end(j));
                     if i2 - i == 1 && j2 - j == 1 {
-                        items.push(Item::Both(ok.spans[i].0, nk.spans[j].0));
+                        items.push(Item::Both(ok.spans[i].child, nk.spans[j].child));
                     } else {
                         match_run(
                             &self.old,
@@ -535,11 +553,11 @@ impl Walk<'_, '_> {
                     (i, j) = (i2, j2);
                 }
                 Ordering::Less => {
-                    items.push(Item::Old(ok.spans[i].0));
+                    items.push(Item::Old(ok.spans[i].child));
                     i += 1;
                 }
                 Ordering::Greater => {
-                    items.push(Item::New(nk.spans[j].0));
+                    items.push(Item::New(nk.spans[j].child));
                     j += 1;
                 }
             }
@@ -549,12 +567,12 @@ impl Walk<'_, '_> {
         }
         // Checked after matching, once per path rather than once per side: matching is
         // cheap next to a check against the dozens of exclusions a profile has.
-        if let Some(exclusions) = self.rules.exclusions {
+        if let Some(filter) = &self.rules.filter {
             let name = |item: &Item| match *item {
                 Item::Both(a, _) | Item::Old(a) => &self.old.entries[a as usize].name,
                 Item::New(b) => &self.new.entries[b as usize].name,
             };
-            items.retain(|item| exclusions.child(&branch, name(item)).is_some());
+            items.retain(|item| filter.exclusions.child(&branch, name(item)).is_some());
         }
         items.reverse();
         self.frames.push(Frame {

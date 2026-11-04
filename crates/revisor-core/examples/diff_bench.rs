@@ -17,7 +17,7 @@ use std::sync::atomic::AtomicBool;
 use std::time::Instant;
 
 use revisor_core::compare::compare;
-use revisor_core::diff::{ChangeKind, path};
+use revisor_core::diff::ChangeKind;
 use revisor_core::exclude::{DEFAULT_EXCLUSIONS, SystemEnvironment, expand};
 use revisor_core::scan::{Entry, EntryKind, Progress, ScanOptions, scan, synthetic};
 use revisor_core::store::{ProfileSettings, Scope, Snapshot, SnapshotExclusion, Store};
@@ -194,20 +194,16 @@ fn compare_last_two(db: &Path) -> Result<(), Box<dyn std::error::Error>> {
         .map(|f| f.diff.inaccessible.len())
         .sum();
     println!(
-        "load + diff:   {:.2} s, {loaded} entries loaded; added {}, removed {}, modified {}, inaccessible {inaccessible}, warnings {}",
+        "load + diff:   {:.2} s, {loaded} entries loaded; added {}, deleted {}, modified {}, inaccessible {inaccessible}, warnings {}",
         elapsed.as_secs_f64(),
         count(ChangeKind::Added),
-        count(ChangeKind::Removed),
+        count(ChangeKind::Deleted),
         count(ChangeKind::Modified),
         difference.warnings.len()
     );
     for folder in &difference.folders {
         for c in folder.diff.changes.iter().take(SHOWN) {
-            let path = match (c.old, c.new) {
-                (Some(a), _) => path(&folder.old, a),
-                (None, Some(b)) => path(&folder.new, b),
-                (None, None) => unreachable!("a change is in at least one snapshot"),
-            };
+            let path = c.path(&folder.old, &folder.new);
             println!("  {:?} {} {:#04x}", c.kind, path.display(), c.fields.0);
         }
     }

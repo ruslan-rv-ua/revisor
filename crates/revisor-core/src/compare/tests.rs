@@ -3,9 +3,9 @@ use crate::diff::ChangeKind;
 use crate::scan::{FileId, Progress, synthetic};
 use crate::snapshot;
 use crate::store::{FolderSnapshot, ProfileSettings, Scope, Snapshot};
-use crate::testing::{TempDir, Tree, field_names};
+use crate::testing::{TempDir, Tree, field_names, junction};
+use std::ffi::OsStr;
 use std::fs;
-use std::process::Command;
 
 fn create(tmp: &TempDir) -> Store {
     Store::create(
@@ -129,22 +129,19 @@ fn warning_line(warning: &Warning) -> String {
 }
 
 /// The difference as lines: for each folder `+ path`, `- path`, `~ path fields` and
-/// `? path` with full paths, then `! …` for each warning. Paths of removed, modified and
+/// `? path` with full paths, then `! …` for each warning. Paths of deleted, modified and
 /// inaccessible entries are those in the earlier snapshot.
 fn render(d: &Difference) -> Vec<String> {
     let mut out = Vec::new();
     for f in &d.folders {
         for c in &f.diff.changes {
+            let path = c.path(&f.old, &f.new);
             out.push(match c.kind {
-                ChangeKind::Added => format!("+ {}", diff::path(&f.new, c.new.unwrap()).display()),
-                ChangeKind::Removed => {
-                    format!("- {}", diff::path(&f.old, c.old.unwrap()).display())
+                ChangeKind::Added => format!("+ {}", path.display()),
+                ChangeKind::Deleted => format!("- {}", path.display()),
+                ChangeKind::Modified => {
+                    format!("~ {} {}", path.display(), field_names(c.fields))
                 }
-                ChangeKind::Modified => format!(
-                    "~ {} {}",
-                    diff::path(&f.old, c.old.unwrap()).display(),
-                    field_names(c.fields)
-                ),
             });
         }
         out.extend(f.diff.inaccessible.iter().map(|i| match i.old {
@@ -399,7 +396,8 @@ fn a_folder_inside_a_folder_of_the_other_snapshot_is_compared_within_it() {
         ]
     );
 
-    // The nested folder matches an exclusion of the wider snapshot: left out entirely.
+    // The nested folder matches an exclusion of the wider snapshot, whose scan left it
+    // out: only the other snapshot holds it.
     let excluded = save(
         &mut store,
         6,
@@ -411,9 +409,44 @@ fn a_folder_inside_a_folder_of_the_other_snapshot_is_compared_within_it() {
         [
             r"- C:\Data\docs",
             r"- C:\Data\docs\d.txt",
-            r"! later C:\Data compared within C:\Data\app",
+            r"! only in earlier: C:\Data\app",
             r"! later C:\Data compared within C:\Data\docs",
             r"! exclusion only in later: app",
+        ]
+    );
+
+    // The nested folder matches an exclusion of its own snapshot: a scan never leaves
+    // its root out, so the folder is compared all the same.
+    let own_root_excluded = save(
+        &mut store,
+        7,
+        vec![scanned(r"C:\Data\app", 1, &narrow)],
+        vec![exclusion("app", Some("app"))],
+    );
+    assert_eq!(
+        render(&compare_them(&store, wide_again, own_root_excluded)),
+        [
+            r"+ C:\Data\app\new.txt",
+            r"! earlier C:\Data compared within C:\Data\app",
+            r"! exclusion only in later: app",
+        ]
+    );
+
+    // The nested folder is a junction in the wider folder, which the wider scan did not
+    // follow: what it held then is unknown.
+    let mut with_junction = Tree::new();
+    with_junction.add("app", EntryKind::Link).link_target = Some(OsStr::new(r"D:\app").into());
+    let junction_id = save(
+        &mut store,
+        8,
+        vec![scanned(r"C:\Data", 1, &with_junction)],
+        vec![],
+    );
+    assert_eq!(
+        render(&compare_them(&store, narrow_id, junction_id)),
+        [
+            r"? C:\Data\app",
+            r"! later C:\Data compared within C:\Data\app",
         ]
     );
 }
@@ -559,7 +592,8 @@ fn a_deleted_snapshot_cannot_be_compared() {
 }
 
 #[test]
-fn a_cancelled_comparison_stops_while_loading() {
+fn a_cancelled_comparison_stops_at_once() {
+    // Loading honours the same flag: `store::tests::a_cancelled_load_stops_at_once`.
     let tmp = TempDir::new("compare");
     let mut store = create(&tmp);
     let no_cancel = AtomicBool::new(false);
@@ -591,16 +625,7 @@ fn two_snapshots_of_an_unchanged_folder_give_an_empty_difference() {
         root.join("k.dll"),
     )
     .unwrap();
-    let status = Command::new("cmd")
-        .arg("/c")
-        .arg("mklink")
-        .arg("/J")
-        .arg(root.join("link"))
-        .arg(root.join("d0"))
-        .output()
-        .unwrap()
-        .status;
-    assert!(status.success());
+    junction(&root.join("link"), &root.join("d0"));
     drop(
         Store::create(
             &tmp.db(),

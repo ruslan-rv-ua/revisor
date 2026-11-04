@@ -1,46 +1,9 @@
 use super::*;
 use crate::scan::{EntryKind, VersionInfo};
 use crate::store::{ProfileSettings, Scope};
+use crate::testing::TempDir;
 use std::path::PathBuf;
 use std::process::Command;
-use std::sync::atomic::AtomicUsize;
-
-/// A fresh folder under the system temp folder, removed on drop.
-struct TempDir(PathBuf);
-
-impl TempDir {
-    fn new() -> Self {
-        static NEXT: AtomicUsize = AtomicUsize::new(0);
-        let n = NEXT.fetch_add(1, Ordering::Relaxed);
-        let path =
-            std::env::temp_dir().join(format!("revisor-snapshot-{}-{n}", std::process::id()));
-        let _ = fs::remove_dir_all(&path);
-        fs::create_dir_all(&path).unwrap();
-        Self(path)
-    }
-
-    fn path(&self) -> &Path {
-        &self.0
-    }
-
-    fn db(&self) -> PathBuf {
-        self.0.join("profile.db")
-    }
-
-    /// Writes a file under this folder, making its folders.
-    fn write(&self, rel: &str, content: &[u8]) -> PathBuf {
-        let path = self.0.join(rel);
-        fs::create_dir_all(path.parent().unwrap()).unwrap();
-        fs::write(&path, content).unwrap();
-        path
-    }
-}
-
-impl Drop for TempDir {
-    fn drop(&mut self) {
-        let _ = fs::remove_dir_all(&self.0);
-    }
-}
 
 /// A profile database in `tmp` with these folders and exclusions.
 fn profile(tmp: &TempDir, folders: &[PathBuf], exclusions: &[&str]) -> Store {
@@ -76,7 +39,7 @@ fn take_it(tmp: &TempDir) -> (Report, Progress) {
 
 #[test]
 fn a_snapshot_covers_every_folder_of_the_profile_and_reports_each() {
-    let tmp = TempDir::new();
+    let tmp = TempDir::new("snapshot");
     let app = tmp.path().join("app");
     tmp.write(r"app\a.txt", b"aa");
     tmp.write(r"app\skip.tmp", b"");
@@ -172,7 +135,7 @@ fn a_snapshot_covers_every_folder_of_the_profile_and_reports_each() {
 
 #[test]
 fn a_cancelled_snapshot_is_not_saved() {
-    let tmp = TempDir::new();
+    let tmp = TempDir::new("snapshot");
     tmp.write(r"app\a.txt", b"a");
     drop(profile(&tmp, &[tmp.path().join("app")], &[]));
 
@@ -192,7 +155,7 @@ fn a_cancelled_snapshot_is_not_saved() {
 
 #[test]
 fn a_snapshot_that_cannot_be_saved_names_the_cause_and_spares_the_others() {
-    let tmp = TempDir::new();
+    let tmp = TempDir::new("snapshot");
     tmp.write(r"app\a.txt", b"a");
     let mut store = profile(&tmp, &[tmp.path().join("app")], &[]);
     let kept = store
@@ -232,7 +195,7 @@ fn a_snapshot_that_cannot_be_saved_names_the_cause_and_spares_the_others() {
 
 #[test]
 fn a_folder_closed_by_rights_counts_as_denied() {
-    let tmp = TempDir::new();
+    let tmp = TempDir::new("snapshot");
     let locked = tmp.path().join("locked");
     tmp.write(r"locked\hidden.txt", b"x");
     tmp.write(r"open\seen.txt", b"x");
@@ -285,7 +248,7 @@ fn a_folder_closed_by_rights_counts_as_denied() {
 
 #[test]
 fn a_file_at_a_folders_path_is_not_a_folder() {
-    let tmp = TempDir::new();
+    let tmp = TempDir::new("snapshot");
     let file = tmp.write("was-a-folder", b"now a file");
     tmp.write(r"app\a.txt", b"a");
     drop(profile(&tmp, &[file.clone(), tmp.path().join("app")], &[]));

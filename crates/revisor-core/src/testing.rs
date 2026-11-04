@@ -4,6 +4,7 @@
 use std::ffi::OsStr;
 use std::fs;
 use std::path::{Path, PathBuf};
+use std::process::Command;
 use std::sync::atomic::{AtomicUsize, Ordering};
 
 use crate::diff::{self, Fields};
@@ -37,6 +38,19 @@ impl TempDir {
         self.0.join("profile.db")
     }
 
+    /// The rollback journal of [`TempDir::db`]; it exists while a write transaction is
+    /// open.
+    pub fn journal(&self) -> PathBuf {
+        self.0.join("profile.db-journal")
+    }
+
+    /// Creates a folder under this one and returns its path.
+    pub fn folder(&self, rel: &str) -> PathBuf {
+        let path = self.0.join(rel);
+        fs::create_dir_all(&path).unwrap();
+        path
+    }
+
     /// Writes a file under this folder, making its folders.
     pub fn write(&self, rel: &str, content: &[u8]) -> PathBuf {
         let path = self.0.join(rel);
@@ -50,6 +64,20 @@ impl Drop for TempDir {
     fn drop(&mut self) {
         let _ = fs::remove_dir_all(verbatim(&self.0).unwrap());
     }
+}
+
+/// Makes `link` a junction to `target`.
+pub fn junction(link: &Path, target: &Path) {
+    let status = Command::new("cmd")
+        .arg("/c")
+        .arg("mklink")
+        .arg("/J")
+        .arg(link)
+        .arg(target)
+        .output()
+        .unwrap()
+        .status;
+    assert!(status.success());
 }
 
 /// Builds small trees by path relative to the root, laid out like a scan.

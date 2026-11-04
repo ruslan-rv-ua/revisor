@@ -255,6 +255,19 @@ pub enum FolderState {
     Unavailable(Unavailable),
 }
 
+impl FolderState {
+    /// The serial number of the volume and the real location of a scanned folder.
+    pub fn scanned(&self) -> Option<(u64, &Path)> {
+        match self {
+            FolderState::Scanned {
+                volume_serial,
+                real_path,
+            } => Some((*volume_serial, real_path)),
+            _ => None,
+        }
+    }
+}
+
 /// A folder of a saved snapshot: the profile's folder and what the snapshot holds for it.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct SnapshotFolder {
@@ -523,13 +536,7 @@ impl Store {
             .query_row(
                 "SELECT id, taken_at, comment FROM snapshot WHERE id = ?1",
                 [id],
-                |r| {
-                    Ok(SnapshotInfo {
-                        id: r.get(0)?,
-                        taken_at: r.get(1)?,
-                        comment: r.get(2)?,
-                    })
-                },
+                snapshot_info,
             )
             .optional()?)
     }
@@ -569,14 +576,20 @@ impl Store {
             let mut base = 0usize;
             let mut written = 0usize;
             for (position, folder) in snapshot.folders.iter().enumerate() {
+                // What a scanned folder has: its volume, the range of its tree and where
+                // it really was.
                 let (state, detail, scanned) = match &folder.state {
-                    FolderState::Scanned { volume_serial, .. } => (
+                    FolderState::Scanned {
+                        volume_serial,
+                        real_path,
+                    } => (
                         STATE_SCANNED,
                         Value::Null,
                         Some((
                             *volume_serial as i64,
                             base as i64,
                             folder.entries.len() as i64,
+                            os_to_sql(real_path.as_os_str()),
                         )),
                     ),
                     FolderState::Missing => (STATE_MISSING, Value::Null, None),
@@ -593,15 +606,11 @@ impl Store {
                         (STATE_NOT_A_FOLDER, Value::Null, None)
                     }
                 };
-                let (volume_serial, root, count) = match scanned {
-                    Some((serial, root, count)) => (Some(serial), Some(root), Some(count)),
-                    None => (None, None, None),
-                };
-                let real_path = match &folder.state {
-                    FolderState::Scanned { real_path, .. } => {
-                        Some(os_to_sql(real_path.as_os_str()))
+                let (volume_serial, root, count, real_path) = match scanned {
+                    Some((serial, root, count, real_path)) => {
+                        (Some(serial), Some(root), Some(count), Some(real_path))
                     }
-                    _ => None,
+                    None => (None, None, None, None),
                 };
                 insert_folder.execute(params![
                     id,
@@ -614,7 +623,7 @@ impl Store {
                     count,
                     real_path,
                 ])?;
-                if scanned.is_none() {
+                if root.is_none() {
                     continue;
                 }
                 for (i, e) in folder.entries.iter().enumerate() {
@@ -801,13 +810,7 @@ impl Store {
         let mut stmt = self
             .conn
             .prepare("SELECT id, taken_at, comment FROM snapshot ORDER BY id")?;
-        let rows = stmt.query_map([], |r| {
-            Ok(SnapshotInfo {
-                id: r.get(0)?,
-                taken_at: r.get(1)?,
-                comment: r.get(2)?,
-            })
-        })?;
+        let rows = stmt.query_map([], snapshot_info)?;
         Ok(rows.collect::<Result<_, _>>()?)
     }
 
@@ -835,6 +838,15 @@ fn write_scope(tx: &Transaction<'_>, settings: &ProfileSettings) -> Result<(), S
         )?;
     }
     Ok(())
+}
+
+/// A row of `snapshot`: id, taken_at, comment.
+fn snapshot_info(r: &rusqlite::Row<'_>) -> rusqlite::Result<SnapshotInfo> {
+    Ok(SnapshotInfo {
+        id: r.get(0)?,
+        taken_at: r.get(1)?,
+        comment: r.get(2)?,
+    })
 }
 
 /// Now, as Unix time in milliseconds: the time a snapshot records.

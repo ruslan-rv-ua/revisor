@@ -48,9 +48,7 @@ pub struct Report {
 impl Report {
     /// The folders that were not scanned: missing from the disk or unavailable.
     pub fn not_found(&self) -> impl Iterator<Item = &SnapshotFolder> {
-        self.folders
-            .iter()
-            .filter(|f| !matches!(f.state, FolderState::Scanned { .. }))
+        self.folders.iter().filter(|f| f.state.scanned().is_none())
     }
 }
 
