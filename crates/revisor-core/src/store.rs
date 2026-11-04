@@ -17,7 +17,7 @@ use std::sync::atomic::{AtomicBool, Ordering};
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
 use rusqlite::types::{FromSqlError, ToSqlOutput, Value, ValueRef};
-use rusqlite::{Connection, ErrorCode, OpenFlags, Transaction, params};
+use rusqlite::{Connection, ErrorCode, OpenFlags, OptionalExtension, Transaction, params};
 
 use crate::exclude::DEFAULT_EXCLUSIONS;
 use crate::scan::{Entry, EntryKind, FileId, Version, VersionInfo};
@@ -74,11 +74,13 @@ CREATE TABLE snapshot_folder (
     state INTEGER NOT NULL,
     -- The file system's name for state 2, the Windows error code for state 4.
     detail,
-    -- For a scanned folder: the serial number of its volume, the idx of its root entry
-    -- and how many entries its tree has.
+    -- For a scanned folder: the serial number of its volume, the idx of its root entry,
+    -- how many entries its tree has, and where it really was (TEXT or BLOB like path):
+    -- the location path exclusions were matched from, which a comparison needs too.
     volume_serial INTEGER,
     root INTEGER,
     entries INTEGER,
+    real_path,
     PRIMARY KEY (snapshot_id, position)
 ) WITHOUT ROWID;
 CREATE TABLE snapshot_exclusion (
@@ -238,13 +240,32 @@ pub enum Unavailable {
 pub enum FolderState {
     /// The folder was scanned: its tree is in the snapshot, and the file IDs of its
     /// entries are unique within the volume with this serial number.
-    Scanned { volume_serial: u64 },
+    Scanned {
+        volume_serial: u64,
+        /// Where the folder really was, as [`crate::scan::Scan::real_root`]: path
+        /// exclusions were matched from there, and a comparison matches them from there
+        /// too.
+        real_path: PathBuf,
+    },
     /// The folder was not on the disk, though its volume was. A comparison takes it as
     /// empty, so what it used to hold shows as deleted.
     Missing,
     /// The folder could not be read, for this reason. A comparison knows nothing about
     /// what it holds.
     Unavailable(Unavailable),
+}
+
+impl FolderState {
+    /// The serial number of the volume and the real location of a scanned folder.
+    pub fn scanned(&self) -> Option<(u64, &Path)> {
+        match self {
+            FolderState::Scanned {
+                volume_serial,
+                real_path,
+            } => Some((*volume_serial, real_path)),
+            _ => None,
+        }
+    }
 }
 
 /// A folder of a saved snapshot: the profile's folder and what the snapshot holds for it.
@@ -296,11 +317,17 @@ impl Snapshot {
     /// no exclusions, started now; for tests and benchmarks.
     pub fn of_tree(entries: Vec<Entry>) -> Snapshot {
         let folders = match entries.first() {
-            Some(root) => vec![FolderSnapshot {
-                path: PathBuf::from(&*root.name),
-                state: FolderState::Scanned { volume_serial: 0 },
-                entries,
-            }],
+            Some(root) => {
+                let path = PathBuf::from(&*root.name);
+                vec![FolderSnapshot {
+                    path: path.clone(),
+                    state: FolderState::Scanned {
+                        volume_serial: 0,
+                        real_path: path,
+                    },
+                    entries,
+                }]
+            }
             None => Vec::new(),
         };
         Snapshot {
@@ -471,13 +498,14 @@ impl Store {
     /// empty for a snapshot that does not exist.
     pub fn snapshot_folders(&self, id: i64) -> Result<Vec<SnapshotFolder>, StoreError> {
         let mut stmt = self.conn.prepare(
-            "SELECT path, state, detail, volume_serial FROM snapshot_folder
+            "SELECT path, state, detail, volume_serial, real_path FROM snapshot_folder
              WHERE snapshot_id = ?1 ORDER BY position",
         )?;
         let rows = stmt.query_map([id], |r| {
             let state = match r.get::<_, i64>(1)? {
                 STATE_SCANNED => FolderState::Scanned {
                     volume_serial: r.get::<_, i64>(3)? as u64,
+                    real_path: PathBuf::from(os_from_sql(r.get_ref(4)?)?),
                 },
                 STATE_MISSING => FolderState::Missing,
                 STATE_NOT_NTFS => FolderState::Unavailable(Unavailable::NotNtfs(r.get(2)?)),
@@ -498,6 +526,19 @@ impl Store {
             })
         })?;
         Ok(rows.collect::<Result<_, _>>()?)
+    }
+
+    /// A saved snapshot by its id, without its entries; `None` when there is no such
+    /// snapshot: it was deleted, or never existed.
+    pub fn snapshot(&self, id: i64) -> Result<Option<SnapshotInfo>, StoreError> {
+        Ok(self
+            .conn
+            .query_row(
+                "SELECT id, taken_at, comment FROM snapshot WHERE id = ?1",
+                [id],
+                snapshot_info,
+            )
+            .optional()?)
     }
 
     /// The exclusions a snapshot was taken with, as written and as they applied.
@@ -525,8 +566,9 @@ impl Store {
         )?;
         let id = tx.last_insert_rowid();
         {
-            let mut insert_folder =
-                tx.prepare("INSERT INTO snapshot_folder VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8)")?;
+            let mut insert_folder = tx.prepare(
+                "INSERT INTO snapshot_folder VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9)",
+            )?;
             let mut insert_entry =
                 tx.prepare("INSERT INTO entry VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7)")?;
             let mut insert_fs =
@@ -534,14 +576,20 @@ impl Store {
             let mut base = 0usize;
             let mut written = 0usize;
             for (position, folder) in snapshot.folders.iter().enumerate() {
+                // What a scanned folder has: its volume, the range of its tree and where
+                // it really was.
                 let (state, detail, scanned) = match &folder.state {
-                    FolderState::Scanned { volume_serial } => (
+                    FolderState::Scanned {
+                        volume_serial,
+                        real_path,
+                    } => (
                         STATE_SCANNED,
                         Value::Null,
                         Some((
                             *volume_serial as i64,
                             base as i64,
                             folder.entries.len() as i64,
+                            os_to_sql(real_path.as_os_str()),
                         )),
                     ),
                     FolderState::Missing => (STATE_MISSING, Value::Null, None),
@@ -558,9 +606,11 @@ impl Store {
                         (STATE_NOT_A_FOLDER, Value::Null, None)
                     }
                 };
-                let (volume_serial, root, count) = match scanned {
-                    Some((serial, root, count)) => (Some(serial), Some(root), Some(count)),
-                    None => (None, None, None),
+                let (volume_serial, root, count, real_path) = match scanned {
+                    Some((serial, root, count, real_path)) => {
+                        (Some(serial), Some(root), Some(count), Some(real_path))
+                    }
+                    None => (None, None, None, None),
                 };
                 insert_folder.execute(params![
                     id,
@@ -571,8 +621,9 @@ impl Store {
                     volume_serial,
                     root,
                     count,
+                    real_path,
                 ])?;
-                if scanned.is_none() {
+                if root.is_none() {
                     continue;
                 }
                 for (i, e) in folder.entries.iter().enumerate() {
@@ -624,7 +675,14 @@ impl Store {
     /// Loads the tree of the folder at `position` of a snapshot, laid out like
     /// [`crate::scan::Scan::entries`]: the root first, with parents as indices into the
     /// result. Empty for a folder that was not scanned, or a snapshot that does not exist.
-    pub fn load_folder(&self, id: i64, position: usize) -> Result<Vec<Entry>, StoreError> {
+    /// Setting `cancel` stops with [`StoreError::Cancelled`]: loading is the longer part
+    /// of a comparison.
+    pub fn load_folder(
+        &self,
+        id: i64,
+        position: usize,
+        cancel: &AtomicBool,
+    ) -> Result<Vec<Entry>, StoreError> {
         let range: Option<(i64, i64)> = self
             .conn
             .query_row(
@@ -681,6 +739,9 @@ impl Store {
         })?;
         let mut entries = Vec::with_capacity(count as usize);
         for row in rows {
+            if entries.len().is_multiple_of(CANCEL_CHECK) && cancel.load(Ordering::Relaxed) {
+                return Err(StoreError::Cancelled);
+            }
             entries.push(row?);
         }
         Ok(entries)
@@ -749,13 +810,7 @@ impl Store {
         let mut stmt = self
             .conn
             .prepare("SELECT id, taken_at, comment FROM snapshot ORDER BY id")?;
-        let rows = stmt.query_map([], |r| {
-            Ok(SnapshotInfo {
-                id: r.get(0)?,
-                taken_at: r.get(1)?,
-                comment: r.get(2)?,
-            })
-        })?;
+        let rows = stmt.query_map([], snapshot_info)?;
         Ok(rows.collect::<Result<_, _>>()?)
     }
 
@@ -783,6 +838,15 @@ fn write_scope(tx: &Transaction<'_>, settings: &ProfileSettings) -> Result<(), S
         )?;
     }
     Ok(())
+}
+
+/// A row of `snapshot`: id, taken_at, comment.
+fn snapshot_info(r: &rusqlite::Row<'_>) -> rusqlite::Result<SnapshotInfo> {
+    Ok(SnapshotInfo {
+        id: r.get(0)?,
+        taken_at: r.get(1)?,
+        comment: r.get(2)?,
+    })
 }
 
 /// Now, as Unix time in milliseconds: the time a snapshot records.

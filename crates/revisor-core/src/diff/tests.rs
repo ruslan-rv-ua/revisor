@@ -1,93 +1,21 @@
 use super::*;
+use crate::exclude::RecordedEnvironment;
 use crate::scan::{FileId, Progress, ScanOptions, Version, VersionInfo, scan, synthetic};
 use crate::store::{ProfileSettings, Scope, Snapshot, Store};
+use crate::testing::{TempDir, Tree, entry, field_names, junction, rel_path, renumber};
 use std::collections::HashSet;
 use std::ffi::{OsStr, OsString};
 use std::fs;
 use std::path::Path;
-use std::process::Command;
-use std::sync::atomic::AtomicUsize;
 
 const FILE_ATTRIBUTE_HIDDEN: u32 = 0x2;
 const FILE_ATTRIBUTE_DIRECTORY: u32 = 0x10;
-
-/// Builds small trees by path, relative to the root `C:\Data`.
-#[derive(Clone)]
-struct Tree(Vec<Entry>);
-
-impl Tree {
-    fn new() -> Self {
-        Tree(vec![entry(None, r"C:\Data", EntryKind::Dir)])
-    }
-
-    fn index(&self, rel: &str) -> u32 {
-        (0..self.0.len() as u32)
-            .find(|&i| rel_path(&self.0, i) == rel)
-            .unwrap_or_else(|| panic!("{rel} not found"))
-    }
-
-    fn add(&mut self, rel: &str, kind: EntryKind) -> &mut Entry {
-        let (parent, name) = rel.rsplit_once('\\').unwrap_or(("", rel));
-        let parent = self.index(parent);
-        self.0.push(entry(Some(parent), name, kind));
-        self.0.last_mut().unwrap()
-    }
-
-    fn get(&mut self, rel: &str) -> &mut Entry {
-        let i = self.index(rel);
-        &mut self.0[i as usize]
-    }
-
-    /// Removes an entry with its subtree.
-    fn remove(&mut self, rel: &str) {
-        let gone = self.index(rel);
-        let mut removed = vec![false; self.0.len()];
-        removed[gone as usize] = true;
-        for i in 0..self.0.len() {
-            if let Some(p) = self.0[i].parent {
-                removed[i] |= removed[p as usize];
-            }
-        }
-        self.0 = renumber(std::mem::take(&mut self.0), &removed);
-    }
-}
-
-/// Drops the entries marked in `removed` and fixes the parents of the rest. Parents must
-/// come before their children.
-fn renumber(entries: Vec<Entry>, removed: &[bool]) -> Vec<Entry> {
-    let mut map = vec![u32::MAX; entries.len()];
-    let mut kept = Vec::with_capacity(entries.len());
-    for (i, e) in entries.into_iter().enumerate() {
-        if !removed[i] {
-            map[i] = kept.len() as u32;
-            kept.push(e);
-        }
-    }
-    for e in &mut kept {
-        e.parent = e.parent.map(|p| map[p as usize]);
-    }
-    kept
-}
-
-fn entry(parent: Option<u32>, name: &str, kind: EntryKind) -> Entry {
-    Entry {
-        parent,
-        name: OsStr::new(name).into(),
-        kind,
-        inaccessible: false,
-        attributes: if kind == EntryKind::Dir {
-            FILE_ATTRIBUTE_DIRECTORY
-        } else {
-            FILE_ATTRIBUTE_ARCHIVE
-        },
-        size: 0,
-        created: 0,
-        modified: 0,
-        file_id: FileId::default(),
-        version: VersionInfo::NotRead,
-        link_target: None,
-    }
-}
+const FILE_ATTRIBUTE_NORMAL: u32 = 0x80;
+const FILE_ATTRIBUTE_OFFLINE: u32 = 0x1000;
+const FILE_ATTRIBUTE_RECALL_ON_OPEN: u32 = 0x4_0000;
+const FILE_ATTRIBUTE_PINNED: u32 = 0x8_0000;
+const FILE_ATTRIBUTE_UNPINNED: u32 = 0x10_0000;
+const FILE_ATTRIBUTE_RECALL_ON_DATA_ACCESS: u32 = 0x40_0000;
 
 /// A read version with the same file and product version.
 fn version(parts: [u16; 4]) -> VersionInfo {
@@ -97,45 +25,28 @@ fn version(parts: [u16; 4]) -> VersionInfo {
     })
 }
 
-/// Path relative to the root, with `\` separators; "" for the root.
-fn rel_path(entries: &[Entry], index: u32) -> String {
-    let full = path(entries, index);
-    let root = Path::new(&*entries[0].name);
-    full.strip_prefix(root)
-        .unwrap()
-        .to_string_lossy()
-        .into_owned()
-}
-
-fn field_names(fields: Fields) -> String {
-    let names = [
-        (Fields::NAME, "name"),
-        (Fields::SIZE, "size"),
-        (Fields::CREATED, "created"),
-        (Fields::MODIFIED, "modified"),
-        (Fields::ATTRIBUTES, "attributes"),
-        (Fields::VERSION, "version"),
-        (Fields::LINK_TARGET, "target"),
-    ];
-    let present: Vec<&str> = names
-        .iter()
-        .filter(|(f, _)| fields.contains(*f))
-        .map(|(_, n)| *n)
-        .collect();
-    present.join(",")
-}
-
-/// The diff as lines: `+ path`, `- path`, `~ path fields`, then `? path` for the
-/// inaccessible entries. Paths of removed, modified and inaccessible entries are those in
-/// the older snapshot.
+/// The diff of two whole trees as lines: `+ path`, `- path`, `~ path fields`, then
+/// `? path` for the inaccessible entries. Paths of deleted, modified and inaccessible
+/// entries are those in the older snapshot.
 fn lines(old: &[Entry], new: &[Entry]) -> Vec<String> {
-    let diff = diff(old, new, &AtomicBool::new(false)).unwrap();
+    lines_with(old, new, &Rules::plain())
+}
+
+/// [`lines`] of the whole trees compared by `rules`.
+fn lines_with(old: &[Entry], new: &[Entry], rules: &Rules<'_>) -> Vec<String> {
+    let diff = diff(
+        Subtree::whole(old),
+        Subtree::whole(new),
+        rules,
+        &AtomicBool::new(false),
+    )
+    .unwrap();
     let mut out: Vec<String> = diff
         .changes
         .iter()
         .map(|c| match c.kind {
             ChangeKind::Added => format!("+ {}", rel_path(new, c.new.unwrap())),
-            ChangeKind::Removed => format!("- {}", rel_path(old, c.old.unwrap())),
+            ChangeKind::Deleted => format!("- {}", rel_path(old, c.old.unwrap())),
             ChangeKind::Modified => format!(
                 "~ {} {}",
                 rel_path(old, c.old.unwrap()),
@@ -154,18 +65,153 @@ fn lines(old: &[Entry], new: &[Entry]) -> Vec<String> {
 fn sample() -> Tree {
     let mut t = Tree::new();
     t.add("app", EntryKind::Dir);
-    let exe = t.add(r"app\app.exe", EntryKind::File);
+    fill_app(&mut t, r"app\");
+    t.add("link", EntryKind::Link).link_target = Some(OsStr::new(r"C:\Target").into());
+    t.add("Notes.txt", EntryKind::File);
+    t
+}
+
+/// The contents of the `app` folder of [`sample`], under `prefix`.
+fn fill_app(t: &mut Tree, prefix: &str) {
+    let exe = t.add(&format!("{prefix}app.exe"), EntryKind::File);
     exe.size = 1000;
     exe.created = 10;
     exe.modified = 20;
     exe.version = version([1, 2, 3, 4]);
-    t.add(r"app\readme.txt", EntryKind::File).size = 5;
-    t.add(r"app\data", EntryKind::Dir);
-    t.add(r"app\data\a.dat", EntryKind::File);
-    t.add(r"app\data\b.dat", EntryKind::File);
-    t.add("link", EntryKind::Link).link_target = Some(OsStr::new(r"C:\Target").into());
-    t.add("Notes.txt", EntryKind::File);
-    t
+    t.add(&format!("{prefix}readme.txt"), EntryKind::File).size = 5;
+    t.add(&format!("{prefix}data"), EntryKind::Dir);
+    t.add(&format!(r"{prefix}data\a.dat"), EntryKind::File);
+    t.add(&format!(r"{prefix}data\b.dat"), EntryKind::File);
+}
+
+/// Rules with these exclusions, as a snapshot recorded them, for trees whose roots are
+/// at `root`.
+fn rules<'a>(exclusions: &'a Exclusions, root: &str) -> Rules<'a> {
+    Rules {
+        filter: Some(Filter {
+            exclusions,
+            branch: exclusions.branch(Path::new(root)),
+        }),
+        file_ids: true,
+    }
+}
+
+#[test]
+fn entries_matching_an_exclusion_are_left_out_with_their_subtrees() {
+    let old = sample();
+    let mut new = sample();
+    // Added since, but excluded now: not added.
+    new.add(r"app\x.tmp", EntryKind::File);
+    new.add(r"app\data\Code Cache", EntryKind::Dir);
+    new.add(r"app\data\Code Cache\f.bin", EntryKind::File);
+    // Changed, but excluded by a path pattern: not modified.
+    new.get(r"app\data\a.dat").size = 9;
+    // Not excluded: reported as usual.
+    new.remove(r"app\readme.txt");
+    let exclusions = Exclusions::new(
+        &["*.tmp", "Code Cache", r"C:\Data\app\data\a.dat"],
+        &RecordedEnvironment,
+    );
+    assert_eq!(
+        lines_with(&old.0, &new.0, &rules(&exclusions, r"C:\Data")),
+        [r"- app\readme.txt"]
+    );
+
+    // An excluded folder goes with everything in it, whatever changed there.
+    let exclusions = Exclusions::new(&["data"], &RecordedEnvironment);
+    assert_eq!(
+        lines_with(&old.0, &new.0, &rules(&exclusions, r"C:\Data")),
+        [r"- app\readme.txt", r"+ app\x.tmp"]
+    );
+
+    // The roots are never excluded, as in a scan.
+    let exclusions = Exclusions::new(&[r"C:\Data"], &RecordedEnvironment);
+    assert_eq!(
+        lines_with(&old.0, &new.0, &rules(&exclusions, r"C:\Data")),
+        [
+            r"~ app\data\a.dat size",
+            r"+ app\data\Code Cache",
+            r"+ app\data\Code Cache\f.bin",
+            r"- app\readme.txt",
+            r"+ app\x.tmp",
+        ]
+    );
+}
+
+#[test]
+fn file_ids_are_not_compared_across_volumes() {
+    let old = sample();
+    let mut new = sample();
+    // Another disk under the same letter: its IDs mean nothing to the other's.
+    new.get(r"app\app.exe").file_id = FileId([1; 16]);
+    new.get(r"app\app.exe").size = 1;
+    new.get(r"app\data").file_id = FileId([2; 16]);
+    let rules = Rules {
+        file_ids: false,
+        ..Rules::plain()
+    };
+    assert_eq!(lines_with(&old.0, &new.0, &rules), [r"~ app\app.exe size"]);
+}
+
+#[test]
+fn a_folder_of_one_tree_is_compared_with_the_whole_of_another() {
+    // The profile first had C:\Data\app, and later C:\Data, which holds app.
+    let mut narrow = Tree::with_root(r"C:\Data\app");
+    fill_app(&mut narrow, "");
+    let mut wide = sample();
+    wide.add(r"app\new.txt", EntryKind::File);
+    wide.get(r"app\readme.txt").size = 7;
+    let no_cancel = AtomicBool::new(false);
+    let changes = |old: Subtree<'_>, new: Subtree<'_>, rules: &Rules<'_>| -> Vec<String> {
+        diff(old, new, rules, &no_cancel)
+            .unwrap()
+            .changes
+            .iter()
+            .map(|c| {
+                let full = c.path(old.entries, new.entries);
+                format!("{:?} {} {}", c.kind, full.display(), field_names(c.fields))
+            })
+            .collect()
+    };
+    let in_wide = Subtree {
+        entries: &wide.0,
+        root: wide.index("app"),
+    };
+    // The roots are matched with each other, and their names are not compared.
+    assert_eq!(
+        changes(Subtree::whole(&narrow.0), in_wide, &Rules::plain()),
+        [
+            r"Added C:\Data\app\new.txt ",
+            r"Modified C:\Data\app\readme.txt size"
+        ]
+    );
+    assert_eq!(
+        changes(in_wide, Subtree::whole(&narrow.0), &Rules::plain()),
+        [
+            r"Deleted C:\Data\app\new.txt ",
+            r"Modified C:\Data\app\readme.txt size"
+        ]
+    );
+    // Exclusions apply from where the compared roots stand.
+    let exclusions = Exclusions::new(&[r"C:\Data\app\new.txt"], &RecordedEnvironment);
+    assert_eq!(
+        changes(
+            Subtree::whole(&narrow.0),
+            in_wide,
+            &rules(&exclusions, r"C:\Data\app")
+        ),
+        [r"Modified C:\Data\app\readme.txt size"]
+    );
+}
+
+/// The diff of two whole trees by [`Rules::plain`].
+fn diff_whole(old: &[Entry], new: &[Entry], cancel: &AtomicBool) -> Result<Diff, Cancelled> {
+    diff(
+        Subtree::whole(old),
+        Subtree::whole(new),
+        &Rules::plain(),
+        cancel,
+    )
 }
 
 #[test]
@@ -174,7 +220,7 @@ fn same_snapshot_has_no_changes() {
     assert_eq!(lines(&t.0, &t.0), Vec::<String>::new());
     let big = synthetic(10_000);
     assert!(
-        diff(&big, &big, &AtomicBool::new(false))
+        diff_whole(&big, &big, &AtomicBool::new(false))
             .unwrap()
             .changes
             .is_empty()
@@ -182,7 +228,7 @@ fn same_snapshot_has_no_changes() {
 }
 
 #[test]
-fn added_and_removed_files() {
+fn added_and_deleted_files() {
     let old = sample();
     let mut new = sample();
     new.add(r"app\new.dll", EntryKind::File);
@@ -191,7 +237,7 @@ fn added_and_removed_files() {
 }
 
 #[test]
-fn added_and_removed_folders_list_every_entry_inside() {
+fn added_and_deleted_folders_list_every_entry_inside() {
     let old = sample();
     let mut new = sample();
     new.add("plugins", EntryKind::Dir);
@@ -277,6 +323,46 @@ fn archive_attribute_is_ignored() {
 }
 
 #[test]
+fn normal_and_cloud_state_attributes_are_ignored() {
+    let old = sample();
+    let mut new = sample();
+    // Clearing the archive attribute of a file with no other attributes leaves NTFS
+    // reporting "normal" in place of no attributes at all.
+    new.get(r"app\readme.txt").attributes = FILE_ATTRIBUTE_NORMAL;
+    // OneDrive moved one file to the cloud, pinned another, and marked a folder.
+    new.get(r"app\data\a.dat").attributes |=
+        FILE_ATTRIBUTE_RECALL_ON_DATA_ACCESS | FILE_ATTRIBUTE_OFFLINE | FILE_ATTRIBUTE_UNPINNED;
+    new.get(r"app\data\b.dat").attributes |= FILE_ATTRIBUTE_PINNED | FILE_ATTRIBUTE_RECALL_ON_OPEN;
+    new.get(r"app\data").attributes |= FILE_ATTRIBUTE_RECALL_ON_DATA_ACCESS;
+    assert_eq!(lines(&old.0, &new.0), Vec::<String>::new());
+    // The other attributes still count, whatever the cloud state.
+    new.get(r"app\data\a.dat").attributes |= FILE_ATTRIBUTE_HIDDEN;
+    assert_eq!(lines(&old.0, &new.0), [r"~ app\data\a.dat attributes"]);
+}
+
+#[test]
+fn a_different_file_id_at_the_same_path_is_a_replacement() {
+    let old = sample();
+    let mut new = sample();
+    // Deleted and made again: NTFS gives the new file another ID, even where tunneling
+    // hands it the old creation time.
+    new.get(r"app\app.exe").file_id = FileId([1; 16]);
+    new.get(r"app\data").file_id = FileId([2; 16]);
+    new.get("link").file_id = FileId([3; 16]);
+    assert_eq!(
+        lines(&old.0, &new.0),
+        [
+            r"~ app\app.exe file_id",
+            r"~ app\data file_id",
+            "~ link file_id"
+        ]
+    );
+    // Other differences are reported with it.
+    new.get(r"app\app.exe").size = 1;
+    assert_eq!(lines(&old.0, &new.0)[0], r"~ app\app.exe size,file_id");
+}
+
+#[test]
 fn last_write_time_of_folders_is_ignored() {
     let old = sample();
     let mut new = sample();
@@ -308,15 +394,50 @@ fn names_match_without_regard_to_case() {
 }
 
 #[test]
+fn the_same_name_is_matched_before_a_name_of_another_case() {
+    // A folder made case-sensitive, for WSL, may hold both.
+    let mut old = Tree::new();
+    old.add("a.txt", EntryKind::File);
+    let mut new = Tree::new();
+    new.add("A.txt", EntryKind::File);
+    new.add("a.txt", EntryKind::File);
+    assert_eq!(lines(&old.0, &new.0), ["+ A.txt"]);
+    assert_eq!(lines(&new.0, &old.0), ["- A.txt"]);
+
+    // Both in both trees, in another order: each is matched with its own.
+    let mut old = Tree::new();
+    old.add("A.txt", EntryKind::File).size = 1;
+    old.add("a.txt", EntryKind::File).size = 2;
+    let mut new = Tree::new();
+    new.add("a.txt", EntryKind::File).size = 2;
+    new.add("A.txt", EntryKind::File).size = 1;
+    assert_eq!(lines(&old.0, &new.0), Vec::<String>::new());
+
+    // One of them gone: the other is still matched with its own, not renamed.
+    let mut new = Tree::new();
+    new.add("A.txt", EntryKind::File).size = 1;
+    assert_eq!(lines(&old.0, &new.0), ["- a.txt"]);
+}
+
+#[test]
 fn changed_link_target_is_a_change() {
     let old = sample();
     let mut new = sample();
     new.get("link").link_target = Some(OsStr::new(r"C:\Other").into());
     assert_eq!(lines(&old.0, &new.0), ["~ link target"]);
+    // The times and attributes of a link count too, as those of a file do.
+    let link = new.get("link");
+    link.created = 1;
+    link.modified = 2;
+    link.attributes |= FILE_ATTRIBUTE_HIDDEN;
+    assert_eq!(
+        lines(&old.0, &new.0),
+        ["~ link created,modified,attributes,target"]
+    );
 }
 
 #[test]
-fn changed_kind_is_removed_and_added() {
+fn changed_kind_is_deleted_and_added() {
     let old = sample();
     let mut new = sample();
     let notes = new.get("Notes.txt");
@@ -373,7 +494,7 @@ fn known_fields_of_inaccessible_entries_are_compared() {
 }
 
 #[test]
-fn inaccessible_entries_are_never_added_or_removed() {
+fn inaccessible_entries_are_never_added_or_deleted() {
     let mut old = sample();
     old.add("locked", EntryKind::Dir).inaccessible = true;
     let mut new = sample();
@@ -382,7 +503,7 @@ fn inaccessible_entries_are_never_added_or_removed() {
 }
 
 #[test]
-fn children_of_an_unreadable_folder_are_not_added_or_removed() {
+fn children_of_an_unreadable_folder_are_not_added_or_deleted() {
     let old = sample();
     // The folder could not be listed this time: only part of it is known.
     let mut new = sample();
@@ -420,7 +541,7 @@ fn empty_snapshots() {
 #[test]
 fn cancelled_diff_returns_cancelled() {
     let t = synthetic(1000);
-    assert!(diff(&t, &t, &AtomicBool::new(true)).is_err());
+    assert!(diff_whole(&t, &t, &AtomicBool::new(true)).is_err());
 }
 
 /// Two snapshots with known changes, made from a generated tree; returns them with the
@@ -441,27 +562,27 @@ fn known_changes(count: usize) -> (Vec<Entry>, Vec<Entry>, HashSet<String>) {
     let is_dir = |e: &Entry| e.kind == EntryKind::Dir;
 
     // Parents come before their children, so one pass sees the parent's fate first.
-    // Removed folders go with their subtrees. Folders that cannot be listed in the newer
+    // Deleted folders go with their subtrees. Folders that cannot be listed in the newer
     // snapshot lose their files there; those are skipped by the diff, so nothing is
-    // expected for them, and no folder is removed right under such a folder.
+    // expected for them, and no folder is deleted right under such a folder.
     let mut new = old.clone();
-    let mut removed = vec![false; n];
+    let mut deleted = vec![false; n];
     let mut taken = vec![false; n];
     for i in 1..n {
         let parent = old[i].parent.unwrap() as usize;
-        if removed[parent] {
-            removed[i] = true;
+        if deleted[parent] {
+            deleted[i] = true;
         } else if new[parent].inaccessible {
             if !is_dir(&old[i]) {
-                removed[i] = true;
+                deleted[i] = true;
             }
         } else if is_dir(&old[i]) && i % 50 == 3 {
-            removed[i] = true;
+            deleted[i] = true;
         } else if is_dir(&old[i]) && i % 50 == 4 {
             new[i].inaccessible = true;
             expected.insert(format!("? {}", p(&old, i)));
         }
-        if removed[i] {
+        if deleted[i] {
             taken[i] = true;
             if !new[parent].inaccessible {
                 expected.insert(format!("- {}", p(&old, i)));
@@ -532,7 +653,7 @@ fn known_changes(count: usize) -> (Vec<Entry>, Vec<Entry>, HashSet<String>) {
                 Some("name")
             }
             7 => {
-                removed[i] = true;
+                deleted[i] = true;
                 expected.insert(format!("- {path}"));
                 None
             }
@@ -566,9 +687,9 @@ fn known_changes(count: usize) -> (Vec<Entry>, Vec<Entry>, HashSet<String>) {
         }
     }
 
-    // Drop removed entries from the newer snapshot and renumber the rest.
-    removed.resize(new.len(), false);
-    (old, renumber(new, &removed), expected)
+    // Drop deleted entries from the newer snapshot and renumber the rest.
+    deleted.resize(new.len(), false);
+    (old, renumber(new, &deleted), expected)
 }
 
 #[test]
@@ -605,30 +726,10 @@ fn generated_changes_give_exactly_the_expected_diff() {
     }
 }
 
-/// A fresh folder under the system temp folder, removed on drop.
-struct TempDir(PathBuf);
-
-impl TempDir {
-    fn new() -> Self {
-        static NEXT: AtomicUsize = AtomicUsize::new(0);
-        let n = NEXT.fetch_add(1, atomic::Ordering::Relaxed);
-        let path = std::env::temp_dir().join(format!("revisor-diff-{}-{n}", std::process::id()));
-        let _ = fs::remove_dir_all(&path);
-        fs::create_dir_all(&path).unwrap();
-        Self(path)
-    }
-}
-
-impl Drop for TempDir {
-    fn drop(&mut self) {
-        let _ = fs::remove_dir_all(&self.0);
-    }
-}
-
 #[test]
 fn unchanged_folder_scanned_twice_has_no_changes() {
-    let tmp = TempDir::new();
-    let root = tmp.0.join("tree");
+    let tmp = TempDir::new("diff");
+    let root = tmp.path().join("tree");
     for i in 0..10 {
         let dir = root.join(format!("d{i}\\Sub Folder"));
         fs::create_dir_all(&dir).unwrap();
@@ -641,16 +742,7 @@ fn unchanged_folder_scanned_twice_has_no_changes() {
         root.join("k.dll"),
     )
     .unwrap();
-    let status = Command::new("cmd")
-        .arg("/c")
-        .arg("mklink")
-        .arg("/J")
-        .arg(root.join("link"))
-        .arg(root.join("d0"))
-        .output()
-        .unwrap()
-        .status;
-    assert!(status.success());
+    junction(&root.join("link"), &root.join("d0"));
 
     let no_cancel = AtomicBool::new(false);
     let settings = ProfileSettings {
@@ -660,7 +752,7 @@ fn unchanged_folder_scanned_twice_has_no_changes() {
             exclusions: vec![],
         },
     };
-    let mut store = Store::create(&tmp.0.join("profile.db"), &settings).unwrap();
+    let mut store = Store::create(&tmp.db(), &settings).unwrap();
     let progress = Progress::default();
     let first = scan(&root, &ScanOptions::default(), &no_cancel, &progress).unwrap();
     let a = store
@@ -671,12 +763,12 @@ fn unchanged_folder_scanned_twice_has_no_changes() {
         .save(&Snapshot::of_tree(second.entries), &no_cancel)
         .unwrap();
     let (old, new) = (
-        store.load_folder(a, 0).unwrap(),
-        store.load_folder(b, 0).unwrap(),
+        store.load_folder(a, 0, &AtomicBool::new(false)).unwrap(),
+        store.load_folder(b, 0, &AtomicBool::new(false)).unwrap(),
     );
     assert_eq!(old.len(), 1 + 10 * 4 + 2);
 
-    let diff = diff(&old, &new, &no_cancel).unwrap();
+    let diff = diff_whole(&old, &new, &no_cancel).unwrap();
     assert!(diff.changes.is_empty(), "{:?}", lines(&old, &new));
     assert!(diff.inaccessible.is_empty());
 }

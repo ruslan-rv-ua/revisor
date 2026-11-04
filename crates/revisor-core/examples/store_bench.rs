@@ -111,7 +111,7 @@ fn run(input: &Input, wal: bool, db: &Path) -> Result<(), Box<dyn std::error::Er
     );
 
     let started = Instant::now();
-    let loaded = store.load_folder(first, 0)?;
+    let loaded = store.load_folder(first, 0, &AtomicBool::new(false))?;
     println!(
         "load:          {:.2} s, {} entries",
         started.elapsed().as_secs_f64(),

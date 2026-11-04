@@ -1,34 +1,10 @@
 use super::*;
 use crate::exclude::SystemEnvironment;
+use crate::testing::{TempDir, junction};
 use std::collections::BTreeSet;
 use std::fs::{self, OpenOptions};
 use std::os::windows::fs::{MetadataExt, OpenOptionsExt};
 use std::process::Command;
-use std::sync::atomic::AtomicUsize;
-
-/// A fresh folder under the system temp folder, removed on drop.
-struct TempDir(PathBuf);
-
-impl TempDir {
-    fn new() -> Self {
-        static NEXT: AtomicUsize = AtomicUsize::new(0);
-        let n = NEXT.fetch_add(1, Ordering::Relaxed);
-        let path = std::env::temp_dir().join(format!("revisor-scan-{}-{n}", std::process::id()));
-        let _ = fs::remove_dir_all(&path);
-        fs::create_dir_all(&path).unwrap();
-        Self(path)
-    }
-
-    fn path(&self) -> &Path {
-        &self.0
-    }
-}
-
-impl Drop for TempDir {
-    fn drop(&mut self) {
-        let _ = fs::remove_dir_all(verbatim(&self.0).unwrap());
-    }
-}
 
 fn run_scan(root: &Path, threads: usize) -> Scan {
     let options = ScanOptions {
@@ -51,20 +27,6 @@ fn copy_kernel32(to: &Path) {
     fs::copy(Path::new(&system).join("System32\\kernel32.dll"), to).unwrap();
 }
 
-/// Makes `link` a junction to `target`.
-fn junction(link: &Path, target: &Path) {
-    let status = Command::new("cmd")
-        .arg("/c")
-        .arg("mklink")
-        .arg("/J")
-        .arg(link)
-        .arg(target)
-        .output()
-        .unwrap()
-        .status;
-    assert!(status.success());
-}
-
 /// Path of an entry relative to the root, with `\` separators.
 fn rel_path(scan: &Scan, mut index: usize) -> String {
     let mut parts = Vec::new();
@@ -85,7 +47,7 @@ fn find<'a>(scan: &'a Scan, rel: &str) -> (usize, &'a Entry) {
 
 #[test]
 fn collects_tree_and_metadata() {
-    let tmp = TempDir::new();
+    let tmp = TempDir::new("scan");
     fs::create_dir_all(tmp.path().join("a\\b")).unwrap();
     let file = tmp.path().join("a\\b\\x.txt");
     fs::write(&file, b"hello").unwrap();
@@ -122,7 +84,7 @@ fn collects_tree_and_metadata() {
 
 #[test]
 fn reads_file_and_product_versions_of_exe_and_dll_only() {
-    let tmp = TempDir::new();
+    let tmp = TempDir::new("scan");
     copy_kernel32(&tmp.path().join("k.DLL"));
     fs::write(tmp.path().join("fake.exe"), b"not a PE file").unwrap();
     fs::write(tmp.path().join("plain.txt"), b"text").unwrap();
@@ -146,7 +108,7 @@ fn reads_file_and_product_versions_of_exe_and_dll_only() {
 
 #[test]
 fn a_locked_exe_keeps_its_metadata_with_its_version_unread() {
-    let tmp = TempDir::new();
+    let tmp = TempDir::new("scan");
     let exe = tmp.path().join("busy.exe");
     copy_kernel32(&exe);
     // Opened with no sharing, as a running program may hold its data file.
@@ -171,7 +133,7 @@ fn a_locked_exe_keeps_its_metadata_with_its_version_unread() {
 
 #[test]
 fn a_file_kept_in_the_cloud_only_is_not_opened_for_its_version() {
-    let tmp = TempDir::new();
+    let tmp = TempDir::new("scan");
     let dll = tmp.path().join("cloud.dll");
     copy_kernel32(&dll);
     // The offline attribute marks data that is not on the disk, as cloud files are.
@@ -190,7 +152,7 @@ fn a_file_kept_in_the_cloud_only_is_not_opened_for_its_version() {
 
 #[test]
 fn progress_counts_the_entries_and_names_the_folder_being_read() {
-    let tmp = TempDir::new();
+    let tmp = TempDir::new("scan");
     fs::create_dir_all(tmp.path().join("a\\b")).unwrap();
     fs::write(tmp.path().join("a\\b\\x.txt"), b"x").unwrap();
     fs::write(tmp.path().join("y.txt"), b"y").unwrap();
@@ -219,17 +181,21 @@ fn progress_counts_the_entries_and_names_the_folder_being_read() {
 
 #[test]
 fn reports_the_serial_number_of_the_root_volume() {
-    let tmp = TempDir::new();
+    let tmp = TempDir::new("scan");
     fs::create_dir(tmp.path().join("inner")).unwrap();
     let outer = run_scan(tmp.path(), 1);
     let inner = run_scan(&tmp.path().join("inner"), 1);
     assert_ne!(outer.volume_serial, 0);
     assert_eq!(outer.volume_serial, inner.volume_serial);
+    assert_eq!(
+        outer.real_root,
+        crate::folders::real_path(tmp.path()).unwrap()
+    );
 }
 
 #[test]
 fn a_root_that_is_a_junction_is_read_through_its_target() {
-    let tmp = TempDir::new();
+    let tmp = TempDir::new("scan");
     let target = tmp.path().join("target");
     fs::create_dir(&target).unwrap();
     fs::write(target.join("inside.txt"), b"x").unwrap();
@@ -240,13 +206,15 @@ fn a_root_that_is_a_junction_is_read_through_its_target() {
 
     assert_eq!(scan.entries[0].kind, EntryKind::Dir);
     assert_eq!(&*scan.entries[0].name, link.as_os_str());
+    // Path exclusions were matched where the folder really is.
+    assert_eq!(scan.real_root, crate::folders::real_path(&target).unwrap());
     find(&scan, "inside.txt");
     assert_eq!(scan.stats.files, 1);
 }
 
 #[test]
 fn records_junction_without_entering() {
-    let tmp = TempDir::new();
+    let tmp = TempDir::new("scan");
     let target = tmp.path().join("target");
     fs::create_dir(&target).unwrap();
     fs::write(target.join("inside.txt"), b"x").unwrap();
@@ -265,7 +233,7 @@ fn records_junction_without_entering() {
 
 #[test]
 fn records_symlink_without_entering() {
-    let tmp = TempDir::new();
+    let tmp = TempDir::new("scan");
     let target = tmp.path().join("target");
     fs::create_dir(&target).unwrap();
     fs::write(target.join("inside.txt"), b"x").unwrap();
@@ -315,7 +283,7 @@ fn files_with_other_kinds_of_reparse_point_are_ordinary_files() {
 
 #[test]
 fn marks_unreadable_folder_and_goes_on() {
-    let tmp = TempDir::new();
+    let tmp = TempDir::new("scan");
     let locked = tmp.path().join("locked");
     fs::create_dir(&locked).unwrap();
     fs::write(locked.join("hidden.txt"), b"x").unwrap();
@@ -349,7 +317,7 @@ fn marks_unreadable_folder_and_goes_on() {
 
 #[test]
 fn a_root_closed_by_rights_is_its_own_inaccessible_entry() {
-    let tmp = TempDir::new();
+    let tmp = TempDir::new("scan");
     let locked = tmp.path().join("locked");
     fs::create_dir(&locked).unwrap();
     fs::write(locked.join("hidden.txt"), b"x").unwrap();
@@ -380,7 +348,7 @@ fn a_root_closed_by_rights_is_its_own_inaccessible_entry() {
 
 #[test]
 fn scans_paths_longer_than_max_path() {
-    let tmp = TempDir::new();
+    let tmp = TempDir::new("scan");
     let segment = "d".repeat(60);
     let mut deep = verbatim(tmp.path()).unwrap();
     for _ in 0..5 {
@@ -402,7 +370,7 @@ fn scans_paths_longer_than_max_path() {
 
 #[test]
 fn parallel_scan_finds_the_same_tree() {
-    let tmp = TempDir::new();
+    let tmp = TempDir::new("scan");
     for i in 0..20 {
         for j in 0..5 {
             let dir = tmp.path().join(format!("d{i}\\e{j}"));
@@ -422,7 +390,7 @@ fn parallel_scan_finds_the_same_tree() {
 
 #[test]
 fn excluded_files_and_folders_stay_out_with_all_they_hold() {
-    let tmp = TempDir::new();
+    let tmp = TempDir::new("scan");
     let write = |rel: &str| {
         let path = tmp.path().join(rel);
         fs::create_dir_all(path.parent().unwrap()).unwrap();
@@ -460,7 +428,7 @@ fn excluded_files_and_folders_stay_out_with_all_they_hold() {
 
 #[test]
 fn cancelled_scan_returns_cancelled() {
-    let tmp = TempDir::new();
+    let tmp = TempDir::new("scan");
     fs::create_dir(tmp.path().join("a")).unwrap();
     let result = scan(
         tmp.path(),
@@ -473,7 +441,7 @@ fn cancelled_scan_returns_cancelled() {
 
 #[test]
 fn missing_root_is_an_error() {
-    let tmp = TempDir::new();
+    let tmp = TempDir::new("scan");
     let result = scan(
         &tmp.path().join("missing"),
         &ScanOptions::default(),

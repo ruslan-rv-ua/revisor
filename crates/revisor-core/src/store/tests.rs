@@ -1,43 +1,13 @@
 use super::*;
 use crate::scan::synthetic;
+use crate::testing::TempDir;
 use std::fs;
-use std::path::PathBuf;
 use std::process::{Command, Stdio};
-use std::sync::atomic::AtomicUsize;
 use std::thread;
 use std::time::{Duration, Instant};
 
 const FILE_ATTRIBUTE_ARCHIVE: u32 = 0x20;
 const FILE_ATTRIBUTE_DIRECTORY: u32 = 0x10;
-
-/// A fresh folder under the system temp folder, removed on drop.
-struct TempDir(PathBuf);
-
-impl TempDir {
-    fn new() -> Self {
-        static NEXT: AtomicUsize = AtomicUsize::new(0);
-        let n = NEXT.fetch_add(1, Ordering::Relaxed);
-        let path = std::env::temp_dir().join(format!("revisor-store-{}-{n}", std::process::id()));
-        let _ = fs::remove_dir_all(&path);
-        fs::create_dir_all(&path).unwrap();
-        Self(path)
-    }
-
-    fn db(&self) -> PathBuf {
-        self.0.join("profile.db")
-    }
-
-    /// The rollback journal; it exists while a write transaction is open.
-    fn journal(&self) -> PathBuf {
-        self.0.join("profile.db-journal")
-    }
-}
-
-impl Drop for TempDir {
-    fn drop(&mut self) {
-        let _ = fs::remove_dir_all(&self.0);
-    }
-}
 
 fn user_version(path: &Path) -> i64 {
     rusqlite::Connection::open(path)
@@ -71,6 +41,13 @@ fn save(store: &mut Store, entries: &[Entry]) -> i64 {
         .unwrap()
 }
 
+/// Loads one tree without cancellation.
+fn load(store: &Store, id: i64, position: usize) -> Vec<Entry> {
+    store
+        .load_folder(id, position, &AtomicBool::new(false))
+        .unwrap()
+}
+
 fn ids(store: &Store) -> Vec<i64> {
     store.list().unwrap().iter().map(|s| s.id).collect()
 }
@@ -87,14 +64,14 @@ fn wait_for_journal(tmp: &TempDir, mut still_running: impl FnMut() -> bool) {
 
 #[test]
 fn new_database_has_schema_version_1() {
-    let tmp = TempDir::new();
+    let tmp = TempDir::new("store");
     create(&tmp.db());
     assert_eq!(user_version(&tmp.db()), 1);
 }
 
 #[test]
 fn database_from_newer_revisor_is_refused() {
-    let tmp = TempDir::new();
+    let tmp = TempDir::new("store");
     drop(create(&tmp.db()));
     let conn = rusqlite::Connection::open(tmp.db()).unwrap();
     conn.pragma_update(None, "user_version", 2).unwrap();
@@ -107,7 +84,7 @@ fn database_from_newer_revisor_is_refused() {
 
 #[test]
 fn a_profile_keeps_its_settings_in_its_database() {
-    let tmp = TempDir::new();
+    let tmp = TempDir::new("store");
     drop(create(&tmp.db()));
     assert_eq!(
         Store::open(&tmp.db()).unwrap().settings().unwrap(),
@@ -117,7 +94,7 @@ fn a_profile_keeps_its_settings_in_its_database() {
 
 #[test]
 fn changed_settings_replace_the_old_ones() {
-    let tmp = TempDir::new();
+    let tmp = TempDir::new("store");
     let mut store = create(&tmp.db());
     let changed = ProfileSettings {
         name: "Робота".into(),
@@ -142,6 +119,7 @@ fn snapshot_of_settings(comment: Option<&str>) -> Snapshot {
                 path: r"C:\Program Files".into(),
                 state: FolderState::Scanned {
                     volume_serial: 0x1234_5678_9ABC_DEF0,
+                    real_path: r"C:\Program Files".into(),
                 },
                 entries: sample(),
             },
@@ -166,7 +144,7 @@ fn snapshot_of_settings(comment: Option<&str>) -> Snapshot {
 
 #[test]
 fn a_snapshot_keeps_the_folders_and_exclusions_it_was_taken_with() {
-    let tmp = TempDir::new();
+    let tmp = TempDir::new("store");
     let mut store = create(&tmp.db());
     let before = store
         .save(&snapshot_of_settings(None), &AtomicBool::new(false))
@@ -191,7 +169,7 @@ fn a_snapshot_keeps_the_folders_and_exclusions_it_was_taken_with() {
 
 #[test]
 fn each_folder_of_a_snapshot_keeps_its_state_and_its_tree() {
-    let tmp = TempDir::new();
+    let tmp = TempDir::new("store");
     let mut store = create(&tmp.db());
     let mut snapshot = snapshot_of_settings(Some("states"));
     let unavailable = [
@@ -209,7 +187,11 @@ fn each_folder_of_a_snapshot_keeps_its_state_and_its_tree() {
     }
     snapshot.folders.push(FolderSnapshot {
         path: r"F:\Big".into(),
-        state: FolderState::Scanned { volume_serial: 7 },
+        // Reached through a junction: its real location is elsewhere.
+        state: FolderState::Scanned {
+            volume_serial: 7,
+            real_path: r"G:\Real\Big".into(),
+        },
         entries: synthetic(100),
     });
     let id = store.save(&snapshot, &AtomicBool::new(false)).unwrap();
@@ -219,20 +201,20 @@ fn each_folder_of_a_snapshot_keeps_its_state_and_its_tree() {
     let folders = store.snapshot_folders(id).unwrap();
     let expected: Vec<SnapshotFolder> = snapshot.folders.iter().map(SnapshotFolder::from).collect();
     assert_eq!(folders, expected);
-    assert_same(&store.load_folder(id, 0).unwrap(), &sample());
+    assert_same(&load(&store, id, 0), &sample());
     for position in 1..6 {
-        assert!(store.load_folder(id, position).unwrap().is_empty());
+        assert!(load(&store, id, position).is_empty());
     }
     // The second tree comes back with its parents counted from its own root.
-    assert_same(&store.load_folder(id, 6).unwrap(), &synthetic(100));
-    assert!(store.load_folder(id, 7).unwrap().is_empty());
-    assert!(store.load_folder(id + 1, 0).unwrap().is_empty());
+    assert_same(&load(&store, id, 6), &synthetic(100));
+    assert!(load(&store, id, 7).is_empty());
+    assert!(load(&store, id + 1, 0).is_empty());
     assert!(store.snapshot_folders(id + 1).unwrap().is_empty());
 }
 
 #[test]
 fn exclusions_keep_how_they_applied() {
-    let tmp = TempDir::new();
+    let tmp = TempDir::new("store");
     let mut store = create(&tmp.db());
     let mut snapshot = snapshot_of_settings(None);
     snapshot.exclusions.push(SnapshotExclusion {
@@ -249,7 +231,7 @@ fn exclusions_keep_how_they_applied() {
 
 #[test]
 fn only_an_existing_profile_database_opens() {
-    let tmp = TempDir::new();
+    let tmp = TempDir::new("store");
     assert!(Store::open(&tmp.db()).is_err());
     assert!(!tmp.db().exists(), "opening creates nothing");
 
@@ -265,7 +247,7 @@ fn only_an_existing_profile_database_opens() {
 
 #[test]
 fn a_file_that_is_not_a_database_is_not_a_profile() {
-    let tmp = TempDir::new();
+    let tmp = TempDir::new("store");
     fs::write(tmp.db(), b"some text, not a database at all").unwrap();
     assert!(matches!(
         Store::open(&tmp.db()),
@@ -275,7 +257,7 @@ fn a_file_that_is_not_a_database_is_not_a_profile() {
 
 #[test]
 fn a_profile_database_without_its_profile_row_is_not_a_profile() {
-    let tmp = TempDir::new();
+    let tmp = TempDir::new("store");
     drop(create(&tmp.db()));
     let conn = rusqlite::Connection::open(tmp.db()).unwrap();
     conn.execute("DELETE FROM profile", []).unwrap();
@@ -286,7 +268,7 @@ fn a_profile_database_without_its_profile_row_is_not_a_profile() {
 
 #[test]
 fn creating_a_profile_never_takes_over_an_existing_file() {
-    let tmp = TempDir::new();
+    let tmp = TempDir::new("store");
     fs::write(tmp.db(), b"someone's file").unwrap();
     assert!(Store::create(&tmp.db(), &settings()).is_err());
     assert_eq!(fs::read(tmp.db()).unwrap(), b"someone's file");
@@ -365,7 +347,7 @@ fn assert_same(loaded: &[Entry], expected: &[Entry]) {
 
 #[test]
 fn saved_snapshot_loads_back_unchanged() {
-    let tmp = TempDir::new();
+    let tmp = TempDir::new("store");
     let mut store = create(&tmp.db());
     let id = store
         .save(
@@ -376,7 +358,7 @@ fn saved_snapshot_loads_back_unchanged() {
     drop(store);
 
     let store = Store::open(&tmp.db()).unwrap();
-    assert_same(&store.load_folder(id, 0).unwrap(), &sample());
+    assert_same(&load(&store, id, 0), &sample());
     let list = store.list().unwrap();
     assert_eq!(list.len(), 1);
     assert_eq!(list[0].id, id);
@@ -386,20 +368,33 @@ fn saved_snapshot_loads_back_unchanged() {
 
 #[test]
 fn snapshots_are_kept_apart() {
-    let tmp = TempDir::new();
+    let tmp = TempDir::new("store");
     let mut store = create(&tmp.db());
     let small = save(&mut store, &sample());
     let big = save(&mut store, &synthetic(5000));
 
-    assert_same(&store.load_folder(small, 0).unwrap(), &sample());
-    assert_same(&store.load_folder(big, 0).unwrap(), &synthetic(5000));
+    assert_same(&load(&store, small, 0), &sample());
+    assert_same(&load(&store, big, 0), &synthetic(5000));
     assert_eq!(ids(&store), [small, big]);
     assert_eq!(store.list().unwrap()[0].comment, None);
 }
 
 #[test]
+fn a_cancelled_load_stops_at_once() {
+    let tmp = TempDir::new("store");
+    let mut store = create(&tmp.db());
+    let id = save(&mut store, &synthetic(10_000));
+    let cancelled = store.load_folder(id, 0, &AtomicBool::new(true));
+    assert!(
+        matches!(cancelled, Err(StoreError::Cancelled)),
+        "{cancelled:?}"
+    );
+    assert_eq!(load(&store, id, 0).len(), 10_000);
+}
+
+#[test]
 fn cancelled_save_leaves_nothing_behind() {
-    let tmp = TempDir::new();
+    let tmp = TempDir::new("store");
     let mut store = create(&tmp.db());
     let kept = save(&mut store, &sample());
 
@@ -420,15 +415,15 @@ fn cancelled_save_leaves_nothing_behind() {
     assert!(matches!(result, Err(StoreError::Cancelled)), "{result:?}");
 
     assert_eq!(ids(&store), [kept]);
-    assert_same(&store.load_folder(kept, 0).unwrap(), &sample());
-    assert!(store.load_folder(kept + 1, 0).unwrap().is_empty());
+    assert_same(&load(&store, kept, 0), &sample());
+    assert!(load(&store, kept + 1, 0).is_empty());
     assert!(store.snapshot_folders(kept + 1).unwrap().is_empty());
     assert_eq!(store.snapshot_scope(kept + 1).unwrap(), Scope::default());
 }
 
 #[test]
 fn a_reader_waits_while_a_snapshot_is_being_saved() {
-    let tmp = TempDir::new();
+    let tmp = TempDir::new("store");
     let mut writer = create(&tmp.db());
     let reader = Store::open(&tmp.db()).unwrap();
     let snapshot = Snapshot::of_tree(synthetic(300_000));
@@ -453,23 +448,23 @@ fn a_reader_waits_while_a_snapshot_is_being_saved() {
 
 #[test]
 fn deleted_snapshot_is_gone_but_its_space_stays_until_compaction() {
-    let tmp = TempDir::new();
+    let tmp = TempDir::new("store");
     let mut store = create(&tmp.db());
     let old = save(&mut store, &synthetic(20_000));
     let new = save(&mut store, &sample());
     let full = fs::metadata(tmp.db()).unwrap().len();
 
     store.delete(old).unwrap();
-    assert!(store.load_folder(old, 0).unwrap().is_empty());
+    assert!(load(&store, old, 0).is_empty());
     assert_eq!(ids(&store), [new]);
-    assert_same(&store.load_folder(new, 0).unwrap(), &sample());
+    assert_same(&load(&store, new, 0), &sample());
     // Freed pages stay in the file until VACUUM.
     assert_eq!(fs::metadata(tmp.db()).unwrap().len(), full);
 }
 
 #[test]
 fn a_comment_can_be_set_changed_and_removed() {
-    let tmp = TempDir::new();
+    let tmp = TempDir::new("store");
     let mut store = create(&tmp.db());
     let id = save(&mut store, &sample());
     let other = save(&mut store, &sample());
@@ -497,7 +492,7 @@ fn a_comment_can_be_set_changed_and_removed() {
 
 #[test]
 fn several_snapshots_are_deleted_in_one_go() {
-    let tmp = TempDir::new();
+    let tmp = TempDir::new("store");
     let mut store = create(&tmp.db());
     let first = save(&mut store, &sample());
     let second = save(&mut store, &synthetic(100));
@@ -506,16 +501,16 @@ fn several_snapshots_are_deleted_in_one_go() {
 
     store.delete_many(&[first, third, fourth + 100]).unwrap();
     assert_eq!(ids(&store), [second, fourth]);
-    assert!(store.load_folder(first, 0).unwrap().is_empty());
+    assert!(load(&store, first, 0).is_empty());
     assert!(store.snapshot_folders(third).unwrap().is_empty());
-    assert_same(&store.load_folder(second, 0).unwrap(), &synthetic(100));
+    assert_same(&load(&store, second, 0), &synthetic(100));
     store.delete_many(&[]).unwrap();
     assert_eq!(ids(&store), [second, fourth]);
 }
 
 #[test]
 fn compaction_returns_the_space_of_deleted_snapshots() {
-    let tmp = TempDir::new();
+    let tmp = TempDir::new("store");
     let mut store = create(&tmp.db());
     let old = save(&mut store, &synthetic(20_000));
     let new = save(&mut store, &sample());
@@ -531,12 +526,12 @@ fn compaction_returns_the_space_of_deleted_snapshots() {
         compacted.after,
         compacted.before
     );
-    assert_same(&store.load_folder(new, 0).unwrap(), &sample());
+    assert_same(&load(&store, new, 0), &sample());
 }
 
 #[test]
 fn an_interrupted_compaction_leaves_the_database_whole() {
-    let tmp = TempDir::new();
+    let tmp = TempDir::new("store");
     let mut store = create(&tmp.db());
     // A big snapshot stays, so the rebuild has ~100 MiB to copy and takes a while.
     let small = save(&mut store, &sample());
@@ -565,7 +560,7 @@ fn an_interrupted_compaction_leaves_the_database_whole() {
     // Nothing of the rebuild is left behind, and the data is as it was.
     let store = Store::open(&tmp.db()).unwrap();
     assert_eq!(ids(&store), [kept]);
-    assert_eq!(store.load_folder(kept, 0).unwrap().len(), 1_000_000);
+    assert_eq!(load(&store, kept, 0).len(), 1_000_000);
     assert_eq!(fs::metadata(tmp.db()).unwrap().len(), full);
     let check: String = rusqlite::Connection::open(tmp.db())
         .unwrap()
@@ -578,7 +573,7 @@ fn an_interrupted_compaction_leaves_the_database_whole() {
 
 #[test]
 fn id_of_deleted_snapshot_is_never_reused() {
-    let tmp = TempDir::new();
+    let tmp = TempDir::new("store");
     let mut store = create(&tmp.db());
     let first = save(&mut store, &sample());
     store.delete(first).unwrap();
@@ -603,7 +598,7 @@ fn killed_save_child() {
 
 #[test]
 fn killed_save_leaves_no_partial_snapshot() {
-    let tmp = TempDir::new();
+    let tmp = TempDir::new("store");
     let kept = save(&mut create(&tmp.db()), &sample());
 
     let mut child = Command::new(std::env::current_exe().unwrap())
@@ -619,6 +614,6 @@ fn killed_save_leaves_no_partial_snapshot() {
 
     let store = Store::open(&tmp.db()).unwrap();
     assert_eq!(ids(&store), [kept]);
-    assert!(store.load_folder(kept + 1, 0).unwrap().is_empty());
-    assert_same(&store.load_folder(kept, 0).unwrap(), &sample());
+    assert!(load(&store, kept + 1, 0).is_empty());
+    assert_same(&load(&store, kept, 0), &sample());
 }

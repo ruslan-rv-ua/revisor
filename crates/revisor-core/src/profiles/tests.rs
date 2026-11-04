@@ -1,31 +1,11 @@
 use super::*;
 use crate::store::{Scope, Snapshot, Store};
-use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
+use crate::testing::TempDir;
+use std::sync::atomic::AtomicBool;
 
-/// A fresh folder under the system temp folder, removed on drop. Profiles go into its
-/// subfolder `profiles`, which does not exist at first.
-struct TempDir(PathBuf);
-
-impl TempDir {
-    fn new() -> Self {
-        static NEXT: AtomicUsize = AtomicUsize::new(0);
-        let n = NEXT.fetch_add(1, Ordering::Relaxed);
-        let path =
-            std::env::temp_dir().join(format!("revisor-profiles-{}-{n}", std::process::id()));
-        let _ = fs::remove_dir_all(&path);
-        fs::create_dir_all(&path).unwrap();
-        Self(path)
-    }
-
-    fn profiles(&self) -> PathBuf {
-        self.0.join("profiles")
-    }
-}
-
-impl Drop for TempDir {
-    fn drop(&mut self) {
-        let _ = fs::remove_dir_all(&self.0);
-    }
+/// The `profiles` subfolder of `tmp`, which does not exist at first.
+fn profiles(tmp: &TempDir) -> PathBuf {
+    tmp.path().join("profiles")
 }
 
 fn settings(name: &str) -> ProfileSettings {
@@ -58,11 +38,11 @@ fn names(dir: &Path) -> Vec<String> {
 
 #[test]
 fn a_new_profile_is_one_file_named_after_it() {
-    let tmp = TempDir::new();
-    let created = create(&tmp.profiles(), &settings("Дім")).unwrap();
-    assert_eq!(created.path, tmp.profiles().join("Дім.db"));
+    let tmp = TempDir::new("profiles");
+    let created = create(&profiles(&tmp), &settings("Дім")).unwrap();
+    assert_eq!(created.path, profiles(&tmp).join("Дім.db"));
     assert_eq!(created.name, "Дім");
-    assert_eq!(names(&tmp.profiles()), ["Дім"]);
+    assert_eq!(names(&profiles(&tmp)), ["Дім"]);
     assert_eq!(
         Store::open(&created.path).unwrap().settings().unwrap(),
         settings("Дім")
@@ -71,8 +51,8 @@ fn a_new_profile_is_one_file_named_after_it() {
 
 #[test]
 fn a_name_a_file_cannot_have_is_made_to_fit() {
-    let tmp = TempDir::new();
-    let dir = tmp.profiles();
+    let tmp = TempDir::new("profiles");
+    let dir = profiles(&tmp);
     let cases = [
         (r#"a/b:c*?"<>|\d"#, "a_b_c_______d.db"),
         ("con", "con_.db"),
@@ -90,8 +70,8 @@ fn a_name_a_file_cannot_have_is_made_to_fit() {
 
 #[test]
 fn a_profile_whose_file_name_is_taken_gets_a_number() {
-    let tmp = TempDir::new();
-    let dir = tmp.profiles();
+    let tmp = TempDir::new("profiles");
+    let dir = profiles(&tmp);
     assert_eq!(
         file_name(&create(&dir, &settings("a/b")).unwrap()),
         "a_b.db"
@@ -108,8 +88,8 @@ fn a_profile_whose_file_name_is_taken_gets_a_number() {
 
 #[test]
 fn profile_names_do_not_repeat_regardless_of_case() {
-    let tmp = TempDir::new();
-    let dir = tmp.profiles();
+    let tmp = TempDir::new("profiles");
+    let dir = profiles(&tmp);
     let home = create(&dir, &settings("Дім")).unwrap();
     let work = create(&dir, &settings("Робота")).unwrap();
 
@@ -129,8 +109,8 @@ fn profile_names_do_not_repeat_regardless_of_case() {
 
 #[test]
 fn a_renamed_profile_moves_to_a_file_named_after_it() {
-    let tmp = TempDir::new();
-    let dir = tmp.profiles();
+    let tmp = TempDir::new("profiles");
+    let dir = profiles(&tmp);
     let home = create(&dir, &settings("Дім")).unwrap();
     let mut changed = settings("Робота");
     changed.scope.folders.push(r"D:\".into());
@@ -150,8 +130,8 @@ fn a_renamed_profile_moves_to_a_file_named_after_it() {
 
 #[test]
 fn each_profile_has_its_own_snapshots() {
-    let tmp = TempDir::new();
-    let dir = tmp.profiles();
+    let tmp = TempDir::new("profiles");
+    let dir = profiles(&tmp);
     let home = create(&dir, &settings("Дім")).unwrap();
     let work = create(&dir, &settings("Робота")).unwrap();
     let mut store = Store::open(&home.path).unwrap();
@@ -170,8 +150,8 @@ fn each_profile_has_its_own_snapshots() {
 
 #[test]
 fn a_deleted_profile_leaves_nothing_behind() {
-    let tmp = TempDir::new();
-    let dir = tmp.profiles();
+    let tmp = TempDir::new("profiles");
+    let dir = profiles(&tmp);
     let home = create(&dir, &settings("Дім")).unwrap();
     let journal = PathBuf::from(format!("{}-journal", home.path.display()));
     fs::write(&journal, b"left over").unwrap();
@@ -185,8 +165,8 @@ fn a_deleted_profile_leaves_nothing_behind() {
 
 #[test]
 fn files_that_are_not_profiles_are_listed_apart() {
-    let tmp = TempDir::new();
-    let dir = tmp.profiles();
+    let tmp = TempDir::new("profiles");
+    let dir = profiles(&tmp);
     create(&dir, &settings("Дім")).unwrap();
     fs::write(dir.join("broken.db"), b"not a database").unwrap();
     fs::write(dir.join("notes.txt"), b"not a profile").unwrap();
@@ -200,8 +180,8 @@ fn files_that_are_not_profiles_are_listed_apart() {
 
 #[test]
 fn a_profiles_snapshots_are_listed_oldest_first() {
-    let tmp = TempDir::new();
-    let home = create(&tmp.profiles(), &settings("Дім")).unwrap();
+    let tmp = TempDir::new("profiles");
+    let home = create(&profiles(&tmp), &settings("Дім")).unwrap();
     assert!(snapshots_of(&home.path).unwrap().is_empty());
     let mut store = Store::open(&home.path).unwrap();
     let snapshot = Snapshot::of_tree(crate::scan::synthetic(10));
@@ -218,8 +198,8 @@ fn a_profiles_snapshots_are_listed_oldest_first() {
 
 #[test]
 fn a_database_another_connection_holds_is_busy() {
-    let tmp = TempDir::new();
-    let home = create(&tmp.profiles(), &settings("Дім")).unwrap();
+    let tmp = TempDir::new("profiles");
+    let home = create(&profiles(&tmp), &settings("Дім")).unwrap();
     let holder = rusqlite::Connection::open(&home.path).unwrap();
     holder.execute_batch("BEGIN EXCLUSIVE").unwrap();
 
@@ -236,7 +216,7 @@ fn a_database_another_connection_holds_is_busy() {
 
 #[test]
 fn a_missing_folder_holds_no_profiles() {
-    let tmp = TempDir::new();
-    let (profiles, unreadable) = list(&tmp.profiles()).unwrap();
+    let tmp = TempDir::new("profiles");
+    let (profiles, unreadable) = list(&profiles(&tmp)).unwrap();
     assert!(profiles.is_empty() && unreadable.is_empty());
 }

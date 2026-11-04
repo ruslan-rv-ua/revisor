@@ -1,46 +1,9 @@
 use super::*;
 use crate::scan::{EntryKind, VersionInfo};
 use crate::store::{ProfileSettings, Scope};
+use crate::testing::TempDir;
 use std::path::PathBuf;
 use std::process::Command;
-use std::sync::atomic::AtomicUsize;
-
-/// A fresh folder under the system temp folder, removed on drop.
-struct TempDir(PathBuf);
-
-impl TempDir {
-    fn new() -> Self {
-        static NEXT: AtomicUsize = AtomicUsize::new(0);
-        let n = NEXT.fetch_add(1, Ordering::Relaxed);
-        let path =
-            std::env::temp_dir().join(format!("revisor-snapshot-{}-{n}", std::process::id()));
-        let _ = fs::remove_dir_all(&path);
-        fs::create_dir_all(&path).unwrap();
-        Self(path)
-    }
-
-    fn path(&self) -> &Path {
-        &self.0
-    }
-
-    fn db(&self) -> PathBuf {
-        self.0.join("profile.db")
-    }
-
-    /// Writes a file under this folder, making its folders.
-    fn write(&self, rel: &str, content: &[u8]) -> PathBuf {
-        let path = self.0.join(rel);
-        fs::create_dir_all(path.parent().unwrap()).unwrap();
-        fs::write(&path, content).unwrap();
-        path
-    }
-}
-
-impl Drop for TempDir {
-    fn drop(&mut self) {
-        let _ = fs::remove_dir_all(&self.0);
-    }
-}
 
 /// A profile database in `tmp` with these folders and exclusions.
 fn profile(tmp: &TempDir, folders: &[PathBuf], exclusions: &[&str]) -> Store {
@@ -76,7 +39,7 @@ fn take_it(tmp: &TempDir) -> (Report, Progress) {
 
 #[test]
 fn a_snapshot_covers_every_folder_of_the_profile_and_reports_each() {
-    let tmp = TempDir::new();
+    let tmp = TempDir::new("snapshot");
     let app = tmp.path().join("app");
     tmp.write(r"app\a.txt", b"aa");
     tmp.write(r"app\skip.tmp", b"");
@@ -97,14 +60,26 @@ fn a_snapshot_covers_every_folder_of_the_profile_and_reports_each() {
     assert_eq!(report.entries, 4 + 2);
     assert_eq!((report.inaccessible, report.denied), (0, 0));
     let states: Vec<&FolderState> = report.folders.iter().map(|f| &f.state).collect();
-    assert!(matches!(states[0], FolderState::Scanned { volume_serial } if *volume_serial != 0));
+    // The folder's real location is kept, so path exclusions apply from it in a comparison.
+    assert!(matches!(
+        states[0],
+        FolderState::Scanned { volume_serial, real_path }
+            if *volume_serial != 0 && *real_path == folders::real_path(&app).unwrap()
+    ));
     assert_eq!(states[1], &FolderState::Missing);
     assert!(
         matches!(states[2], FolderState::Unavailable(Unavailable::Error(_))),
         "{:?}",
         states[2]
     );
-    assert_eq!(states[3], states[0]);
+    // The two scanned folders are on the same volume, each at its own real location.
+    assert!(matches!(
+        (states[0], states[3]),
+        (
+            FolderState::Scanned { volume_serial: a, real_path: app_real },
+            FolderState::Scanned { volume_serial: b, real_path: docs_real },
+        ) if a == b && app_real != docs_real && *docs_real == folders::real_path(&docs).unwrap()
+    ));
     let not_found: Vec<&Path> = report.not_found().map(|f| f.path.as_path()).collect();
     assert_eq!(not_found, [gone.as_path(), nowhere.as_path()]);
     assert_eq!(progress.entries(), report.entries);
@@ -120,7 +95,9 @@ fn a_snapshot_covers_every_folder_of_the_profile_and_reports_each() {
     let folders = store.snapshot_folders(report.id).unwrap();
     assert_eq!(folders, report.folders);
     assert_eq!(folders[0].path, app);
-    let entries = store.load_folder(report.id, 0).unwrap();
+    let entries = store
+        .load_folder(report.id, 0, &AtomicBool::new(false))
+        .unwrap();
     let mut names: Vec<String> = entries[1..]
         .iter()
         .map(|e| e.name.to_string_lossy().into_owned())
@@ -129,9 +106,20 @@ fn a_snapshot_covers_every_folder_of_the_profile_and_reports_each() {
     assert_eq!(names, ["a.txt", "b.txt", "sub"]);
     assert_eq!(entries[0].kind, EntryKind::Dir);
     assert_eq!(entries[0].version, VersionInfo::NotRead);
-    assert_eq!(store.load_folder(report.id, 3).unwrap().len(), 2);
+    assert_eq!(
+        store
+            .load_folder(report.id, 3, &AtomicBool::new(false))
+            .unwrap()
+            .len(),
+        2
+    );
     for position in [1, 2] {
-        assert!(store.load_folder(report.id, position).unwrap().is_empty());
+        assert!(
+            store
+                .load_folder(report.id, position, &AtomicBool::new(false))
+                .unwrap()
+                .is_empty()
+        );
     }
 
     let exclusions = store.snapshot_exclusions(report.id).unwrap();
@@ -147,7 +135,7 @@ fn a_snapshot_covers_every_folder_of_the_profile_and_reports_each() {
 
 #[test]
 fn a_cancelled_snapshot_is_not_saved() {
-    let tmp = TempDir::new();
+    let tmp = TempDir::new("snapshot");
     tmp.write(r"app\a.txt", b"a");
     drop(profile(&tmp, &[tmp.path().join("app")], &[]));
 
@@ -167,7 +155,7 @@ fn a_cancelled_snapshot_is_not_saved() {
 
 #[test]
 fn a_snapshot_that_cannot_be_saved_names_the_cause_and_spares_the_others() {
-    let tmp = TempDir::new();
+    let tmp = TempDir::new("snapshot");
     tmp.write(r"app\a.txt", b"a");
     let mut store = profile(&tmp, &[tmp.path().join("app")], &[]);
     let kept = store
@@ -196,12 +184,18 @@ fn a_snapshot_that_cannot_be_saved_names_the_cause_and_spares_the_others() {
     let store = Store::open(&tmp.db()).unwrap();
     let ids: Vec<i64> = store.list().unwrap().iter().map(|s| s.id).collect();
     assert_eq!(ids, [kept]);
-    assert_eq!(store.load_folder(kept, 0).unwrap().len(), 10);
+    assert_eq!(
+        store
+            .load_folder(kept, 0, &AtomicBool::new(false))
+            .unwrap()
+            .len(),
+        10
+    );
 }
 
 #[test]
 fn a_folder_closed_by_rights_counts_as_denied() {
-    let tmp = TempDir::new();
+    let tmp = TempDir::new("snapshot");
     let locked = tmp.path().join("locked");
     tmp.write(r"locked\hidden.txt", b"x");
     tmp.write(r"open\seen.txt", b"x");
@@ -244,7 +238,9 @@ fn a_folder_closed_by_rights_counts_as_denied() {
     ));
     assert_eq!(report.entries, 1 + 2);
     let store = Store::open(&tmp.db()).unwrap();
-    let tree = store.load_folder(report.id, 0).unwrap();
+    let tree = store
+        .load_folder(report.id, 0, &AtomicBool::new(false))
+        .unwrap();
     assert_eq!(tree.len(), 1);
     assert!(tree[0].inaccessible);
     assert_eq!(report.not_found().count(), 0);
@@ -252,7 +248,7 @@ fn a_folder_closed_by_rights_counts_as_denied() {
 
 #[test]
 fn a_file_at_a_folders_path_is_not_a_folder() {
-    let tmp = TempDir::new();
+    let tmp = TempDir::new("snapshot");
     let file = tmp.write("was-a-folder", b"now a file");
     tmp.write(r"app\a.txt", b"a");
     drop(profile(&tmp, &[file.clone(), tmp.path().join("app")], &[]));

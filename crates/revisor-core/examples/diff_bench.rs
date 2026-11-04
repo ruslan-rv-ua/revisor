@@ -3,8 +3,8 @@
 //!
 //! The two snapshots are saved to a database first: two scans of `<root>`, or `N`
 //! generated entries and a copy with known changes. Then the same exe runs again as a
-//! child process that only loads both snapshots and compares them, so its peak memory
-//! is that of the comparison alone.
+//! child process that only compares them, loading included, so its peak memory is that
+//! of the comparison alone. The target: ~1 million entries in 3 s (TASK-11 #19).
 //!
 //! Usage: `cargo run --release -p revisor-core --example diff_bench -- (--scan <root> | --generate N) [--db <path>]`
 
@@ -16,9 +16,11 @@ use std::process::{Command, ExitCode};
 use std::sync::atomic::AtomicBool;
 use std::time::Instant;
 
-use revisor_core::diff::{ChangeKind, diff, path};
+use revisor_core::compare::compare;
+use revisor_core::diff::ChangeKind;
+use revisor_core::exclude::{DEFAULT_EXCLUSIONS, SystemEnvironment, expand};
 use revisor_core::scan::{Entry, EntryKind, Progress, ScanOptions, scan, synthetic};
-use revisor_core::store::{ProfileSettings, Scope, Snapshot, Store};
+use revisor_core::store::{ProfileSettings, Scope, Snapshot, SnapshotExclusion, Store};
 use windows_sys::Win32::System::ProcessStatus::{GetProcessMemoryInfo, PROCESS_MEMORY_COUNTERS};
 use windows_sys::Win32::System::Threading::GetCurrentProcess;
 
@@ -57,7 +59,7 @@ fn main() -> ExitCode {
         }
     }
     let result = match (compare_only, input) {
-        (true, _) => compare(&db),
+        (true, _) => compare_last_two(&db),
         (false, Some(input)) => prepare(&input, &db),
         (false, None) => return usage(),
     };
@@ -101,10 +103,22 @@ fn prepare(input: &Input, db: &Path) -> Result<(), Box<dyn std::error::Error>> {
         scope: Scope::default(),
     };
     let mut store = Store::create(db, &settings)?;
+    // The default exclusions, as a profile has them: the comparison matches every entry
+    // against them, which costs time too.
+    let exclusions: Vec<SnapshotExclusion> = DEFAULT_EXCLUSIONS
+        .iter()
+        .map(|pattern| SnapshotExclusion {
+            pattern: pattern.to_string(),
+            applied: expand(pattern, &SystemEnvironment)
+                .applied()
+                .map(String::from),
+        })
+        .collect();
     let started = Instant::now();
     for (comment, entries) in [("old", old), ("new", new)] {
         let mut snapshot = Snapshot::of_tree(entries);
         snapshot.comment = Some(comment.into());
+        snapshot.exclusions = exclusions.clone();
         store.save(&snapshot, &no_cancel)?;
     }
     println!(
@@ -150,7 +164,9 @@ fn with_changes(old: &[Entry]) -> Vec<Entry> {
     new
 }
 
-fn compare(db: &Path) -> Result<(), Box<dyn std::error::Error>> {
+/// Compares the last two snapshots of the database the way the application will: loading
+/// both from the database and comparing them in one go.
+fn compare_last_two(db: &Path) -> Result<(), Box<dyn std::error::Error>> {
     let store = Store::open(db)?;
     let list = store.list()?;
     let [.., a, b] = list.as_slice() else {
@@ -158,40 +174,38 @@ fn compare(db: &Path) -> Result<(), Box<dyn std::error::Error>> {
     };
 
     let started = Instant::now();
-    let old = store.load_folder(a.id, 0)?;
-    let new = store.load_folder(b.id, 0)?;
-    let load_time = started.elapsed();
-    let (loaded_ws, loaded_commit) = peak_memory();
+    let difference = compare(&store, a.id, b.id, &AtomicBool::new(false))?;
+    let elapsed = started.elapsed();
+    let changes = || {
+        difference
+            .folders
+            .iter()
+            .flat_map(|f| f.diff.changes.iter())
+    };
+    let count = |kind| changes().filter(|c| c.kind == kind).count();
+    let loaded: usize = difference
+        .folders
+        .iter()
+        .map(|f| f.old.len() + f.new.len())
+        .sum();
+    let inaccessible: usize = difference
+        .folders
+        .iter()
+        .map(|f| f.diff.inaccessible.len())
+        .sum();
     println!(
-        "load both:     {:.2} s, {} and {} entries, peak working set {loaded_ws:.1} MiB, private commit {loaded_commit:.1} MiB",
-        load_time.as_secs_f64(),
-        old.len(),
-        new.len()
-    );
-
-    let started = Instant::now();
-    let diff = diff(&old, &new, &AtomicBool::new(false))?;
-    let diff_time = started.elapsed();
-    let count = |kind| diff.changes.iter().filter(|c| c.kind == kind).count();
-    println!(
-        "diff:          {:.2} s; added {}, removed {}, modified {}, inaccessible {}",
-        diff_time.as_secs_f64(),
+        "load + diff:   {:.2} s, {loaded} entries loaded; added {}, deleted {}, modified {}, inaccessible {inaccessible}, warnings {}",
+        elapsed.as_secs_f64(),
         count(ChangeKind::Added),
-        count(ChangeKind::Removed),
+        count(ChangeKind::Deleted),
         count(ChangeKind::Modified),
-        diff.inaccessible.len()
+        difference.warnings.len()
     );
-    println!(
-        "load + diff:   {:.2} s",
-        (load_time + diff_time).as_secs_f64()
-    );
-    for c in diff.changes.iter().take(SHOWN) {
-        let path = match (c.old, c.new) {
-            (Some(a), _) => path(&old, a),
-            (None, Some(b)) => path(&new, b),
-            (None, None) => unreachable!("a change is in at least one snapshot"),
-        };
-        println!("  {:?} {} {:#04x}", c.kind, path.display(), c.fields.0);
+    for folder in &difference.folders {
+        for c in folder.diff.changes.iter().take(SHOWN) {
+            let path = c.path(&folder.old, &folder.new);
+            println!("  {:?} {} {:#04x}", c.kind, path.display(), c.fields.0);
+        }
     }
     let (working_set, commit) = peak_memory();
     println!("peak memory:   working set {working_set:.1} MiB, private commit {commit:.1} MiB");

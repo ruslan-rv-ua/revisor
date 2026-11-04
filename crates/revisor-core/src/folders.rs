@@ -231,8 +231,9 @@ fn file_system(file: &File) -> io::Result<String> {
     Ok(String::from_utf16_lossy(&name[..len]))
 }
 
-/// The parts of a final path, without its `\\?\` prefix and empty parts, upper-cased.
-fn parts(path: &Path) -> Vec<Vec<u16>> {
+/// The parts of a path, without its `\\?\` prefix and empty parts, upper-cased the way
+/// NTFS compares names: two paths name the same folder when their parts are equal.
+pub(crate) fn parts(path: &Path) -> Vec<Vec<u16>> {
     let wide: Vec<u16> = path.as_os_str().encode_wide().collect();
     let wide = strip(&wide, r"\\?\").unwrap_or(&wide);
     wide.split(|&c| c == u16::from(b'\\'))
