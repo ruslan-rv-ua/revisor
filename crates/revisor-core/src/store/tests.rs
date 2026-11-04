@@ -142,6 +142,7 @@ fn snapshot_of_settings(comment: Option<&str>) -> Snapshot {
                 path: r"C:\Program Files".into(),
                 state: FolderState::Scanned {
                     volume_serial: 0x1234_5678_9ABC_DEF0,
+                    real_path: r"C:\Program Files".into(),
                 },
                 entries: sample(),
             },
@@ -209,7 +210,11 @@ fn each_folder_of_a_snapshot_keeps_its_state_and_its_tree() {
     }
     snapshot.folders.push(FolderSnapshot {
         path: r"F:\Big".into(),
-        state: FolderState::Scanned { volume_serial: 7 },
+        // Reached through a junction: its real location is elsewhere.
+        state: FolderState::Scanned {
+            volume_serial: 7,
+            real_path: r"G:\Real\Big".into(),
+        },
         entries: synthetic(100),
     });
     let id = store.save(&snapshot, &AtomicBool::new(false)).unwrap();
@@ -219,14 +224,35 @@ fn each_folder_of_a_snapshot_keeps_its_state_and_its_tree() {
     let folders = store.snapshot_folders(id).unwrap();
     let expected: Vec<SnapshotFolder> = snapshot.folders.iter().map(SnapshotFolder::from).collect();
     assert_eq!(folders, expected);
-    assert_same(&store.load_folder(id, 0).unwrap(), &sample());
+    assert_same(
+        &store.load_folder(id, 0, &AtomicBool::new(false)).unwrap(),
+        &sample(),
+    );
     for position in 1..6 {
-        assert!(store.load_folder(id, position).unwrap().is_empty());
+        assert!(
+            store
+                .load_folder(id, position, &AtomicBool::new(false))
+                .unwrap()
+                .is_empty()
+        );
     }
     // The second tree comes back with its parents counted from its own root.
-    assert_same(&store.load_folder(id, 6).unwrap(), &synthetic(100));
-    assert!(store.load_folder(id, 7).unwrap().is_empty());
-    assert!(store.load_folder(id + 1, 0).unwrap().is_empty());
+    assert_same(
+        &store.load_folder(id, 6, &AtomicBool::new(false)).unwrap(),
+        &synthetic(100),
+    );
+    assert!(
+        store
+            .load_folder(id, 7, &AtomicBool::new(false))
+            .unwrap()
+            .is_empty()
+    );
+    assert!(
+        store
+            .load_folder(id + 1, 0, &AtomicBool::new(false))
+            .unwrap()
+            .is_empty()
+    );
     assert!(store.snapshot_folders(id + 1).unwrap().is_empty());
 }
 
@@ -376,7 +402,10 @@ fn saved_snapshot_loads_back_unchanged() {
     drop(store);
 
     let store = Store::open(&tmp.db()).unwrap();
-    assert_same(&store.load_folder(id, 0).unwrap(), &sample());
+    assert_same(
+        &store.load_folder(id, 0, &AtomicBool::new(false)).unwrap(),
+        &sample(),
+    );
     let list = store.list().unwrap();
     assert_eq!(list.len(), 1);
     assert_eq!(list[0].id, id);
@@ -391,10 +420,37 @@ fn snapshots_are_kept_apart() {
     let small = save(&mut store, &sample());
     let big = save(&mut store, &synthetic(5000));
 
-    assert_same(&store.load_folder(small, 0).unwrap(), &sample());
-    assert_same(&store.load_folder(big, 0).unwrap(), &synthetic(5000));
+    assert_same(
+        &store
+            .load_folder(small, 0, &AtomicBool::new(false))
+            .unwrap(),
+        &sample(),
+    );
+    assert_same(
+        &store.load_folder(big, 0, &AtomicBool::new(false)).unwrap(),
+        &synthetic(5000),
+    );
     assert_eq!(ids(&store), [small, big]);
     assert_eq!(store.list().unwrap()[0].comment, None);
+}
+
+#[test]
+fn a_cancelled_load_stops_at_once() {
+    let tmp = TempDir::new();
+    let mut store = create(&tmp.db());
+    let id = save(&mut store, &synthetic(10_000));
+    let cancelled = store.load_folder(id, 0, &AtomicBool::new(true));
+    assert!(
+        matches!(cancelled, Err(StoreError::Cancelled)),
+        "{cancelled:?}"
+    );
+    assert_eq!(
+        store
+            .load_folder(id, 0, &AtomicBool::new(false))
+            .unwrap()
+            .len(),
+        10_000
+    );
 }
 
 #[test]
@@ -420,8 +476,16 @@ fn cancelled_save_leaves_nothing_behind() {
     assert!(matches!(result, Err(StoreError::Cancelled)), "{result:?}");
 
     assert_eq!(ids(&store), [kept]);
-    assert_same(&store.load_folder(kept, 0).unwrap(), &sample());
-    assert!(store.load_folder(kept + 1, 0).unwrap().is_empty());
+    assert_same(
+        &store.load_folder(kept, 0, &AtomicBool::new(false)).unwrap(),
+        &sample(),
+    );
+    assert!(
+        store
+            .load_folder(kept + 1, 0, &AtomicBool::new(false))
+            .unwrap()
+            .is_empty()
+    );
     assert!(store.snapshot_folders(kept + 1).unwrap().is_empty());
     assert_eq!(store.snapshot_scope(kept + 1).unwrap(), Scope::default());
 }
@@ -460,9 +524,17 @@ fn deleted_snapshot_is_gone_but_its_space_stays_until_compaction() {
     let full = fs::metadata(tmp.db()).unwrap().len();
 
     store.delete(old).unwrap();
-    assert!(store.load_folder(old, 0).unwrap().is_empty());
+    assert!(
+        store
+            .load_folder(old, 0, &AtomicBool::new(false))
+            .unwrap()
+            .is_empty()
+    );
     assert_eq!(ids(&store), [new]);
-    assert_same(&store.load_folder(new, 0).unwrap(), &sample());
+    assert_same(
+        &store.load_folder(new, 0, &AtomicBool::new(false)).unwrap(),
+        &sample(),
+    );
     // Freed pages stay in the file until VACUUM.
     assert_eq!(fs::metadata(tmp.db()).unwrap().len(), full);
 }
@@ -506,9 +578,19 @@ fn several_snapshots_are_deleted_in_one_go() {
 
     store.delete_many(&[first, third, fourth + 100]).unwrap();
     assert_eq!(ids(&store), [second, fourth]);
-    assert!(store.load_folder(first, 0).unwrap().is_empty());
+    assert!(
+        store
+            .load_folder(first, 0, &AtomicBool::new(false))
+            .unwrap()
+            .is_empty()
+    );
     assert!(store.snapshot_folders(third).unwrap().is_empty());
-    assert_same(&store.load_folder(second, 0).unwrap(), &synthetic(100));
+    assert_same(
+        &store
+            .load_folder(second, 0, &AtomicBool::new(false))
+            .unwrap(),
+        &synthetic(100),
+    );
     store.delete_many(&[]).unwrap();
     assert_eq!(ids(&store), [second, fourth]);
 }
@@ -531,7 +613,10 @@ fn compaction_returns_the_space_of_deleted_snapshots() {
         compacted.after,
         compacted.before
     );
-    assert_same(&store.load_folder(new, 0).unwrap(), &sample());
+    assert_same(
+        &store.load_folder(new, 0, &AtomicBool::new(false)).unwrap(),
+        &sample(),
+    );
 }
 
 #[test]
@@ -565,7 +650,13 @@ fn an_interrupted_compaction_leaves_the_database_whole() {
     // Nothing of the rebuild is left behind, and the data is as it was.
     let store = Store::open(&tmp.db()).unwrap();
     assert_eq!(ids(&store), [kept]);
-    assert_eq!(store.load_folder(kept, 0).unwrap().len(), 1_000_000);
+    assert_eq!(
+        store
+            .load_folder(kept, 0, &AtomicBool::new(false))
+            .unwrap()
+            .len(),
+        1_000_000
+    );
     assert_eq!(fs::metadata(tmp.db()).unwrap().len(), full);
     let check: String = rusqlite::Connection::open(tmp.db())
         .unwrap()
@@ -619,6 +710,14 @@ fn killed_save_leaves_no_partial_snapshot() {
 
     let store = Store::open(&tmp.db()).unwrap();
     assert_eq!(ids(&store), [kept]);
-    assert!(store.load_folder(kept + 1, 0).unwrap().is_empty());
-    assert_same(&store.load_folder(kept, 0).unwrap(), &sample());
+    assert!(
+        store
+            .load_folder(kept + 1, 0, &AtomicBool::new(false))
+            .unwrap()
+            .is_empty()
+    );
+    assert_same(
+        &store.load_folder(kept, 0, &AtomicBool::new(false)).unwrap(),
+        &sample(),
+    );
 }

@@ -201,6 +201,7 @@ fn scan_folder(
                 path: path.to_path_buf(),
                 state: FolderState::Scanned {
                     volume_serial: scan.volume_serial,
+                    real_path: scan.real_root,
                 },
                 entries: scan.entries,
             })

@@ -225,6 +225,10 @@ fn reports_the_serial_number_of_the_root_volume() {
     let inner = run_scan(&tmp.path().join("inner"), 1);
     assert_ne!(outer.volume_serial, 0);
     assert_eq!(outer.volume_serial, inner.volume_serial);
+    assert_eq!(
+        outer.real_root,
+        crate::folders::real_path(tmp.path()).unwrap()
+    );
 }
 
 #[test]
@@ -240,6 +244,8 @@ fn a_root_that_is_a_junction_is_read_through_its_target() {
 
     assert_eq!(scan.entries[0].kind, EntryKind::Dir);
     assert_eq!(&*scan.entries[0].name, link.as_os_str());
+    // Path exclusions were matched where the folder really is.
+    assert_eq!(scan.real_root, crate::folders::real_path(&target).unwrap());
     find(&scan, "inside.txt");
     assert_eq!(scan.stats.files, 1);
 }

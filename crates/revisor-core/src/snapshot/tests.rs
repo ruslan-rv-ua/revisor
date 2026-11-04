@@ -97,14 +97,26 @@ fn a_snapshot_covers_every_folder_of_the_profile_and_reports_each() {
     assert_eq!(report.entries, 4 + 2);
     assert_eq!((report.inaccessible, report.denied), (0, 0));
     let states: Vec<&FolderState> = report.folders.iter().map(|f| &f.state).collect();
-    assert!(matches!(states[0], FolderState::Scanned { volume_serial } if *volume_serial != 0));
+    // The folder's real location is kept, so path exclusions apply from it in a comparison.
+    assert!(matches!(
+        states[0],
+        FolderState::Scanned { volume_serial, real_path }
+            if *volume_serial != 0 && *real_path == folders::real_path(&app).unwrap()
+    ));
     assert_eq!(states[1], &FolderState::Missing);
     assert!(
         matches!(states[2], FolderState::Unavailable(Unavailable::Error(_))),
         "{:?}",
         states[2]
     );
-    assert_eq!(states[3], states[0]);
+    // The two scanned folders are on the same volume, each at its own real location.
+    assert!(matches!(
+        (states[0], states[3]),
+        (
+            FolderState::Scanned { volume_serial: a, real_path: app_real },
+            FolderState::Scanned { volume_serial: b, real_path: docs_real },
+        ) if a == b && app_real != docs_real && *docs_real == folders::real_path(&docs).unwrap()
+    ));
     let not_found: Vec<&Path> = report.not_found().map(|f| f.path.as_path()).collect();
     assert_eq!(not_found, [gone.as_path(), nowhere.as_path()]);
     assert_eq!(progress.entries(), report.entries);
@@ -120,7 +132,9 @@ fn a_snapshot_covers_every_folder_of_the_profile_and_reports_each() {
     let folders = store.snapshot_folders(report.id).unwrap();
     assert_eq!(folders, report.folders);
     assert_eq!(folders[0].path, app);
-    let entries = store.load_folder(report.id, 0).unwrap();
+    let entries = store
+        .load_folder(report.id, 0, &AtomicBool::new(false))
+        .unwrap();
     let mut names: Vec<String> = entries[1..]
         .iter()
         .map(|e| e.name.to_string_lossy().into_owned())
@@ -129,9 +143,20 @@ fn a_snapshot_covers_every_folder_of_the_profile_and_reports_each() {
     assert_eq!(names, ["a.txt", "b.txt", "sub"]);
     assert_eq!(entries[0].kind, EntryKind::Dir);
     assert_eq!(entries[0].version, VersionInfo::NotRead);
-    assert_eq!(store.load_folder(report.id, 3).unwrap().len(), 2);
+    assert_eq!(
+        store
+            .load_folder(report.id, 3, &AtomicBool::new(false))
+            .unwrap()
+            .len(),
+        2
+    );
     for position in [1, 2] {
-        assert!(store.load_folder(report.id, position).unwrap().is_empty());
+        assert!(
+            store
+                .load_folder(report.id, position, &AtomicBool::new(false))
+                .unwrap()
+                .is_empty()
+        );
     }
 
     let exclusions = store.snapshot_exclusions(report.id).unwrap();
@@ -196,7 +221,13 @@ fn a_snapshot_that_cannot_be_saved_names_the_cause_and_spares_the_others() {
     let store = Store::open(&tmp.db()).unwrap();
     let ids: Vec<i64> = store.list().unwrap().iter().map(|s| s.id).collect();
     assert_eq!(ids, [kept]);
-    assert_eq!(store.load_folder(kept, 0).unwrap().len(), 10);
+    assert_eq!(
+        store
+            .load_folder(kept, 0, &AtomicBool::new(false))
+            .unwrap()
+            .len(),
+        10
+    );
 }
 
 #[test]
@@ -244,7 +275,9 @@ fn a_folder_closed_by_rights_counts_as_denied() {
     ));
     assert_eq!(report.entries, 1 + 2);
     let store = Store::open(&tmp.db()).unwrap();
-    let tree = store.load_folder(report.id, 0).unwrap();
+    let tree = store
+        .load_folder(report.id, 0, &AtomicBool::new(false))
+        .unwrap();
     assert_eq!(tree.len(), 1);
     assert!(tree[0].inaccessible);
     assert_eq!(report.not_found().count(), 0);

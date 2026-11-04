@@ -140,6 +140,9 @@ pub struct Scan {
     pub stats: ScanStats,
     /// The serial number of the volume the root is on; file IDs are unique within it.
     pub volume_serial: u64,
+    /// Where the root really is: the location path exclusions were matched from. The
+    /// root path itself when that could not be found out.
+    pub real_root: PathBuf,
 }
 
 /// What a running scan reports to whoever waits for it: how many entries it has
@@ -255,6 +258,8 @@ pub fn scan(
         link_target: None,
     };
     progress.add(1);
+    // Path patterns name real locations, so the root is matched where it really is.
+    let real_root = crate::folders::real_path(root).unwrap_or_else(|_| root.to_path_buf());
     if denied {
         return Ok(Scan {
             entries: vec![root_entry],
@@ -265,10 +270,9 @@ pub fn scan(
                 ..ScanStats::default()
             },
             volume_serial: info.volume_serial,
+            real_root,
         });
     }
-    // Path patterns name real locations, so the root is matched where it really is.
-    let real_root = crate::folders::real_path(root).unwrap_or_else(|_| root.to_path_buf());
 
     let walker = Walker {
         entries: Mutex::new(vec![root_entry]),
@@ -320,6 +324,7 @@ pub fn scan(
         entries,
         stats,
         volume_serial: info.volume_serial,
+        real_root,
     })
 }
 
