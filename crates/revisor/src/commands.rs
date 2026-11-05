@@ -258,6 +258,15 @@ fn no_snapshot_running(state: &AppState) -> Result<(), Reason> {
     require(!state.snapshot_running, Reason::SnapshotRunning)
 }
 
+/// A snapshot of the open profile can be taken: there is a profile, its database is
+/// open, and no snapshot is being taken, as only one goes at a time (TASK-8, TASK-9). So
+/// can «Знімок + порівняння», also on a profile without snapshots (TASK-12 #3, #4).
+fn snapshot_possible(state: &AppState) -> Result<(), Reason> {
+    has_profile(state)?;
+    no_snapshot_running(state)?;
+    not_compacting(state)
+}
+
 fn not_elevated(state: &AppState) -> Result<(), Reason> {
     require(!state.elevated, Reason::AlreadyAdmin)
 }
@@ -272,14 +281,6 @@ fn has_snapshots(state: &AppState) -> Result<(), Reason> {
 fn has_difference(state: &AppState) -> Result<(), Reason> {
     has_snapshots(state)?;
     require(state.has_difference, Reason::NoDifference)?;
-    not_yet(state)
-}
-
-/// For the commands on snapshots whose tasks are not done: they need snapshots and the
-/// profile's database open (TASK-9 #28), and then their own task.
-fn snapshots_not_yet(state: &AppState) -> Result<(), Reason> {
-    has_snapshots(state)?;
-    not_compacting(state)?;
     not_yet(state)
 }
 
@@ -415,18 +416,12 @@ pub static COMMANDS: &[Command] = &[
     // Snapshot
     Command {
         shortcut: Some(key(Key::F(5))),
-        // Needs a profile whose database is open, and only one snapshot goes at a time
-        // (TASK-8, TASK-9).
-        available: |s| {
-            has_profile(s)?;
-            no_snapshot_running(s)?;
-            not_compacting(s)
-        },
+        available: snapshot_possible,
         ..item(CommandId::TakeSnapshot, place(MenuId::Snapshot, 0), b'T')
     },
     Command {
         shortcut: Some(key(Key::F(5)).ctrl()),
-        available: snapshots_not_yet,
+        available: snapshot_possible,
         ..item(
             CommandId::SnapshotAndCompare,
             place(MenuId::Snapshot, 0),
@@ -719,6 +714,7 @@ mod tests {
             CommandId::RestartAsAdmin,
             CommandId::Exit,
             CommandId::TakeSnapshot,
+            CommandId::SnapshotAndCompare,
             CommandId::Comment,
             CommandId::DeleteSnapshots,
             CommandId::CompareWithPrevious,
@@ -824,6 +820,7 @@ mod tests {
         };
         for id in [
             CommandId::TakeSnapshot,
+            CommandId::SnapshotAndCompare,
             CommandId::Comment,
             CommandId::EditProfile,
             CommandId::DeleteProfile,
@@ -846,10 +843,13 @@ mod tests {
             ..AppState::new()
         };
         let available = |id, state: &AppState| (command(id).available)(state);
-        assert_eq!(
-            available(CommandId::TakeSnapshot, &running),
-            Err(Reason::SnapshotRunning)
-        );
+        for id in [CommandId::TakeSnapshot, CommandId::SnapshotAndCompare] {
+            assert_eq!(
+                available(id, &running),
+                Err(Reason::SnapshotRunning),
+                "{id:?}"
+            );
+        }
         assert_eq!(available(CommandId::CancelSnapshot, &running), Ok(()));
         for id in [CommandId::EditProfile, CommandId::DeleteProfile] {
             assert_eq!(
@@ -864,10 +864,54 @@ mod tests {
             ..running.clone()
         };
         assert_eq!(available(CommandId::EditProfile, &other_open), Ok(()));
-        assert_eq!(
-            available(CommandId::TakeSnapshot, &other_open),
-            Err(Reason::SnapshotRunning)
-        );
+        for id in [CommandId::TakeSnapshot, CommandId::SnapshotAndCompare] {
+            assert_eq!(
+                available(id, &other_open),
+                Err(Reason::SnapshotRunning),
+                "{id:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn snapshot_and_compare_needs_what_a_snapshot_needs_and_no_snapshot_before() {
+        let available =
+            |state: &AppState| (command(CommandId::SnapshotAndCompare).available)(state);
+        // In the Snapshot menu with its letter and Ctrl+F5 (TASK-12 #14).
+        let c = command(CommandId::SnapshotAndCompare);
+        assert_eq!((c.place.menu, c.access), (MenuId::Snapshot, b'A'));
+        assert_eq!(c.shortcut, Some(key(Key::F(5)).ctrl()));
+        assert_eq!(available(&AppState::new()), Err(Reason::NoProfiles));
+        // A profile without snapshots: the snapshot is taken all the same (#4).
+        let empty = AppState {
+            profile: Some("Дім".into()),
+            ..AppState::new()
+        };
+        assert_eq!(available(&empty), Ok(()));
+        let two = AppState {
+            snapshots: 2,
+            current_snapshot: Some(0),
+            ..empty.clone()
+        };
+        assert_eq!(available(&two), Ok(()));
+        // A comparison that runs gives way to it (TASK-11 #15).
+        let comparing = AppState {
+            comparison_running: true,
+            ..two.clone()
+        };
+        assert_eq!(available(&comparing), Ok(()));
+        // One snapshot at a time, and the database open (#3).
+        let snapshotting = AppState {
+            snapshot_running: true,
+            ..two.clone()
+        };
+        assert_eq!(available(&snapshotting), Err(Reason::SnapshotRunning));
+        let compacting = AppState {
+            compaction_running: true,
+            compacting_open_profile: true,
+            ..two
+        };
+        assert_eq!(available(&compacting), Err(Reason::CompactionOfThisProfile));
     }
 
     #[test]

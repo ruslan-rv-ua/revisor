@@ -634,6 +634,14 @@ impl Strings for En {
         }
     }
 
+    fn snapshot_saved_comparison_cancelled(&self) -> &'static str {
+        "Snapshot saved, comparison cancelled."
+    }
+
+    fn nothing_to_compare(&self) -> &'static str {
+        "There is nothing to compare the snapshot with: the profile has no other snapshot."
+    }
+
     fn column_change(&self) -> &'static str {
         "Change"
     }

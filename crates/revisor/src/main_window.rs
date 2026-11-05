@@ -2,8 +2,9 @@
 //! status bar that speaks without moving the focus, the key handler, the two parts of
 //! the window, the snapshot being taken, with its progress and its outcome (TASK-8), the
 //! snapshot list of the open profile with its comments, deletion and the compaction
-//! that follows it (TASK-9), and the comparison of the current snapshot with another,
-//! made in the background, whose difference the difference list shows (TASK-11). The
+//! that follows it (TASK-9), the comparison of the current snapshot with another, made
+//! in the background, whose difference the difference list shows (TASK-11), and
+//! «Знімок + порівняння», which chains a snapshot and its comparison (TASK-12). The
 //! profile box lists the profiles (TASK-7).
 
 use std::cell::{Cell, RefCell};
@@ -31,7 +32,9 @@ use crate::difference::{self, Rows};
 use crate::failure;
 use crate::help;
 use crate::i18n::Strings;
-use crate::jobs::{Ended, Event, Jobs, Kind, Shown};
+use crate::jobs::{
+    COMPARISON_SHOWN_AFTER, Ended, Event, Jobs, Kind, Shown, Superseded, ThenCompare,
+};
 use crate::keyboard::{Control, Focus, Route, route};
 use crate::keys::Shortcut;
 use crate::menus::{
@@ -41,7 +44,9 @@ use crate::menus::{
 use crate::message_box::{ask_text, choose, confirm, tell};
 use crate::profile_window::{self, Purpose};
 use crate::settings_window::{self, Values};
-use crate::snapshots::{Arrival, FocusPlace, arrival, row_after_deletion};
+use crate::snapshots::{
+    Arrival, FocusPlace, arrival, arrival_after_comparison, row_after_deletion,
+};
 use crate::state::{AppState, ChangeType, SortColumn};
 use crate::status::Announcer;
 use crate::win32;
@@ -183,8 +188,9 @@ pub struct MainWindow {
     /// waits for the database (`Some(true)`) or compares (`Some(false)`) (TASK-11 #7,
     /// #16); `None` while the row shows no comparison.
     said_waiting: Cell<Option<bool>>,
-    /// The control that had the keyboard focus when the comparison was started, for the
-    /// setting «Фокус після порівняння» (TASK-11 #12).
+    /// The control that had the keyboard focus when the comparison was started — for
+    /// «Знімок + порівняння», when the command was (TASK-12 #5) — for the setting
+    /// «Фокус після порівняння» (TASK-11 #12).
     comparison_focus: Cell<*mut c_void>,
     /// The folder of profiles, `data\profiles` next to the exe.
     profiles_dir: PathBuf,
@@ -555,8 +561,8 @@ impl MainWindow {
     }
 
     /// Where the keyboard focus is, as far as a difference's arrival cares (TASK-11 #12,
-    /// #21): in the difference list, still where it was when the comparison started, on
-    /// the comparison's progress, or elsewhere.
+    /// #21): in the difference list, still where it was when the comparison started (or
+    /// «Знімок + порівняння», TASK-12 #5), on the progress row, or elsewhere.
     fn comparison_focus_place(&self) -> difference::FocusPlace {
         let focused = win32::focused_window();
         if self.is_difference(focused) {
@@ -667,6 +673,7 @@ impl MainWindow {
             CommandId::Settings => self.settings(),
             CommandId::RestartAsAdmin => self.restart_as_admin(),
             CommandId::TakeSnapshot => self.take_snapshot(),
+            CommandId::SnapshotAndCompare => self.snapshot_and_compare(),
             CommandId::Comment => self.comment(),
             CommandId::DeleteSnapshots => self.delete_snapshots(),
             CommandId::CancelSnapshot => self.cancel_snapshot(),
@@ -849,6 +856,24 @@ impl MainWindow {
     fn open_profile(&self) -> Option<ProfileFile> {
         let index = self.open_index.get()?;
         self.profiles.borrow().get(index).cloned()
+    }
+
+    /// Whether `profile` is the open profile.
+    fn is_open(&self, profile: &ProfileFile) -> bool {
+        self.open_profile()
+            .is_some_and(|open| open.path == profile.path)
+    }
+
+    /// Opens the profile whose database is at `path`, with its newest snapshot current,
+    /// if the profile box has it; returns whether it is open now.
+    fn open_profile_at(&self, path: &Path) -> bool {
+        let index = self.profiles.borrow().iter().position(|p| p.path == path);
+        let Some(index) = index else {
+            return false;
+        };
+        self.profile.set_selection(index as u32);
+        self.show_profile(Some(index));
+        true
     }
 
     /// Reads something from the database of the open profile; when it cannot be read, says
@@ -1325,11 +1350,15 @@ impl MainWindow {
     /// Starts comparing the snapshots `a` and `b` of `profile` in the background, in
     /// place of a comparison that still runs (#15), remembering where the keyboard focus
     /// is for the difference's arrival (#12). The progress row shows the comparison once
-    /// it has run for a second (#7).
+    /// it has run for a second (#7). The report of a «Знімок + порівняння» whose
+    /// comparison this one takes the place of is said now (TASK-12).
     fn start_comparison(&self, profile: ProfileFile, a: i64, b: i64) {
         self.comparison_focus.set(win32::focused_window());
-        self.jobs.borrow_mut().start_comparison(profile, a, b);
+        let superseded = self.jobs.borrow_mut().start_comparison(profile, a, b);
         self.sync_jobs();
+        if let Some(superseded) = superseded {
+            self.report_superseded(superseded);
+        }
     }
 
     /// Asks the comparison to stop; its end comes through the timer, like any other.
@@ -1350,13 +1379,33 @@ impl MainWindow {
     /// as the setting «Фокус після порівняння» says; a cancelled or failed comparison
     /// leaves the difference as it was and says so (#10). Where the focus is decides
     /// where it goes, so it is read before the progress row goes and takes the focus
-    /// with it.
-    fn comparison_ended(&self, ended: Ended<Outcome<Difference, CompareError>>) {
+    /// with it. The comparison of «Знімок + порівняння», `after` its snapshot, ends the
+    /// command (TASK-12).
+    fn comparison_ended(
+        &self,
+        ended: Ended<Outcome<Difference, CompareError>>,
+        after: Option<Report>,
+    ) {
+        if let Some(report) = after {
+            self.snapshot_and_compare_ended(ended, report);
+            return;
+        }
         let s = self.s;
         let focus = self.comparison_focus_place();
         self.sync_jobs();
         match ended.outcome {
-            Ok(Outcome::Done(difference)) => self.show_difference(difference, focus),
+            Ok(Outcome::Done(difference)) => {
+                let arrival = difference::arrival(self.focus_after_comparison(), focus);
+                let to_difference = arrival == difference::Arrival::Focus;
+                self.show_difference(difference, to_difference);
+                if to_difference {
+                    // The focus says it: the status bar only stops showing the
+                    // comparison's progress, without a word from the screen reader.
+                    self.status.set_status_text(s.comparison_finished(), 0);
+                } else {
+                    self.say(s.comparison_finished());
+                }
+            }
             Ok(Outcome::Cancelled) => self.say(s.comparison_cancelled()),
             Ok(Outcome::Failed(e)) => {
                 let reason = s.failure(&failure::of_compare(&e));
@@ -1367,10 +1416,9 @@ impl MainWindow {
     }
 
     /// Puts `difference` in the difference list that is not shown, which then takes the
-    /// place of the shown one, with the focus moving to its first row, or the end said
-    /// without it, as its arrival says (#12–#14, #21).
-    fn show_difference(&self, difference: Difference, focus: difference::FocusPlace) {
-        let s = self.s;
+    /// place of the shown one, with the keyboard focus moving to its first row when
+    /// `focus` says so (#12–#14, #21).
+    fn show_difference(&self, difference: Difference, focus: bool) {
         let count = {
             let mut rows = self.difference_rows.borrow_mut();
             rows.replace(difference);
@@ -1386,14 +1434,8 @@ impl MainWindow {
         new.show(true);
         self.shown_difference.set(next);
         self.state.borrow_mut().has_difference = true;
-        match difference::arrival(self.focus_after_comparison(), focus) {
-            difference::Arrival::Replace => self.say(s.comparison_finished()),
-            // The focus says it: the status bar only stops showing the comparison's
-            // progress, without a word from the screen reader.
-            difference::Arrival::Focus => {
-                self.status.set_status_text(s.comparison_finished(), 0);
-                new.set_focus();
-            }
+        if focus {
+            new.set_focus();
         }
         old.show(false);
         old.set_item_count(0);
@@ -1404,7 +1446,9 @@ impl MainWindow {
     /// The progress field for the comparison the row shows, with the bar once the
     /// comparison has run for [`COMPARISON_BAR_AFTER`] (#8). A phase the row has not
     /// said yet — comparing, or waiting for the database — is said in the status bar,
-    /// which screen readers read without the focus moving (#7, #16).
+    /// which screen readers read without the focus moving (#7, #16), once the comparison
+    /// has run for a second: that of «Знімок + порівняння» is in the row at once, in
+    /// place of its snapshot, and a short one says no more than its end (TASK-12).
     fn comparison_progress_text(&self, progress: &compare::Progress, elapsed: Duration) -> String {
         let s = self.s;
         let waiting = progress.phase() == compare::Phase::Waiting;
@@ -1413,7 +1457,7 @@ impl MainWindow {
         } else {
             s.comparing()
         };
-        if self.said_waiting.get() != Some(waiting) {
+        if elapsed >= COMPARISON_SHOWN_AFTER && self.said_waiting.get() != Some(waiting) {
             self.said_waiting.set(Some(waiting));
             self.say(phase_text);
         }
@@ -1443,6 +1487,161 @@ impl MainWindow {
         self.jobs.borrow_mut().finish_compaction(interrupt);
     }
 
+    // --- «Знімок + порівняння» (TASK-12) -----------------------------------------------
+
+    /// Starts «Знімок + порівняння» on the open profile: a snapshot, which is compared,
+    /// once saved, with the snapshot that is the newest of the profile now, wherever the
+    /// focus is (#1). The command is a comparison from now on, so one that still runs
+    /// gives way to it (TASK-11 #15), and where the focus is now is where «Фокус після
+    /// порівняння» counts from (#5).
+    fn snapshot_and_compare(&self) {
+        let s = self.s;
+        let Some(open) = self.open_profile() else {
+            return;
+        };
+        let with = self.rows.borrow().last().map(|row| row.id);
+        self.comparison_focus.set(win32::focused_window());
+        let superseded = self
+            .jobs
+            .borrow_mut()
+            .start_snapshot_and_compare(open, with);
+        self.sync_jobs();
+        if let Some(superseded) = superseded {
+            self.report_superseded(superseded);
+        }
+        self.say(s.snapshot_started());
+    }
+
+    /// The snapshot of «Знімок + порівняння» is saved: it goes to the end of its
+    /// profile's list (#6), and its comparison with `with` starts at once, before the
+    /// progress row changes, so the row and the focus on it stay (#5, #8, #9); the
+    /// snapshot's report waits for the difference. Without a snapshot to compare it with,
+    /// the command is over: the snapshot is reported, and that said (#4). `focus` is
+    /// where the keyboard focus was while the snapshot ran.
+    fn snapshot_to_compare(
+        &self,
+        profile: ProfileFile,
+        report: Report,
+        with: Option<i64>,
+        focus: FocusPlace,
+    ) {
+        let s = self.s;
+        let of_open_profile = self.is_open(&profile);
+        let Some(with) = with else {
+            if of_open_profile {
+                self.append_row(
+                    snapshot_row(&report),
+                    arrival_after_comparison(focus, false),
+                );
+            }
+            self.sync_jobs();
+            let text = format!(
+                "{} {}",
+                self.snapshot_report(&report),
+                s.nothing_to_compare()
+            );
+            self.say(&text);
+            self.offer_restart(&profile, &report, CommandId::SnapshotAndCompare);
+            return;
+        };
+        if of_open_profile {
+            self.append_row(snapshot_row(&report), Arrival::Append);
+        }
+        self.jobs
+            .borrow_mut()
+            .start_comparison_after_snapshot(profile, with, report);
+        self.sync_jobs();
+    }
+
+    /// Ends «Знімок + порівняння» once its comparison has: the difference takes the place
+    /// of the one shown as «Фокус після порівняння» says, counted from the command's
+    /// start, with the progress of the snapshot as that of the comparison (#5) — with
+    /// «Завжди» while another profile is open, the snapshot's profile is opened too (#7);
+    /// the snapshot becomes current in its list unless the keyboard focus stays there
+    /// (#6); and the snapshot's report, held so far, is said with the comparison's end,
+    /// then the restart offered by the rules of TASK-8 (#8). A cancelled comparison
+    /// leaves the snapshot, and says so (#9). Where the focus is decides where it goes,
+    /// so it is read before the progress row goes and takes the focus with it.
+    fn snapshot_and_compare_ended(
+        &self,
+        ended: Ended<Outcome<Difference, CompareError>>,
+        report: Report,
+    ) {
+        let s = self.s;
+        let focus = self.comparison_focus_place();
+        let list_focus = self.focus_place();
+        let profile = ended.profile;
+        let (to_difference, text) = match ended.outcome {
+            Ok(Outcome::Done(difference)) => {
+                let arrival = difference::arrival_after_snapshot(
+                    self.focus_after_comparison(),
+                    focus,
+                    self.is_open(&profile),
+                );
+                if arrival == difference::Arrival::OpenProfileAndFocus {
+                    self.open_profile_at(&profile.path);
+                }
+                let to_difference = arrival != difference::Arrival::Replace;
+                self.show_difference(difference, to_difference);
+                let mut text = self.snapshot_report(&report);
+                // The focus on the difference says the comparison is over.
+                if !to_difference {
+                    text.push(' ');
+                    text.push_str(s.comparison_finished());
+                }
+                (to_difference, text)
+            }
+            Ok(Outcome::Cancelled) => {
+                let cancelled = s.snapshot_saved_comparison_cancelled().to_string();
+                (false, self.snapshot_report_after(cancelled, &report))
+            }
+            Ok(Outcome::Failed(e)) => {
+                let failed = s.comparison_failed(&s.failure(&failure::of_compare(&e)));
+                (false, format!("{} {failed}", self.snapshot_report(&report)))
+            }
+            Err(Lost) => {
+                let failed = s.comparison_failed(s.comparison_stopped());
+                (false, format!("{} {failed}", self.snapshot_report(&report)))
+            }
+        };
+        self.place_snapshot(
+            &profile,
+            report.id,
+            arrival_after_comparison(list_focus, to_difference),
+        );
+        self.sync_jobs();
+        self.say(&text);
+        self.offer_restart(&profile, &report, CommandId::SnapshotAndCompare);
+    }
+
+    /// Makes the snapshot `id` of `profile` current in the snapshot list as `arrival`
+    /// says — `Current`, or `Focus` with the keyboard focus moving to it; `Append` leaves
+    /// the list as it is. Nothing changes while another profile is open, or when the
+    /// snapshot has been deleted meanwhile.
+    fn place_snapshot(&self, profile: &ProfileFile, id: i64, arrival: Arrival) {
+        if !self.is_open(profile) || !matches!(arrival, Arrival::Current | Arrival::Focus) {
+            return;
+        }
+        let Some(index) = self.rows.borrow().iter().position(|row| row.id == id) else {
+            return;
+        };
+        win32::select_only(self.snapshots.get_handle(), index);
+        if arrival == Arrival::Focus {
+            self.snapshots.set_focus();
+        }
+        self.sync_selection();
+    }
+
+    /// Says the report of the snapshot of «Знімок + порівняння» whose comparison another
+    /// comparison has taken the place of (TASK-11 #15): the difference it waited for will
+    /// not come, so it is said now, as after a regular snapshot, with the restart offer of
+    /// TASK-8 (#8). Its row is in the list already.
+    fn report_superseded(&self, superseded: Superseded) {
+        let Superseded { profile, report } = superseded;
+        self.say(&self.snapshot_report(&report));
+        self.offer_restart(&profile, &report, CommandId::SnapshotAndCompare);
+    }
+
     // --- The snapshot being taken (TASK-8) ---------------------------------------------
 
     /// Starts a snapshot of the open profile on its own thread and shows its progress.
@@ -1469,8 +1668,8 @@ impl MainWindow {
             let ended = self.jobs.borrow_mut().poll();
             for event in ended {
                 match event {
-                    Event::Snapshot(ended) => self.snapshot_ended(ended, false),
-                    Event::Comparison(ended) => self.comparison_ended(ended),
+                    Event::Snapshot(ended, then) => self.snapshot_ended(ended, then, false),
+                    Event::Comparison(ended, after) => self.comparison_ended(ended, after),
                     Event::Compaction(ended) => self.compaction_ended(ended),
                 }
             }
@@ -1509,19 +1708,39 @@ impl MainWindow {
     /// Ends the snapshot in the window, whichever way it ended: on the timer, or stopped
     /// on closing and restarting, `stopped`, which reports it without questions. Where
     /// the focus was while the snapshot ran decides where it goes (TASK-9 #19), so it is
-    /// read before the progress row goes and takes the focus with it.
-    fn snapshot_ended(&self, ended: Ended<Outcome<Report, SnapshotError>>, stopped: bool) {
+    /// read before the progress row goes and takes the focus with it. The snapshot of
+    /// «Знімок + порівняння», `then`, goes on to its comparison once saved; cancelled,
+    /// failed or stopped, it ends the command as it ends a regular snapshot (TASK-12 #9,
+    /// #10, #12).
+    fn snapshot_ended(
+        &self,
+        ended: Ended<Outcome<Report, SnapshotError>>,
+        then: Option<ThenCompare>,
+        stopped: bool,
+    ) {
         let s = self.s;
         let focus = self.focus_place();
+        let outcome = match (ended.outcome, then) {
+            (Ok(Outcome::Done(report)), Some(then)) if !stopped => {
+                self.snapshot_to_compare(ended.profile, report, then.with, focus);
+                return;
+            }
+            (outcome, _) => outcome,
+        };
+        // The message boxes are titled after the command that took the snapshot.
+        let command = match then {
+            Some(_) => CommandId::SnapshotAndCompare,
+            None => CommandId::TakeSnapshot,
+        };
         self.sync_jobs();
-        match ended.outcome {
+        match outcome {
             Ok(Outcome::Done(report)) => {
                 self.report_snapshot(&ended.profile, &report, !stopped, focus);
             }
             Ok(Outcome::Failed(SnapshotError::Store(e))) if !stopped => {
-                self.snapshot_failed(&s.failure(&failure::of_store(&e)));
+                self.snapshot_failed(command, &s.failure(&failure::of_store(&e)));
             }
-            Err(Lost) if !stopped => self.snapshot_failed(s.snapshot_stopped()),
+            Err(Lost) if !stopped => self.snapshot_failed(command, s.snapshot_stopped()),
             // A snapshot stopped on closing or restarting is lost however it ended.
             _ => self.say(s.snapshot_cancelled()),
         }
@@ -1597,7 +1816,12 @@ impl MainWindow {
                 if *kind != Kind::Snapshot || self.progress_text.get_value().is_empty() {
                     self.progress_text.change_value(text);
                 }
-                self.cancel_button.set_label(button);
+                // The same label is not set again: the comparison of «Знімок +
+                // порівняння» takes the row over from its snapshot under the same
+                // «Скасувати (N)» (TASK-12 #9).
+                if self.cancel_button.get_label() != *button {
+                    self.cancel_button.set_label(button);
+                }
             }
         }
         if self.jobs.borrow().any() {
@@ -1629,35 +1853,36 @@ impl MainWindow {
         offer_restart: bool,
         focus: FocusPlace,
     ) {
-        let s = self.s;
-        let of_open_profile = self
-            .open_profile()
-            .is_some_and(|open| open.path == profile.path);
-        let row = SnapshotInfo {
-            id: report.id,
-            taken_at: report.taken_at,
-            comment: None,
-        };
-        match arrival(self.focus_after_snapshot(), focus, of_open_profile) {
+        match arrival(self.focus_after_snapshot(), focus, self.is_open(profile)) {
             Arrival::Nothing => {}
             how @ (Arrival::Append | Arrival::Current | Arrival::Focus) => {
-                self.append_row(row, how);
+                self.append_row(snapshot_row(report), how);
             }
             Arrival::OpenProfileAndFocus => {
-                let index = self
-                    .profiles
-                    .borrow()
-                    .iter()
-                    .position(|p| p.path == profile.path);
-                if let Some(index) = index {
-                    self.profile.set_selection(index as u32);
-                    self.show_profile(Some(index));
+                if self.open_profile_at(&profile.path) {
                     self.snapshots.set_focus();
                 }
             }
         }
         self.refresh_menus();
-        let mut text = s.snapshot_saved(report.entries, &win32::format_count(report.entries));
+        self.say(&self.snapshot_report(report));
+        if offer_restart {
+            self.offer_restart(profile, report, CommandId::TakeSnapshot);
+        }
+    }
+
+    /// What a saved snapshot says (TASK-8): how many entries it holds, how many of them
+    /// are inaccessible, and which folders it did not find.
+    fn snapshot_report(&self, report: &Report) -> String {
+        let entries = win32::format_count(report.entries);
+        self.snapshot_report_after(self.s.snapshot_saved(report.entries, &entries), report)
+    }
+
+    /// `first`, then what a saved snapshot says after how many entries it holds: how many
+    /// of them are inaccessible, and which folders it did not find.
+    fn snapshot_report_after(&self, first: String, report: &Report) -> String {
+        let s = self.s;
+        let mut text = first;
         if report.inaccessible > 0 {
             text.push(' ');
             text.push_str(&s.entries_inaccessible(&win32::format_count(report.inaccessible)));
@@ -1675,12 +1900,18 @@ impl MainWindow {
             text.push(' ');
             text.push_str(&s.folders_not_found(&not_found));
         }
-        self.say(&text);
-        if offer_restart && report.denied > 0 && !self.state.borrow().elevated {
+        text
+    }
+
+    /// Offers a restart as administrator after the snapshot of `report` when rights
+    /// closed some of its entries and revisor runs as a standard user (TASK-8 #7, #16,
+    /// #18); the question is titled after `command`, which took the snapshot.
+    fn offer_restart(&self, profile: &ProfileFile, report: &Report, command: CommandId) {
+        let s = self.s;
+        if report.denied > 0 && !self.state.borrow().elevated {
             let question = s.restart_question(&win32::format_count(report.denied));
             let restart = (s.restart(), RESTART_ACCESS);
-            let title = s.command(CommandId::TakeSnapshot);
-            if confirm(&self.frame, s, title, &question, restart, true) {
+            if confirm(&self.frame, s, s.command(command), &question, restart, true) {
                 // On the snapshotted profile, whichever is open by now.
                 self.restart_now(Some(profile));
             }
@@ -1703,11 +1934,13 @@ impl MainWindow {
         }
     }
 
-    fn snapshot_failed(&self, reason: &str) {
+    /// Says why the snapshot was not saved, in the status bar and in a message box titled
+    /// after `command`, which took it (TASK-8; TASK-12 #10).
+    fn snapshot_failed(&self, command: CommandId, reason: &str) {
         let s = self.s;
         let text = s.snapshot_failed(reason);
         self.say(&text);
-        tell(&self.frame, s, s.command(CommandId::TakeSnapshot), &text);
+        tell(&self.frame, s, s.command(command), &text);
     }
 
     /// Stops the snapshot being taken, if there is one, once the user agrees to
@@ -1732,7 +1965,7 @@ impl MainWindow {
         let stopped = self.jobs.borrow_mut().stop_snapshot();
         if let Some(ended) = stopped {
             self.timer.stop();
-            self.snapshot_ended(ended, true);
+            self.snapshot_ended(ended, None, true);
         }
     }
 
@@ -1880,6 +2113,16 @@ fn build_menu_bar(s: &dyn Strings) -> MenuBar {
     bar.build()
 }
 
+/// The row of the snapshot list for the snapshot of `report`, just saved: it has no
+/// comment yet.
+fn snapshot_row(report: &Report) -> SnapshotInfo {
+    SnapshotInfo {
+        id: report.id,
+        taken_at: report.taken_at,
+        comment: None,
+    }
+}
+
 /// What the profile window says when a profile cannot be saved.
 fn save_failure(s: &dyn Strings, settings: &ProfileSettings, e: &ProfileError) -> String {
     let failure = match e {
@@ -1947,5 +2190,18 @@ mod tests {
         assert!(has(En.close(), CLOSE_ACCESS));
         assert!(has(En.delete(), DELETE_ACCESS));
         assert!(has(&En.comment_of("x"), COMMENT_ACCESS));
+    }
+
+    #[test]
+    fn the_cancel_button_keeps_its_label_from_a_snapshot_to_its_comparison() {
+        // «Знімок + порівняння» goes from its snapshot to its comparison under one Cancel
+        // button, whose label does not change under the focus (TASK-12 #9).
+        assert_eq!(cancel_snapshot_access(), cancel_comparison_access());
+        for s in [&En as &dyn Strings, &crate::i18n::Uk] {
+            assert_eq!(
+                button_label(s, s.cancel(), cancel_snapshot_access(), false),
+                button_label(s, s.cancel(), cancel_comparison_access(), false)
+            );
+        }
     }
 }
