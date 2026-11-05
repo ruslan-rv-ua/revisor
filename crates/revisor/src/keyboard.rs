@@ -313,6 +313,27 @@ mod tests {
     }
 
     #[test]
+    fn the_comparison_field_keeps_the_keys_that_read_select_and_copy_its_text() {
+        // The field is read with the arrows and copied (TASK-13 #1).
+        let state = ready();
+        for shortcut in [
+            key(Key::Down),
+            key(Key::Up),
+            key(Key::Home).ctrl(),
+            key(Key::End).shift(),
+            key(Key::Down).shift(),
+            key(Key::Letter(b'A')).ctrl(),
+            key(Key::Letter(b'C')).ctrl(),
+        ] {
+            assert_eq!(
+                route(shortcut, COMPARISON_FIELD, &state, &[]),
+                Route::Pass,
+                "{shortcut:?}"
+            );
+        }
+    }
+
+    #[test]
     fn the_filter_field_keeps_its_keys_and_esc_clears_it() {
         let state = ready();
         let esc = key(Key::Esc);

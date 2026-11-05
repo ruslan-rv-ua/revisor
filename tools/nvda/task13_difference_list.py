@@ -8,15 +8,18 @@
 «Small» is a scratch folder with a few files, so the rows are known. Part ``small``: the field
 «Порівняння» and the empty list before the first comparison and the refusals of the filter's
 commands (#11, #30), the order of Tab (#2); then two snapshots with a comment and a comparison
-whose list is named by its summary (#3, #12–#16), the field read line by line (#1, #4), the
-text filter while typing, with «Показано N із M» after the pause and Esc (#24–#26), a check box
-and its menu item (#22, #26), a key of a type from the field (#30), sorting by a column from the
-menu with the focus on its change (#21), one row selected after Ctrl+A (#19), a new comparison
-with the focus in the list (#3), the earlier snapshot deleted (#5) and the setting «Розмір»
-(#17). Part ``restart``: a restart keeps the types and the order (#28) and starts with nothing
-compared (#11). Part ``big``: the folder given, missing in the first snapshot and there in the
-second, gives a difference of all its entries with a warning (#9, #29): its typing and sorting
-are timed.
+whose list is named by its summary (#3, #12–#16), the field read line by line and selected whole
+with Ctrl+A (#1, #4), the text filter while typing, with «Показано N із M» after the pause and
+Esc (#24–#26), a check box and its menu item (#22, #26), a key of a type from the field (#30),
+sorting by a column from the menu with the focus on its change (#21), one row selected after
+Ctrl+A (#19), a new comparison with the focus in the list (#3), the earlier snapshot deleted
+(#5), the setting «Розмір» (#17), Ctrl+F with a difference (#23) and another profile opened,
+under which the difference stays (#6). Part ``restart``: a restart keeps the types and the order
+(#28) and starts with nothing compared (#11). Part ``big``: the folder given, missing in the
+first snapshot and there in the second, gives a difference of all its entries with a warning
+(#9, #29). Its arrival is probed (the accessibility events revisor raises and how fast its
+window answers, see ``probe.py``), its typing and sorting are timed, and a new comparison with
+the focus in the list names the list again (#3) under the probe too.
 """
 
 import os
@@ -28,19 +31,22 @@ import time
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 from revisor_nvda import (  # noqa: E402
     ES_MULTILINE, ES_READONLY, SCRATCH, VK_DELETE, VK_DOWN, VK_ESCAPE, VK_F2, VK_F5, VK_HOME,
-    VK_MENU, VK_RETURN, VK_SPACE, VK_TAB, App, class_name,
+    VK_MENU, VK_RETURN, VK_SPACE, VK_TAB, VK_UP, App, class_name,
     control_text, edit_style, focused_window, foreground_title, key, prepare, type_text, u32,
     visible_controls, vk, wait_for,
 )
+from probe import Probe  # noqa: E402
 
 VK_SHIFT, VK_CONTROL, VK_F6, VK_F7 = 0x10, 0x11, 0x75, 0x76
 LVM_GETITEMCOUNT, LVM_GETNEXTITEM, LVM_GETSELECTEDCOUNT = 0x1004, 0x100C, 0x1032
 LVNI_FOCUSED = 0x0001
+EM_GETSEL = 0x00B0
 
 parts = set(sys.argv[2].split(",")) if len(sys.argv) > 2 else {"small", "restart", "big"}
 big_source = sys.argv[1] if len(sys.argv) > 1 else r"C:\dev"
 tree = os.path.join(SCRATCH, "tree")
 big = os.path.join(SCRATCH, "big")
+other = os.path.join(SCRATCH, "other")
 
 
 def write(rel, text):
@@ -84,6 +90,12 @@ def filter_field(main):
         if not edit_style(h) & (ES_MULTILINE | ES_READONLY):
             return h
     return None
+
+
+def selection(h):
+    """The selection of an edit control (EM_GETSEL), as its start and end."""
+    got = u32.SendMessageW(h, EM_GETSEL, 0, 0)
+    return got & 0xFFFF, (got >> 16) & 0xFFFF
 
 
 def where(main):
@@ -143,10 +155,12 @@ def timed(act, done, timeout=10):
     return time.time() - started
 
 
-write("a.txt", "a")
-write("b.txt", "b")
-write(r"old\gone.txt", "gone")
-write(r"sub\c.txt", "c")
+def fill_tree():
+    """The files of «Small» before its first snapshot; `prepare` has just emptied the folder."""
+    write("a.txt", "a")
+    write("b.txt", "b")
+    write(r"old\gone.txt", "gone")
+    write(r"sub\c.txt", "c")
 
 
 def check_small(app):
@@ -199,11 +213,16 @@ def check_small(app):
         key(VK_DOWN)
         app.step(f"Down {i + 1}", 1.5)
 
-    # 4. The field «Порівняння», line by line (#1, #4).
+    # 4. The field «Порівняння», line by line, and all of it selected to copy (#1, #4).
     key(VK_SHIFT, VK_TAB)
     app.step("Shift+Tab: the field", 2)
     key(VK_DOWN)
     app.step("Down: the summary line", 1.5)
+    key(VK_CONTROL, vk("A"))
+    app.step("Ctrl+A in the field", 1.5)
+    field = comparison_field(app.main)
+    start, end = selection(field)
+    print(f"   selected {start}..{end} of {len(control_text(field))} characters")
     key(VK_TAB)
     app.step("Tab: the list again", 2)
 
@@ -289,6 +308,24 @@ def check_small(app):
     app.step("the list, sizes in bytes", 2)
     report(app)
 
+    # 11. Ctrl+F with a difference: the focus goes to the field «Фільтр:» (#23).
+    key(VK_CONTROL, vk("F"))
+    app.step("Ctrl+F with a difference", 1.5)
+    assert where(app.main) == "filter field", where(app.main)
+
+    # 12. Another profile opened: the difference stays, and its pair still names «Small» (#6).
+    key(VK_MENU, vk("R"))
+    time.sleep(0.6)
+    key(VK_UP)
+    app.step("Alt+R, Up: the profile «Other»", 2)
+    to_difference_list(app)
+    app.step("the difference of «Small» under «Other»", 2)
+    report(app)
+    key(VK_MENU, vk("R"))
+    time.sleep(0.6)
+    key(VK_DOWN)
+    app.step("Alt+R, Down: «Small» again", 2)
+
     # Left for the restart: deleted hidden, by size descending.
     key(VK_CONTROL, vk("2"))
     menu("D", "S", "S")
@@ -315,11 +352,6 @@ def check_restart(app):
     key(VK_ESCAPE)
     key(VK_ESCAPE)
     time.sleep(0.5)
-    # The settings back to the defaults, for the next runs.
-    key(VK_CONTROL, vk("2"))
-    menu("D", "S", "A")
-    menu("D", "S", "T")
-    app.step("Ctrl+2, ascending, by path", 2)
 
 
 def check_big(app):
@@ -333,9 +365,11 @@ def check_big(app):
     key(VK_F5)
     finished(app, 600)
     app.step("F5: the folder there", 2)
-    key(VK_F7)
-    finished(app, 600)
-    app.step("F7: the difference of every entry", 3)
+    with Probe(app.proc.pid, app.main) as probe:
+        key(VK_F7)
+        finished(app, 600)
+        app.step("F7: the difference of every entry", 3)
+    probe.report("F7: the difference arrives")
     report(app)
     d = difference(app.main)
     total = rows(d)
@@ -362,10 +396,21 @@ def check_big(app):
     menu("D", "S", "T")
     app.step("by path", 2)
 
+    # A new difference of every entry with the focus in the list: the list is named again
+    # (#3, TASK-11 #21) and the window keeps answering (#29).
+    to_difference_list(app)
+    with Probe(app.proc.pid, app.main) as probe:
+        key(VK_F7)
+        finished(app, 600)
+        app.step("F7 with the focus in the list", 3)
+    probe.report("F7: a new difference in place of the old")
+    report(app)
+
 
 try:
     if "small" in parts or "restart" in parts:
-        paths = prepare({"Small": ([tree], [])})
+        paths = prepare({"Small": ([tree], []), "Other": ([other], [])})
+        fill_tree()
         if "small" in parts:
             with App(paths, paths["Small"]) as app:
                 check_small(app)

@@ -165,8 +165,17 @@ def control_text(h):
     return buf.value
 
 
+def has_size(h):
+    rect = wt.RECT()
+    u32.GetWindowRect(h, ctypes.byref(rect))
+    return rect.right > rect.left and rect.bottom > rect.top
+
+
 def visible_controls(main, cls):
-    return [c for c in children(main) if class_name(c) == cls and u32.IsWindowVisible(c)]
+    """The controls of class `cls` on screen: shown and of some size. The difference list not
+    shown is disabled and has no size rather than hidden (TASK-13)."""
+    return [c for c in children(main)
+            if class_name(c) == cls and u32.IsWindowVisible(c) and has_size(c)]
 
 
 GWL_STYLE, ES_MULTILINE, ES_READONLY = -16, 0x0004, 0x0800
