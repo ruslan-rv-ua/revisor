@@ -221,6 +221,13 @@ pub trait Strings {
     fn focus_after_comparison(&self) -> &'static str;
     fn comparison_focus_option(&self, value: FocusAfterComparison) -> &'static str;
 
+    // «Знімок + порівняння» (TASK-12).
+    /// Said when the comparison of «Знімок + порівняння» is cancelled: its snapshot stays.
+    fn snapshot_saved_comparison_cancelled(&self) -> &'static str;
+    /// Said after the report of the snapshot of «Знімок + порівняння» when the profile
+    /// had no snapshot to compare it with.
+    fn nothing_to_compare(&self) -> &'static str;
+
     // The difference list (TASK-11).
     fn column_change(&self) -> &'static str;
     fn column_path(&self) -> &'static str;
@@ -399,6 +406,26 @@ mod tests {
         assert_eq!(uk, ["Додано", "Видалено", "Змінено", "Недоступно"]);
         let en: Vec<&str> = kinds.iter().map(|&k| En.change_kind(k)).collect();
         assert_eq!(en, ["Added", "Deleted", "Modified", "Inaccessible"]);
+    }
+
+    #[test]
+    fn the_snapshot_and_compare_strings_come_in_both_languages() {
+        assert_eq!(
+            Uk.snapshot_saved_comparison_cancelled(),
+            "Знімок збережено, порівняння скасовано."
+        );
+        assert_eq!(
+            En.snapshot_saved_comparison_cancelled(),
+            "Snapshot saved, comparison cancelled."
+        );
+        assert_eq!(
+            Uk.nothing_to_compare(),
+            "Порівнювати знімок нема з чим: іншого знімка в профілі немає."
+        );
+        assert_eq!(
+            En.nothing_to_compare(),
+            "There is nothing to compare the snapshot with: the profile has no other snapshot."
+        );
     }
 
     #[test]

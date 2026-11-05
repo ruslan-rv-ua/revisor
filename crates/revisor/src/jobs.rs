@@ -3,6 +3,12 @@
 //! the progress row shows, the flags of the state the commands decide by, and the
 //! profile whose database a compaction has closed. The window starts, cancels and polls
 //! the jobs here and holds none of their parts itself.
+//!
+//! «Знімок + порівняння» (TASK-12) is two jobs in a row, which the window chains: the
+//! place of the snapshot holds the comparison the snapshot is to have, and the place of
+//! the comparison the snapshot's report, which waits for the difference. The command is
+//! a comparison from its start, so the rule «the later comparison is the one wanted»
+//! (TASK-11 #15) counts it from then.
 
 use std::path::Path;
 use std::time::Duration;
@@ -71,24 +77,49 @@ pub struct Ended<O> {
     pub outcome: Result<O, Lost>,
 }
 
+/// What «Знімок + порівняння» does once its snapshot is saved (TASK-12): compares it
+/// with `with`, the snapshot that was the newest of the profile when the command started
+/// (#1); `None` when the profile had none, so there is nothing to compare it with (#4).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct ThenCompare {
+    pub with: Option<i64>,
+}
+
+/// The report of the snapshot of a «Знімок + порівняння» whose comparison another
+/// comparison has taken the place of (TASK-11 #15): it waited for a difference that will
+/// not come, so whoever started the other comparison says it now (TASK-12 #8).
+#[derive(Debug)]
+pub struct Superseded {
+    pub profile: ProfileFile,
+    pub report: Report,
+}
+
 /// A job that [`Jobs::poll`] found ended.
 #[derive(Debug)]
 pub enum Event {
-    Snapshot(Ended<Outcome<Report, SnapshotError>>),
-    Comparison(Ended<Outcome<Difference, CompareError>>),
+    /// A snapshot ended; the snapshot of «Знімок + порівняння» with the comparison it is
+    /// to have, unless another comparison was started meanwhile (TASK-12 #11).
+    Snapshot(Ended<Outcome<Report, SnapshotError>>, Option<ThenCompare>),
+    /// A comparison ended; that of «Знімок + порівняння» with the report of its snapshot,
+    /// which waited for it (TASK-12 #8).
+    Comparison(Ended<Outcome<Difference, CompareError>>, Option<Report>),
     Compaction(Ended<Outcome<Compacted, StoreError>>),
 }
 
-/// A snapshot being taken, and the profile it is of.
+/// A snapshot being taken, the profile it is of, and, for the snapshot of «Знімок +
+/// порівняння», the comparison it is to have once saved.
 struct Snapshotting {
     profile: ProfileFile,
     job: Job<SnapshotWork>,
+    then: Option<ThenCompare>,
 }
 
-/// A comparison being made, and the profile its snapshots are of.
+/// A comparison being made, the profile its snapshots are of, and, for the comparison of
+/// «Знімок + порівняння», the report of its snapshot, which waits for the difference.
 struct Comparing {
     profile: ProfileFile,
     job: Job<CompareWork>,
+    after: Option<Report>,
 }
 
 /// A database being compacted, with its profile and that profile's snapshots left after
@@ -111,20 +142,86 @@ pub struct Jobs {
 impl Jobs {
     /// Starts a snapshot of `profile`; the commands see to it that no other one runs.
     pub fn start_snapshot(&mut self, profile: ProfileFile) {
+        self.start_snapshot_then(profile, None);
+    }
+
+    /// Starts «Знімок + порівняння» on `profile` (TASK-12): a snapshot that is to be
+    /// compared with `with` once saved. The command is a comparison from its start, the
+    /// latest one, so a comparison that still runs is cancelled and forgotten, as by
+    /// [`Jobs::start_comparison`]; the report it held, if it was the comparison of an
+    /// earlier «Знімок + порівняння», comes back to be said.
+    #[must_use]
+    pub fn start_snapshot_and_compare(
+        &mut self,
+        profile: ProfileFile,
+        with: Option<i64>,
+    ) -> Option<Superseded> {
+        let superseded = self.forget_comparison();
+        self.start_snapshot_then(profile, Some(ThenCompare { with }));
+        superseded
+    }
+
+    fn start_snapshot_then(&mut self, profile: ProfileFile, then: Option<ThenCompare>) {
         debug_assert!(self.snapshot.is_none(), "one snapshot at a time");
         let job = Job::start(SnapshotWork::new(&profile.path, None));
-        self.snapshot = Some(Snapshotting { profile, job });
+        self.snapshot = Some(Snapshotting { profile, job, then });
     }
 
     /// Starts comparing the snapshots `a` and `b` of `profile`. A comparison that still
     /// runs is cancelled and forgotten: only one difference can be shown, and the later
-    /// comparison is the one wanted (TASK-11 #15).
-    pub fn start_comparison(&mut self, profile: ProfileFile, a: i64, b: i64) {
-        if let Some(comparing) = self.comparison.take() {
-            comparing.job.cancel();
+    /// comparison is the one wanted (TASK-11 #15). So is the comparison the snapshot of a
+    /// «Знімок + порівняння» being taken was to have: that snapshot ends as a regular one
+    /// (TASK-12 #11). The report a forgotten comparison of «Знімок + порівняння» held
+    /// comes back to be said.
+    #[must_use]
+    pub fn start_comparison(&mut self, profile: ProfileFile, a: i64, b: i64) -> Option<Superseded> {
+        if let Some(snapshotting) = &mut self.snapshot {
+            snapshotting.then = None;
         }
+        let superseded = self.forget_comparison();
+        self.compare(profile, a, b, None);
+        superseded
+    }
+
+    /// Starts the comparison of «Знімок + порівняння» once its snapshot is saved
+    /// (TASK-12 #8): of the snapshot of `report` with `with`. The report waits for the
+    /// comparison's end, and the progress row shows the comparison at once, in place of
+    /// the snapshot (#5, #9). The command holds the place of the comparison from its
+    /// start, so none runs by then.
+    pub fn start_comparison_after_snapshot(
+        &mut self,
+        profile: ProfileFile,
+        with: i64,
+        report: Report,
+    ) {
+        debug_assert!(
+            self.comparison.is_none(),
+            "«Знімок + порівняння» holds the place of the comparison from its start"
+        );
+        let _ = self.forget_comparison();
+        let later = report.id;
+        self.compare(profile, with, later, Some(report));
+    }
+
+    fn compare(&mut self, profile: ProfileFile, a: i64, b: i64, after: Option<Report>) {
         let job = Job::start(CompareWork::new(&profile.path, a, b));
-        self.comparison = Some(Comparing { profile, job });
+        self.comparison = Some(Comparing {
+            profile,
+            job,
+            after,
+        });
+    }
+
+    /// Cancels and forgets the comparison that runs, if one does; gives back the report
+    /// it held when it was the comparison of «Знімок + порівняння».
+    fn forget_comparison(&mut self) -> Option<Superseded> {
+        let Comparing {
+            profile,
+            job,
+            after,
+        } = self.comparison.take()?;
+        job.cancel();
+        after.map(|report| Superseded { profile, report })
     }
 
     /// Starts compacting the database of `profile` on `store`, the connection its
@@ -173,12 +270,12 @@ impl Jobs {
     pub fn poll(&mut self) -> Vec<Event> {
         let mut ended = Vec::new();
         if let Some(outcome) = self.snapshot.as_mut().and_then(|s| s.job.poll()) {
-            let Snapshotting { profile, .. } = self.snapshot.take().expect("polled just now");
-            ended.push(Event::Snapshot(Ended { profile, outcome }));
+            let Snapshotting { profile, then, .. } = self.snapshot.take().expect("polled just now");
+            ended.push(Event::Snapshot(Ended { profile, outcome }, then));
         }
         if let Some(outcome) = self.comparison.as_mut().and_then(|c| c.job.poll()) {
-            let Comparing { profile, .. } = self.comparison.take().expect("polled just now");
-            ended.push(Event::Comparison(Ended { profile, outcome }));
+            let Comparing { profile, after, .. } = self.comparison.take().expect("polled just now");
+            ended.push(Event::Comparison(Ended { profile, outcome }, after));
         }
         if let Some(outcome) = self.compaction.as_mut().and_then(|c| c.job.poll()) {
             let Compacting { profile, .. } = self.compaction.take().expect("polled just now");
@@ -188,14 +285,16 @@ impl Jobs {
     }
 
     /// What the progress row shows: a snapshot before a comparison that has run for
-    /// [`COMPARISON_SHOWN_AFTER`] or longer, before a compaction.
+    /// [`COMPARISON_SHOWN_AFTER`] or longer, before a compaction. The comparison of
+    /// «Знімок + порівняння» shows at once: it takes the row over from its snapshot, so
+    /// the row, and the focus on it, stay (TASK-12 #5, #9).
     pub fn shown(&self) -> Option<Shown<'_>> {
         if let Some(snapshotting) = &self.snapshot {
             return Some(Shown::Snapshot(snapshotting.job.progress()));
         }
         if let Some(comparing) = &self.comparison {
             let elapsed = comparing.job.elapsed();
-            if elapsed >= COMPARISON_SHOWN_AFTER {
+            if elapsed >= COMPARISON_SHOWN_AFTER || comparing.after.is_some() {
                 return Some(Shown::Comparison {
                     progress: comparing.job.progress(),
                     elapsed,
@@ -261,7 +360,7 @@ impl Jobs {
     /// the scan notices between folders and files, the save every few thousand entries.
     /// A snapshot that was done by then ends as it did.
     pub fn stop_snapshot(&mut self) -> Option<Ended<Outcome<Report, SnapshotError>>> {
-        let Snapshotting { profile, job } = self.snapshot.take()?;
+        let Snapshotting { profile, job, .. } = self.snapshot.take()?;
         job.cancel();
         Some(Ended {
             profile,
@@ -348,6 +447,22 @@ mod tests {
         (ids[0], ids[1])
     }
 
+    /// Takes a snapshot of `profile` and gives its report.
+    fn snapshot(profile: &ProfileFile) -> Report {
+        let mut jobs = Jobs::default();
+        jobs.start_snapshot(profile.clone());
+        match poll_until_idle(&mut jobs).pop() {
+            Some(Event::Snapshot(
+                Ended {
+                    outcome: Ok(Outcome::Done(report)),
+                    ..
+                },
+                None,
+            )) => report,
+            other => panic!("{other:?}"),
+        }
+    }
+
     /// Polls `jobs`, as the window's timer does, until no job is left, and gives the
     /// jobs that ended.
     fn poll_until_idle(jobs: &mut Jobs) -> Vec<Event> {
@@ -371,7 +486,7 @@ mod tests {
 
         // The comparison waits for the locked database, so it runs meanwhile.
         let held = lock(&a);
-        jobs.start_comparison(a.clone(), first, second);
+        assert!(jobs.start_comparison(a.clone(), first, second).is_none());
         jobs.start_snapshot(a.clone());
         compact(&mut jobs, &b, Vec::new());
         let running = Flags {
@@ -403,7 +518,7 @@ mod tests {
         assert!(
             ended.iter().any(|e| matches!(
                 e,
-                Event::Comparison(Ended { profile, outcome: Ok(Outcome::Done(d)) })
+                Event::Comparison(Ended { profile, outcome: Ok(Outcome::Done(d)) }, None)
                     if *profile == a && (d.earlier.id, d.later.id) == (first, second)
             )),
             "{ended:?}"
@@ -422,7 +537,7 @@ mod tests {
         assert!(matches!(jobs.shown(), Some(Shown::Compaction(p)) if *p == b));
         // A comparison shows only once it has run for a second (TASK-11 #7).
         let held = lock(&a);
-        jobs.start_comparison(a.clone(), first, second);
+        assert!(jobs.start_comparison(a.clone(), first, second).is_none());
         assert!(matches!(jobs.shown(), Some(Shown::Compaction(_))));
         thread::sleep(COMPARISON_SHOWN_AFTER + Duration::from_millis(100));
         assert!(matches!(
@@ -441,14 +556,16 @@ mod tests {
         assert!(
             ended.iter().any(|e| matches!(
                 e,
-                Event::Snapshot(Ended { profile, outcome: Ok(Outcome::Done(_)) }) if *profile == a
+                Event::Snapshot(Ended { profile, outcome: Ok(Outcome::Done(_)) }, None)
+                    if *profile == a
             )),
             "{ended:?}"
         );
         assert!(
             ended.iter().any(|e| matches!(
                 e,
-                Event::Comparison(Ended { profile, outcome: Ok(Outcome::Done(_)) }) if *profile == a
+                Event::Comparison(Ended { profile, outcome: Ok(Outcome::Done(_)) }, None)
+                    if *profile == a
             )),
             "{ended:?}"
         );
@@ -468,8 +585,8 @@ mod tests {
         let (first, second) = two_snapshots(&a);
         let mut jobs = Jobs::default();
         let held = lock(&a);
-        jobs.start_comparison(a.clone(), first, first);
-        jobs.start_comparison(a.clone(), first, second);
+        assert!(jobs.start_comparison(a.clone(), first, first).is_none());
+        assert!(jobs.start_comparison(a.clone(), first, second).is_none());
         assert!(jobs.runs(Kind::Comparison));
         drop(held);
         let ended = poll_until_idle(&mut jobs);
@@ -477,10 +594,13 @@ mod tests {
         let comparisons: Vec<(i64, i64)> = ended
             .iter()
             .filter_map(|e| match e {
-                Event::Comparison(Ended {
-                    outcome: Ok(Outcome::Done(d)),
-                    ..
-                }) => Some((d.earlier.id, d.later.id)),
+                Event::Comparison(
+                    Ended {
+                        outcome: Ok(Outcome::Done(d)),
+                        ..
+                    },
+                    _,
+                ) => Some((d.earlier.id, d.later.id)),
                 _ => None,
             })
             .collect();
@@ -509,7 +629,7 @@ mod tests {
 
         // A comparison that waits for the database holds nothing of it.
         let held = lock(&a);
-        jobs.start_comparison(a.clone(), first, second);
+        assert!(jobs.start_comparison(a.clone(), first, second).is_none());
         let deadline = Instant::now() + Duration::from_secs(60);
         while jobs.shown().is_none_or(|s| s.kind() != Kind::Comparison) {
             assert!(Instant::now() < deadline, "the comparison never showed");
@@ -535,6 +655,205 @@ mod tests {
         assert!(jobs.runs(Kind::Comparison));
         poll_until_idle(&mut jobs);
         assert!(!jobs.comparison_holds_database(&a.path));
+    }
+
+    #[test]
+    fn the_snapshot_of_snapshot_and_compare_ends_with_the_comparison_it_is_to_have() {
+        let dir = Profiles::new("then");
+        let a = dir.profile("A");
+        let first = snapshot(&a);
+        let mut jobs = Jobs::default();
+        // A regular snapshot is to have no comparison (TASK-12 #2).
+        jobs.start_snapshot(a.clone());
+        let ended = poll_until_idle(&mut jobs);
+        assert!(
+            matches!(
+                ended.as_slice(),
+                [Event::Snapshot(
+                    Ended {
+                        outcome: Ok(Outcome::Done(_)),
+                        ..
+                    },
+                    None
+                )]
+            ),
+            "{ended:?}"
+        );
+        // «Знімок + порівняння» carries the snapshot to compare the new one with (#1), or
+        // none (#4), to the snapshot's end; the window starts the comparison.
+        for with in [Some(first.id), None] {
+            assert!(jobs.start_snapshot_and_compare(a.clone(), with).is_none());
+            assert!(jobs.runs(Kind::Snapshot));
+            assert!(!jobs.runs(Kind::Comparison));
+            let ended = poll_until_idle(&mut jobs);
+            assert!(
+                matches!(
+                    ended.as_slice(),
+                    [Event::Snapshot(
+                        Ended { profile, outcome: Ok(Outcome::Done(_)) },
+                        Some(ThenCompare { with: then }),
+                    )] if *profile == a && *then == with
+                ),
+                "{ended:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn a_comparison_started_during_the_snapshot_leaves_it_a_regular_one() {
+        let dir = Profiles::new("meanwhile");
+        let a = dir.profile("A");
+        let (first, second) = two_snapshots(&a);
+        let mut jobs = Jobs::default();
+        assert!(
+            jobs.start_snapshot_and_compare(a.clone(), Some(second))
+                .is_none()
+        );
+        // The later comparison is the one wanted (TASK-12 #11).
+        assert!(jobs.start_comparison(a.clone(), first, second).is_none());
+        let ended = poll_until_idle(&mut jobs);
+        assert!(
+            ended.iter().any(|e| matches!(
+                e,
+                Event::Snapshot(
+                    Ended {
+                        outcome: Ok(Outcome::Done(_)),
+                        ..
+                    },
+                    None
+                )
+            )),
+            "{ended:?}"
+        );
+        assert!(
+            ended.iter().any(|e| matches!(
+                e,
+                Event::Comparison(Ended { outcome: Ok(Outcome::Done(d)), .. }, None)
+                    if (d.earlier.id, d.later.id) == (first, second)
+            )),
+            "{ended:?}"
+        );
+        assert_eq!(ended.len(), 2, "{ended:?}");
+    }
+
+    #[test]
+    fn snapshot_and_compare_takes_the_place_of_the_comparison_that_runs() {
+        let dir = Profiles::new("command-later");
+        let (a, b) = (dir.profile("A"), dir.profile("B"));
+        let (first, second) = two_snapshots(&a);
+        let mut jobs = Jobs::default();
+        let held = lock(&a);
+        assert!(jobs.start_comparison(a.clone(), first, second).is_none());
+        // The command is the later comparison from its start (TASK-12 #11).
+        assert!(jobs.start_snapshot_and_compare(b.clone(), None).is_none());
+        assert!(!jobs.runs(Kind::Comparison));
+        assert!(!jobs.flags(None).comparison_running);
+        drop(held);
+        let ended = poll_until_idle(&mut jobs);
+        // The comparison was forgotten: only the snapshot ends.
+        assert!(
+            matches!(
+                ended.as_slice(),
+                [Event::Snapshot(Ended { profile, .. }, Some(ThenCompare { with: None }))]
+                    if *profile == b
+            ),
+            "{ended:?}"
+        );
+    }
+
+    #[test]
+    fn the_comparison_after_the_snapshot_shows_at_once_and_ends_with_its_report() {
+        let dir = Profiles::new("after");
+        let a = dir.profile("A");
+        let first = snapshot(&a);
+        let second = snapshot(&a);
+        let later = second.id;
+        let mut jobs = Jobs::default();
+        jobs.start_comparison_after_snapshot(a.clone(), first.id, second);
+        // In the progress row at once, in place of its snapshot (TASK-12 #5, #9).
+        assert!(matches!(
+            jobs.shown(),
+            Some(Shown::Comparison { elapsed, .. }) if elapsed < COMPARISON_SHOWN_AFTER
+        ));
+        assert!(jobs.flags(Some(&a.path)).comparison_running);
+        let ended = poll_until_idle(&mut jobs);
+        match ended.as_slice() {
+            [
+                Event::Comparison(
+                    Ended {
+                        profile,
+                        outcome: Ok(Outcome::Done(d)),
+                    },
+                    Some(report),
+                ),
+            ] => {
+                assert_eq!(*profile, a);
+                assert_eq!((d.earlier.id, d.later.id), (first.id, later));
+                assert_eq!(report.id, later);
+            }
+            other => panic!("{other:?}"),
+        }
+
+        // Cancelled, it still gives the report back: the snapshot stays (#9). It is
+        // cancelled while it waits for the database: snapshots without folders are
+        // compared before a cancel is looked at otherwise.
+        let third = snapshot(&a);
+        let third_id = third.id;
+        let held = lock(&a);
+        jobs.start_comparison_after_snapshot(a.clone(), first.id, third);
+        let deadline = Instant::now() + Duration::from_secs(60);
+        while !matches!(
+            jobs.shown(),
+            Some(Shown::Comparison { progress, .. }) if progress.phase() == compare::Phase::Waiting
+        ) {
+            assert!(Instant::now() < deadline, "the comparison never waited");
+            thread::sleep(Duration::from_millis(5));
+        }
+        // The database stays held: a comparison sees a cancel while it waits.
+        jobs.cancel(Kind::Comparison);
+        let ended = poll_until_idle(&mut jobs);
+        drop(held);
+        assert!(
+            matches!(
+                ended.as_slice(),
+                [Event::Comparison(Ended { outcome: Ok(Outcome::Cancelled), .. }, Some(report))]
+                    if report.id == third_id
+            ),
+            "{ended:?}"
+        );
+    }
+
+    #[test]
+    fn a_comparison_in_place_of_that_of_snapshot_and_compare_gives_its_report_back() {
+        let dir = Profiles::new("superseded");
+        let (a, b) = (dir.profile("A"), dir.profile("B"));
+        let first = snapshot(&a);
+        let second = snapshot(&a);
+        let later = second.id;
+        let mut jobs = Jobs::default();
+        let held = lock(&a);
+        // By a comparison (TASK-11 #15)…
+        jobs.start_comparison_after_snapshot(a.clone(), first.id, second.clone());
+        let superseded = jobs
+            .start_comparison(a.clone(), first.id, later)
+            .expect("the command's comparison was superseded");
+        assert_eq!(
+            (superseded.profile, superseded.report.id),
+            (a.clone(), later)
+        );
+        // …and by another «Знімок + порівняння».
+        let _ = jobs.forget_comparison();
+        jobs.start_comparison_after_snapshot(a.clone(), first.id, second);
+        let superseded = jobs
+            .start_snapshot_and_compare(b.clone(), Some(first.id))
+            .expect("the command's comparison was superseded");
+        assert_eq!((superseded.profile, superseded.report.id), (a, later));
+        drop(held);
+        let ended = poll_until_idle(&mut jobs);
+        assert!(
+            matches!(ended.as_slice(), [Event::Snapshot(Ended { profile, .. }, Some(_))] if *profile == b),
+            "{ended:?}"
+        );
     }
 
     #[test]

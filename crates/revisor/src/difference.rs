@@ -1,7 +1,7 @@
 //! The difference shown in the main window, apart from the window (TASK-11): the rows of
 //! the difference list — one per change and per inaccessible entry, with its kind and its
 //! path taken from the trees of the difference on demand — and where the focus goes when
-//! a new difference arrives.
+//! a new difference arrives, also that of «Знімок + порівняння» (TASK-12).
 
 use std::path::PathBuf;
 
@@ -112,6 +112,9 @@ pub enum Arrival {
     /// its first row: into a new list, which is announced as on coming to it from
     /// elsewhere, also when the focus was in the old one (#21).
     Focus,
+    /// The profile of the snapshot of «Знімок + порівняння» is opened in place of another
+    /// one, and the difference arrives as with `Focus` (TASK-12 #7).
+    OpenProfileAndFocus,
 }
 
 /// What happens when a comparison ends under the setting «Фокус після порівняння», with
@@ -125,6 +128,24 @@ pub fn arrival(setting: FocusAfterComparison, focus: FocusPlace) -> Arrival {
             Arrival::Focus
         }
         (FocusAfterComparison::IfNotMoved, FocusPlace::Elsewhere) => Arrival::Replace,
+    }
+}
+
+/// What happens when the comparison of «Знімок + порівняння» ends (TASK-12 #5, #7): as
+/// after any comparison while the snapshot's profile is open, `of_open_profile`, with the
+/// focus counted from the command's start. Another profile opened meanwhile has moved the
+/// focus, so it goes to the difference only with «Завжди», which opens the snapshot's
+/// profile again, or when it is in the difference list already (TASK-11 #21).
+pub fn arrival_after_snapshot(
+    setting: FocusAfterComparison,
+    focus: FocusPlace,
+    of_open_profile: bool,
+) -> Arrival {
+    match (setting, focus) {
+        _ if of_open_profile => arrival(setting, focus),
+        (FocusAfterComparison::Always, _) => Arrival::OpenProfileAndFocus,
+        (_, FocusPlace::DifferenceList) => Arrival::Focus,
+        _ => Arrival::Replace,
     }
 }
 
@@ -222,6 +243,41 @@ mod tests {
         // In the list already: the first row of the new difference, whatever the setting.
         for setting in FocusAfterComparison::ALL {
             assert_eq!(arrival(setting, DifferenceList), Arrival::Focus);
+        }
+    }
+
+    #[test]
+    fn the_difference_of_snapshot_and_compare_opens_its_profile_only_with_always() {
+        use FocusAfterComparison::*;
+        use FocusPlace::*;
+        let places = [Unmoved, Progress, DifferenceList, Elsewhere];
+        // Its profile open: as after any comparison (TASK-12 #5).
+        for setting in FocusAfterComparison::ALL {
+            for focus in places {
+                assert_eq!(
+                    arrival_after_snapshot(setting, focus, true),
+                    arrival(setting, focus)
+                );
+            }
+        }
+        // Another profile open: the focus has moved (#7).
+        for focus in places {
+            assert_eq!(
+                arrival_after_snapshot(Always, focus, false),
+                Arrival::OpenProfileAndFocus
+            );
+        }
+        for setting in [IfNotMoved, Never] {
+            for focus in [Unmoved, Progress, Elsewhere] {
+                assert_eq!(
+                    arrival_after_snapshot(setting, focus, false),
+                    Arrival::Replace
+                );
+            }
+            assert_eq!(
+                arrival_after_snapshot(setting, DifferenceList, false),
+                Arrival::Focus
+            );
         }
     }
 }

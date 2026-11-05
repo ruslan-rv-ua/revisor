@@ -632,6 +632,14 @@ impl Strings for Uk {
         }
     }
 
+    fn snapshot_saved_comparison_cancelled(&self) -> &'static str {
+        "Знімок збережено, порівняння скасовано."
+    }
+
+    fn nothing_to_compare(&self) -> &'static str {
+        "Порівнювати знімок нема з чим: іншого знімка в профілі немає."
+    }
+
     fn column_change(&self) -> &'static str {
         "Зміна"
     }

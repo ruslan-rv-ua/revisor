@@ -1,6 +1,6 @@
 //! What the snapshot list decides on its own, apart from the window (TASK-9): where the
-//! focus and the current snapshot go when a snapshot taken in the background ends, and
-//! after rows are deleted.
+//! focus and the current snapshot go when a snapshot taken in the background ends — on
+//! its own or as part of «Знімок + порівняння» (TASK-12) — and after rows are deleted.
 
 use revisor_core::settings::FocusAfterSnapshot;
 
@@ -9,7 +9,9 @@ use revisor_core::settings::FocusAfterSnapshot;
 pub enum FocusPlace {
     /// In the snapshot list.
     SnapshotList,
-    /// On the snapshot's progress field or its Cancel button, which go away with it.
+    /// On the progress row — its field or its Cancel button — which goes away with the
+    /// job it shows; for «Знімок + порівняння» the row of the snapshot and that of its
+    /// comparison are one (TASK-12 #5).
     SnapshotProgress,
     Elsewhere,
 }
@@ -49,6 +51,21 @@ pub fn arrival(setting: FocusAfterSnapshot, focus: FocusPlace, of_open_profile: 
         (FocusAfterSnapshot::Always, true) => Arrival::Focus,
         (FocusAfterSnapshot::Always, false) => Arrival::OpenProfileAndFocus,
         (FocusAfterSnapshot::Never | FocusAfterSnapshot::IfInList, false) => Arrival::Nothing,
+    }
+}
+
+/// What happens to the saved snapshot of «Знімок + порівняння» once the command is over
+/// (TASK-12 #6): it is at the end of its profile's list already, and becomes current
+/// unless the keyboard focus stays in the list, so that a focus the user put there does
+/// not move. `to_difference` says whether the focus goes to the difference; from the
+/// progress row, which goes, it comes to the new snapshot. «Фокус після знімка» does not
+/// count (#5).
+pub fn arrival_after_comparison(focus: FocusPlace, to_difference: bool) -> Arrival {
+    match focus {
+        _ if to_difference => Arrival::Current,
+        FocusPlace::SnapshotList => Arrival::Append,
+        FocusPlace::SnapshotProgress => Arrival::Focus,
+        FocusPlace::Elsewhere => Arrival::Current,
     }
 }
 
@@ -92,6 +109,26 @@ mod tests {
             assert_eq!(arrival(Always, focus, true), Arrival::Focus);
             assert_eq!(arrival(Always, focus, false), Arrival::OpenProfileAndFocus);
         }
+    }
+
+    #[test]
+    fn the_snapshot_of_snapshot_and_compare_becomes_current_unless_the_focus_stays_in_the_list() {
+        use FocusPlace::*;
+        // The focus goes to the difference: the list keeps the new snapshot current.
+        for focus in [SnapshotList, SnapshotProgress, Elsewhere] {
+            assert_eq!(arrival_after_comparison(focus, true), Arrival::Current);
+        }
+        // It stays: in the list it does not move, from the progress it comes to the new
+        // snapshot, and elsewhere it stays there.
+        assert_eq!(
+            arrival_after_comparison(SnapshotList, false),
+            Arrival::Append
+        );
+        assert_eq!(
+            arrival_after_comparison(SnapshotProgress, false),
+            Arrival::Focus
+        );
+        assert_eq!(arrival_after_comparison(Elsewhere, false), Arrival::Current);
     }
 
     #[test]
