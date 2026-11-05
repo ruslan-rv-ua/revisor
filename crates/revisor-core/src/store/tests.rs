@@ -4,7 +4,8 @@ use crate::scan::synthetic;
 use crate::testing::{TempDir, cancelled, poll_until_ended};
 use std::fs;
 use std::process::{Command, Stdio};
-use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::Arc;
+use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::thread;
 use std::time::{Duration, Instant};
 
@@ -696,4 +697,124 @@ fn killed_save_leaves_no_partial_snapshot() {
     assert_eq!(ids(&store), [kept]);
     assert!(load(&store, kept + 1, 0).is_empty());
     assert_same(&load(&store, kept, 0), &sample());
+}
+
+#[test]
+fn the_entries_of_a_snapshot_are_counted_over_its_folders() {
+    let tmp = TempDir::new("store");
+    let mut store = create(&tmp.db());
+    let id = save(&mut store, &synthetic(1_000));
+    assert_eq!(store.snapshot_entries(id).unwrap(), 1_000);
+    // A folder that was not scanned holds nothing.
+    let missing = store
+        .save(
+            &Snapshot {
+                taken_at: 1,
+                comment: None,
+                folders: vec![FolderSnapshot {
+                    path: r"C:\Gone".into(),
+                    state: FolderState::Missing,
+                    entries: Vec::new(),
+                }],
+                exclusions: Vec::new(),
+            },
+            &Cancel::new(),
+        )
+        .unwrap();
+    assert_eq!(store.snapshot_entries(missing).unwrap(), 0);
+    assert_eq!(store.snapshot_entries(missing + 100).unwrap(), 0);
+}
+
+#[test]
+fn loading_counts_the_entries_as_they_are_read() {
+    let tmp = TempDir::new("store");
+    let mut store = create(&tmp.db());
+    let id = save(&mut store, &synthetic(10_000));
+    let loaded = AtomicU64::new(0);
+    let entries = store
+        .load_folder_counting(id, 0, &Cancel::new(), &loaded)
+        .unwrap();
+    assert_eq!(entries.len(), 10_000);
+    assert_eq!(loaded.load(Ordering::Relaxed), 10_000);
+}
+
+/// An exclusive lock on the database in `tmp`, held until the connection is dropped: no
+/// other connection can read the database meanwhile.
+fn lock_exclusively(tmp: &TempDir) -> rusqlite::Connection {
+    let conn = rusqlite::Connection::open(tmp.db()).unwrap();
+    conn.execute_batch("BEGIN EXCLUSIVE").unwrap();
+    conn
+}
+
+#[test]
+fn an_access_to_a_free_database_is_made_once_without_waiting() {
+    let tmp = TempDir::new("store");
+    let store = create(&tmp.db());
+    let mut waits = Vec::new();
+    let mut tries = 0;
+    let count = retry_while_busy(
+        &Cancel::new(),
+        |w| waits.push(w),
+        || {
+            tries += 1;
+            store.snapshot_count()
+        },
+    )
+    .unwrap();
+    assert_eq!((count, tries), (0, 1));
+    assert!(waits.is_empty());
+}
+
+#[test]
+fn an_access_waits_for_a_busy_database_and_goes_through_once_it_is_free() {
+    let tmp = TempDir::new("store");
+    drop(create(&tmp.db()));
+    let lock = lock_exclusively(&tmp);
+    let unlocking = thread::spawn(move || {
+        thread::sleep(Duration::from_millis(300));
+        drop(lock);
+    });
+    let mut waits = Vec::new();
+    let waiting = Instant::now();
+    let store = retry_while_busy(
+        &Cancel::new(),
+        |w| waits.push(w),
+        || Store::open_with_timeout(&tmp.db(), Duration::ZERO),
+    )
+    .unwrap();
+    assert!(
+        waiting.elapsed() >= Duration::from_millis(150),
+        "{:?}",
+        waiting.elapsed()
+    );
+    assert_eq!(waits, [true, false]);
+    assert_eq!(store.snapshot_count().unwrap(), 0);
+    unlocking.join().unwrap();
+}
+
+#[test]
+fn a_cancel_ends_the_wait_for_a_busy_database() {
+    let tmp = TempDir::new("store");
+    drop(create(&tmp.db()));
+    let _lock = lock_exclusively(&tmp);
+    let cancel = Arc::new(Cancel::new());
+    let cancelling = {
+        let cancel = Arc::clone(&cancel);
+        thread::spawn(move || {
+            thread::sleep(Duration::from_millis(200));
+            cancel.cancel();
+        })
+    };
+    let mut waits = Vec::new();
+    let result = retry_while_busy(
+        &cancel,
+        |w| waits.push(w),
+        || Store::open_with_timeout(&tmp.db(), Duration::ZERO),
+    );
+    assert!(
+        matches!(result, Err(StoreError::Cancelled)),
+        "the wait was not cancelled"
+    );
+    assert_eq!(waits, [true]);
+    cancelling.join().unwrap();
 }

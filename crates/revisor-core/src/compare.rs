@@ -8,20 +8,29 @@
 //! lies inside a folder of the other snapshot is compared within it, and the exclusions
 //! of both snapshots apply to both. Whatever is left out, and whatever explains a mass
 //! of changes, is reported as a [`Warning`].
+//!
+//! A comparison has two stages: [`load`] reads what the database holds for the two
+//! snapshots — their folders, exclusions and the trees of the folders both cover — and
+//! [`Loaded::compare`] compares the trees, with no more need of the database.
+//! [`CompareWork`] runs both as a background job (ADR-0011, TASK-11), waiting for the
+//! database while another connection holds it, and [`compare`] runs both in one go.
 
 use std::ffi::OsString;
 use std::fmt;
 use std::os::windows::ffi::OsStringExt;
 use std::path::{Path, PathBuf};
+use std::sync::atomic::{AtomicU8, AtomicU64, Ordering};
+use std::time::Duration;
 
 use crate::diff::{self, Diff, Filter, Inaccessible, Rules, Subtree};
-use crate::exclude::{Exclusions, RecordedEnvironment};
+use crate::exclude::{Branch, Exclusions, RecordedEnvironment};
 use crate::folders;
-use crate::job::Cancel;
+use crate::job::{Cancel, Outcome, Work};
 use crate::names::{eq_ignore_case, eq_ignore_case_os};
 use crate::scan::{Entry, EntryKind};
 use crate::store::{
-    FolderState, SnapshotExclusion, SnapshotFolder, SnapshotInfo, Store, StoreError, Unavailable,
+    self, FolderState, SnapshotExclusion, SnapshotFolder, SnapshotInfo, Store, StoreError,
+    Unavailable,
 };
 
 /// One of the two snapshots compared.
@@ -150,25 +159,206 @@ impl From<diff::Cancelled> for CompareError {
     }
 }
 
+/// What a comparison is doing.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub enum Phase {
+    /// The trees are being loaded from the profile's database.
+    #[default]
+    Loading,
+    /// The database is held by another connection — a snapshot being saved, another
+    /// revisor compacting it — and the comparison waits for it (TASK-11 #16).
+    Waiting,
+    /// The trees are loaded, the database is not needed any more, and they are being
+    /// compared.
+    Comparing,
+}
+
+/// What a comparison reports to whoever waits for it (TASK-11 #8): its phase, and how
+/// far it is, as entries done out of the entries to do — the entries of both snapshots,
+/// loaded and then visited by the comparison. The count never goes back and reaches the
+/// total only once the comparison is over: entries the comparison leaves out, excluded
+/// or under a folder inaccessible on one side only, are never visited. Shared with
+/// another thread, which reads it now and then.
+#[derive(Debug, Default)]
+pub struct Progress {
+    phase: AtomicU8,
+    done: AtomicU64,
+    total: AtomicU64,
+}
+
+impl Progress {
+    pub fn phase(&self) -> Phase {
+        match self.phase.load(Ordering::Relaxed) {
+            1 => Phase::Waiting,
+            2 => Phase::Comparing,
+            _ => Phase::Loading,
+        }
+    }
+
+    /// The entries loaded and visited so far.
+    pub fn done(&self) -> u64 {
+        self.done.load(Ordering::Relaxed)
+    }
+
+    /// The entries to load and visit: twice the entries of both snapshots.
+    pub fn total(&self) -> u64 {
+        self.total.load(Ordering::Relaxed)
+    }
+
+    /// How far the comparison is, in whole percent; 100 only once it is over, and 0 for
+    /// snapshots with nothing to compare.
+    pub fn percent(&self) -> u8 {
+        (self.done() * 100)
+            .checked_div(self.total())
+            .map_or(0, |percent| percent.min(100) as u8)
+    }
+
+    fn set_phase(&self, phase: Phase) {
+        self.phase.store(phase as u8, Ordering::Relaxed);
+    }
+
+    /// Ends the count: the comparison is over, whatever it did not visit.
+    fn finish(&self) {
+        self.done.store(self.total(), Ordering::Relaxed);
+    }
+}
+
+/// Runs `read`, an access to the database, waiting while the database is busy; the
+/// progress says so meanwhile (TASK-11 #16).
+fn access<T>(
+    cancel: &Cancel,
+    progress: &Progress,
+    read: impl FnMut() -> Result<T, StoreError>,
+) -> Result<T, CompareError> {
+    let waiting = |waiting: bool| {
+        progress.set_phase(if waiting {
+            Phase::Waiting
+        } else {
+            Phase::Loading
+        });
+    };
+    Ok(store::retry_while_busy(cancel, waiting, read)?)
+}
+
+/// Comparing two snapshots as a background job (ADR-0011, TASK-11): [`load`] and
+/// [`Loaded::compare`] on the job's thread. The profile's database is opened without
+/// SQLite's own wait for another connection's write, which a cancel could not end: the
+/// work waits in its own way, access by access, as long as the database is busy, and
+/// ends as cancelled when asked to (#16). The database is closed before the trees are
+/// compared, so the profile is free by then (#17).
+#[derive(Clone, Debug)]
+pub struct CompareWork {
+    db: PathBuf,
+    a: i64,
+    b: i64,
+}
+
+impl CompareWork {
+    /// A comparison of the snapshots `a` and `b` of the profile whose database is at
+    /// `db`.
+    pub fn new(db: &Path, a: i64, b: i64) -> Self {
+        Self {
+            db: db.to_path_buf(),
+            a,
+            b,
+        }
+    }
+
+    fn compare(&self, progress: &Progress, cancel: &Cancel) -> Result<Difference, CompareError> {
+        let loaded = {
+            let store = access(cancel, progress, || {
+                Store::open_with_timeout(&self.db, Duration::ZERO)
+            })?;
+            load(&store, self.a, self.b, cancel, progress)?
+        };
+        loaded.compare(cancel, progress)
+    }
+}
+
+impl Work for CompareWork {
+    type Progress = Progress;
+    type Output = Outcome<Difference, CompareError>;
+
+    fn run(self, progress: &Progress, cancel: &Cancel) -> Self::Output {
+        let result = self.compare(progress, cancel);
+        Outcome::of(result, |e| matches!(e, CompareError::Cancelled))
+    }
+}
+
 /// Compares the snapshots `a` and `b` of the profile in `store`, the earlier with the
 /// later, loading their trees from the database. Cancelling `cancel` stops with
 /// [`CompareError::Cancelled`], while the trees are being loaded too.
 pub fn compare(store: &Store, a: i64, b: i64, cancel: &Cancel) -> Result<Difference, CompareError> {
+    let progress = Progress::default();
+    load(store, a, b, cancel, &progress)?.compare(cancel, &progress)
+}
+
+/// What [`load`] read for a comparison: the trees of the folders both snapshots cover,
+/// with what comparing them needs, and the warnings gathered so far. The database is not
+/// needed any more: its snapshots may be deleted, or the profile itself, meanwhile
+/// (TASK-11 #17).
+#[derive(Debug)]
+pub struct Loaded {
+    earlier: SnapshotInfo,
+    later: SnapshotInfo,
+    pairs: Vec<LoadedPair>,
+    warnings: Vec<Warning>,
+    /// The exclusions of both snapshots together, as they applied.
+    union: Exclusions,
+}
+
+/// The trees of one folder covered by both snapshots, with what comparing them needs.
+#[derive(Debug)]
+struct LoadedPair {
+    /// The folder compared: a folder of the profile, or the narrower of two nested ones.
+    path: PathBuf,
+    old: Vec<Entry>,
+    new: Vec<Entry>,
+    /// Where the compared folder stands in each tree.
+    located: [Located; 2],
+    /// Where the compared roots stand against the exclusions.
+    branch: Branch,
+    /// Whether file IDs are compared: only within one volume.
+    file_ids: bool,
+}
+
+/// Loads from `store` what comparing the snapshots `a` and `b` needs: the snapshots,
+/// their folders and exclusions, and the trees of the folders both cover, so that
+/// [`Loaded::compare`] goes on without the database. Cancelling `cancel` stops with
+/// [`CompareError::Cancelled`]. `progress` learns how many entries there are to load and
+/// to compare, counts the loaded ones, and says when an access waits for a busy database
+/// (TASK-11 #16).
+pub fn load(
+    store: &Store,
+    a: i64,
+    b: i64,
+    cancel: &Cancel,
+    progress: &Progress,
+) -> Result<Loaded, CompareError> {
+    progress.set_phase(Phase::Loading);
     let info = |id: i64| -> Result<SnapshotInfo, CompareError> {
-        store.snapshot(id)?.ok_or(CompareError::NoSuchSnapshot(id))
+        access(cancel, progress, || store.snapshot(id))?.ok_or(CompareError::NoSuchSnapshot(id))
     };
     // Ids are given out in the order the snapshots were taken, which the clock may not
     // follow.
     let (earlier, later) = (info(a.min(b))?, info(a.max(b))?);
     let ids = [earlier.id, later.id];
     let folders = [
-        store.snapshot_folders(ids[0])?,
-        store.snapshot_folders(ids[1])?,
+        access(cancel, progress, || store.snapshot_folders(ids[0]))?,
+        access(cancel, progress, || store.snapshot_folders(ids[1]))?,
     ];
     let exclusions = [
-        store.snapshot_exclusions(ids[0])?,
-        store.snapshot_exclusions(ids[1])?,
+        access(cancel, progress, || store.snapshot_exclusions(ids[0]))?,
+        access(cancel, progress, || store.snapshot_exclusions(ids[1]))?,
     ];
+    let entries = [
+        access(cancel, progress, || store.snapshot_entries(ids[0]))?,
+        access(cancel, progress, || store.snapshot_entries(ids[1]))?,
+    ];
+    // Every entry is loaded once and visited once.
+    progress
+        .total
+        .store(2 * (entries[0] + entries[1]), Ordering::Relaxed);
     // The exclusions of each snapshot as they applied, and both together: what either
     // snapshot left out, the comparison leaves out of both.
     let own = exclusions
@@ -178,7 +368,7 @@ pub fn compare(store: &Store, a: i64, b: i64, cancel: &Cancel) -> Result<Differe
     let union = Exclusions::new(&both, &RecordedEnvironment);
 
     let mut warnings = Vec::new();
-    let mut compared = Vec::new();
+    let mut pairs = Vec::new();
     for pairing in pair_folders(&folders[0], &folders[1]) {
         if cancel.is_cancelled() {
             return Err(CompareError::Cancelled);
@@ -190,7 +380,7 @@ pub fn compare(store: &Store, a: i64, b: i64, cancel: &Cancel) -> Result<Differe
             }),
             Pairing::Both(pair) => {
                 let paired = [&folders[0][pair.earlier], &folders[1][pair.later]];
-                let comparison = FolderComparison {
+                let loading = FolderLoading {
                     store,
                     ids,
                     pair,
@@ -205,9 +395,10 @@ pub fn compare(store: &Store, a: i64, b: i64, cancel: &Cancel) -> Result<Differe
                     union: &union,
                     own: own.each_ref(),
                     cancel,
+                    progress,
                 };
-                if let Some(difference) = comparison.run(&mut warnings)? {
-                    compared.push(difference);
+                if let Some(loaded) = loading.load(&mut warnings)? {
+                    pairs.push(loaded);
                 }
             }
         }
@@ -218,12 +409,73 @@ pub fn compare(store: &Store, a: i64, b: i64, cancel: &Cancel) -> Result<Differe
         info(id)?;
     }
     warnings.extend(exclusion_warnings(&exclusions[0], &exclusions[1]));
-    Ok(Difference {
+    Ok(Loaded {
         earlier,
         later,
-        folders: compared,
+        pairs,
         warnings,
+        union,
     })
+}
+
+impl Loaded {
+    /// Compares the loaded trees, from the earlier snapshot to the later. Cancelling
+    /// `cancel` stops with [`CompareError::Cancelled`]; `progress` counts the entries
+    /// visited and is complete once the difference is.
+    pub fn compare(self, cancel: &Cancel, progress: &Progress) -> Result<Difference, CompareError> {
+        progress.set_phase(Phase::Comparing);
+        let mut folders = Vec::with_capacity(self.pairs.len());
+        for pair in self.pairs {
+            if cancel.is_cancelled() {
+                return Err(CompareError::Cancelled);
+            }
+            let rules = Rules {
+                filter: Some(Filter {
+                    exclusions: &self.union,
+                    branch: pair.branch,
+                }),
+                file_ids: pair.file_ids,
+            };
+            let diff = match pair.located {
+                // Whether the folder was there is unknown: it is inaccessible, not changed.
+                [Located::Unknown, Located::Found(b)] => Diff {
+                    changes: Vec::new(),
+                    inaccessible: vec![Inaccessible {
+                        old: None,
+                        new: Some(b),
+                    }],
+                },
+                [Located::Found(a), Located::Unknown] => Diff {
+                    changes: Vec::new(),
+                    inaccessible: vec![Inaccessible {
+                        old: Some(a),
+                        new: None,
+                    }],
+                },
+                [Located::Unknown, _] | [_, Located::Unknown] => Diff::default(),
+                [o, n] => diff::diff_counting(
+                    o.subtree(&pair.old),
+                    n.subtree(&pair.new),
+                    &rules,
+                    cancel,
+                    &progress.done,
+                )?,
+            };
+            folders.push(FolderDifference {
+                path: pair.path,
+                old: pair.old,
+                new: pair.new,
+                diff,
+            });
+        }
+        progress.finish();
+        Ok(Difference {
+            earlier: self.earlier,
+            later: self.later,
+            folders,
+            warnings: self.warnings,
+        })
+    }
 }
 
 /// The exclusions of a snapshot as they applied, for [`Exclusions::new`] with
@@ -310,8 +562,9 @@ fn is_inside(nested: &[Vec<u16>], wider: &[Vec<u16>]) -> bool {
     nested.len() > wider.len() && nested.starts_with(wider)
 }
 
-/// The comparison of one pair of folders.
-struct FolderComparison<'a> {
+/// The loading of one pair of folders: what the two snapshots hold for them, and their
+/// trees.
+struct FolderLoading<'a> {
     store: &'a Store,
     /// The ids of the earlier and the later snapshot.
     ids: [i64; 2],
@@ -326,11 +579,12 @@ struct FolderComparison<'a> {
     /// The exclusions of the earlier and of the later snapshot, as they applied.
     own: [&'a Exclusions; 2],
     cancel: &'a Cancel,
+    progress: &'a Progress,
 }
 
-impl FolderComparison<'_> {
-    /// Compares the pair, adding its warnings; `None` when nothing could be compared.
-    fn run(&self, warnings: &mut Vec<Warning>) -> Result<Option<FolderDifference>, CompareError> {
+impl FolderLoading<'_> {
+    /// Loads the pair's trees, adding its warnings; `None` when nothing can be compared.
+    fn load(&self, warnings: &mut Vec<Warning>) -> Result<Option<LoadedPair>, CompareError> {
         let compared = self.compared();
         let mut unavailable = false;
         for side in [Side::Earlier, Side::Later] {
@@ -386,49 +640,33 @@ impl FolderComparison<'_> {
             }
             _ => true,
         };
-        let old = self
-            .store
-            .load_folder(self.ids[0], self.pair.earlier, self.cancel)?;
-        let new = self
-            .store
-            .load_folder(self.ids[1], self.pair.later, self.cancel)?;
-        // The compared roots are never excluded, as the root of a scan is not: the
-        // exclusions apply below them, from where the folder really was.
-        let rules = Rules {
-            filter: Some(Filter {
-                exclusions: self.union,
-                branch: self.union.branch(&self.real_path()),
-            }),
-            file_ids,
-        };
-        let diff = match [
+        let old = self.load_tree(Side::Earlier, self.pair.earlier)?;
+        let new = self.load_tree(Side::Later, self.pair.later)?;
+        let located = [
             self.locate(Side::Earlier, &old),
             self.locate(Side::Later, &new),
-        ] {
-            // Whether the folder was there is unknown: it is inaccessible, not changed.
-            [Located::Unknown, Located::Found(b)] => Diff {
-                changes: Vec::new(),
-                inaccessible: vec![Inaccessible {
-                    old: None,
-                    new: Some(b),
-                }],
-            },
-            [Located::Found(a), Located::Unknown] => Diff {
-                changes: Vec::new(),
-                inaccessible: vec![Inaccessible {
-                    old: Some(a),
-                    new: None,
-                }],
-            },
-            [Located::Unknown, _] | [_, Located::Unknown] => Diff::default(),
-            [o, n] => diff::diff(o.subtree(&old), n.subtree(&new), &rules, self.cancel)?,
-        };
-        Ok(Some(FolderDifference {
+        ];
+        // The compared roots are never excluded, as the root of a scan is not: the
+        // exclusions apply below them, from where the folder really was.
+        let branch = self.union.branch(&self.real_path());
+        Ok(Some(LoadedPair {
             path: compared.path.clone(),
             old,
             new,
-            diff,
+            located,
+            branch,
+            file_ids,
         }))
+    }
+
+    /// Loads the tree of the folder at `position` of the snapshot of `side`, counting
+    /// its entries for the progress.
+    fn load_tree(&self, side: Side, position: usize) -> Result<Vec<Entry>, CompareError> {
+        let id = self.ids[side.index()];
+        access(self.cancel, self.progress, || {
+            self.store
+                .load_folder_counting(id, position, self.cancel, &self.progress.done)
+        })
     }
 
     fn folder(&self, side: Side) -> &SnapshotFolder {
@@ -506,7 +744,7 @@ fn relative_parts(wider: &Path, nested: &Path) -> Vec<OsString> {
 }
 
 /// Where a folder stands in a tree.
-#[derive(Clone, Copy)]
+#[derive(Clone, Copy, Debug)]
 enum Located {
     Found(u32),
     /// The tree holds nothing at its path.

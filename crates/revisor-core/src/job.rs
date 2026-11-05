@@ -1,5 +1,5 @@
-//! Background jobs (ADR-0011): the long actions of the core — a snapshot, a compaction,
-//! and from TASK-11 a comparison — run on threads of their own, so that whoever started
+//! Background jobs (ADR-0011): the long actions of the core — a snapshot, a compaction
+//! and a comparison — run on threads of their own, so that whoever started
 //! one is free meanwhile. A [`Work`] is one kind of job: what it reports while it runs,
 //! what it ends with, and the action itself. A [`Job`] runs a work and answers whoever
 //! waits for it, and one [`Cancel`] token stops every long action of the core.
@@ -98,9 +98,9 @@ impl<T, E> Outcome<T, E> {
 }
 
 /// One kind of background job: what it reports while it runs, what it ends with, and the
-/// action itself. A snapshot ([`crate::snapshot::SnapshotWork`]) and a compaction
-/// ([`crate::store::Compaction`]) are works; another kind is another implementation, and
-/// this module stays as it is.
+/// action itself. A snapshot ([`crate::snapshot::SnapshotWork`]), a compaction
+/// ([`crate::store::Compaction`]) and a comparison ([`crate::compare::CompareWork`]) are
+/// works; another kind is another implementation, and this module stays as it is.
 pub trait Work: Send + 'static {
     /// What the work reports while it runs; whoever waits for it reads it now and then,
     /// from another thread.

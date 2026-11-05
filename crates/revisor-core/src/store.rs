@@ -13,6 +13,8 @@ use std::fs::File;
 use std::io;
 use std::os::windows::ffi::{OsStrExt, OsStringExt};
 use std::path::{Path, PathBuf};
+use std::sync::atomic::{AtomicU64, Ordering};
+use std::thread;
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
 use rusqlite::types::{FromSqlError, ToSqlOutput, Value, ValueRef};
@@ -45,6 +47,9 @@ const CANCEL_CHECK: usize = 4096;
 /// snapshot's commit takes seconds, and a compaction (TASK-9) closes the database for
 /// longer, so whoever needs the database then waits in its own way.
 const BUSY_TIMEOUT: Duration = Duration::from_secs(5);
+/// How long [`retry_while_busy`] waits between its looks at a busy database: short, so
+/// that a cancel is noticed soon.
+pub const BUSY_RETRY: Duration = Duration::from_millis(100);
 
 const SCHEMA: &str = "
 -- The profile's settings (ADR-0006): one row.
@@ -662,6 +667,18 @@ impl Store {
         Ok(id)
     }
 
+    /// How many entries the trees of a snapshot hold together: what loading them, and
+    /// comparing them, has to get through (TASK-11 #8). Zero for a snapshot that does
+    /// not exist.
+    pub fn snapshot_entries(&self, id: i64) -> Result<u64, StoreError> {
+        let count: i64 = self.conn.query_row(
+            "SELECT COALESCE(SUM(entries), 0) FROM snapshot_folder WHERE snapshot_id = ?1",
+            [id],
+            |r| r.get(0),
+        )?;
+        Ok(count.max(0) as u64)
+    }
+
     /// Loads the tree of the folder at `position` of a snapshot, laid out like
     /// [`crate::scan::Scan::entries`]: the root first, with parents as indices into the
     /// result. Empty for a folder that was not scanned, or a snapshot that does not exist.
@@ -672,6 +689,19 @@ impl Store {
         id: i64,
         position: usize,
         cancel: &Cancel,
+    ) -> Result<Vec<Entry>, StoreError> {
+        self.load_folder_counting(id, position, cancel, &AtomicU64::new(0))
+    }
+
+    /// [`Store::load_folder`] that counts the entries loaded in `loaded`, for the
+    /// progress of a comparison (TASK-11 #8): the count goes up as the rows are read,
+    /// every [`CANCEL_CHECK`] rows and at the end, and is never taken back.
+    pub fn load_folder_counting(
+        &self,
+        id: i64,
+        position: usize,
+        cancel: &Cancel,
+        loaded: &AtomicU64,
     ) -> Result<Vec<Entry>, StoreError> {
         let range: Option<(i64, i64)> = self
             .conn
@@ -728,12 +758,18 @@ impl Store {
             })
         })?;
         let mut entries = Vec::with_capacity(count as usize);
+        let mut counted = 0;
         for row in rows {
-            if entries.len().is_multiple_of(CANCEL_CHECK) && cancel.is_cancelled() {
-                return Err(StoreError::Cancelled);
+            if entries.len().is_multiple_of(CANCEL_CHECK) {
+                if cancel.is_cancelled() {
+                    return Err(StoreError::Cancelled);
+                }
+                loaded.fetch_add((entries.len() - counted) as u64, Ordering::Relaxed);
+                counted = entries.len();
             }
             entries.push(row?);
         }
+        loaded.fetch_add((entries.len() - counted) as u64, Ordering::Relaxed);
         Ok(entries)
     }
 
@@ -833,6 +869,43 @@ impl Work for Compaction {
     fn run(self, _: &(), cancel: &Cancel) -> Self::Output {
         let result = self.store.compact(cancel);
         Outcome::of(result, |e| matches!(e, StoreError::Cancelled))
+    }
+}
+
+/// Runs `access`, a read or write of a database another connection may hold, waiting
+/// for the database to be free (TASK-11 #16): when the database is busy, `waiting` is
+/// told so once, and the access is tried again every [`BUSY_RETRY`] until it goes
+/// through — then `waiting` is told the wait is over — or `cancel` is cancelled, which
+/// ends with [`StoreError::Cancelled`]. An access that waits so is best made on a
+/// connection without SQLite's own wait ([`Store::open_with_timeout`] with no time), as
+/// a cancel cannot end that one. A comparison waits so for a snapshot being saved, or
+/// for another revisor compacting the database; a busy database stays busy for seconds,
+/// so a wait that cannot be cancelled is better left to SQLite.
+pub fn retry_while_busy<T>(
+    cancel: &Cancel,
+    mut waiting: impl FnMut(bool),
+    mut access: impl FnMut() -> Result<T, StoreError>,
+) -> Result<T, StoreError> {
+    let mut waited = false;
+    loop {
+        match access() {
+            Err(e) if e.is_busy() => {
+                if !waited {
+                    waiting(true);
+                    waited = true;
+                }
+                if cancel.is_cancelled() {
+                    return Err(StoreError::Cancelled);
+                }
+                thread::sleep(BUSY_RETRY);
+            }
+            result => {
+                if waited {
+                    waiting(false);
+                }
+                return result;
+            }
+        }
     }
 }
 

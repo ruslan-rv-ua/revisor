@@ -3,8 +3,9 @@
 //!
 //! The two snapshots are saved to a database first: two scans of `<root>`, or `N`
 //! generated entries and a copy with known changes. Then the same exe runs again as a
-//! child process that only compares them, loading included, so its peak memory is that
-//! of the comparison alone. The target: ~1 million entries in 3 s (TASK-11 #19).
+//! child process that only compares them, loading included, the way the application
+//! does — as a background job — so its peak memory is that of the comparison alone. The
+//! target: ~1 million entries in 3 s (TASK-11 #19).
 //!
 //! Usage: `cargo run --release -p revisor-core --example diff_bench -- (--scan <root> | --generate N) [--db <path>]`
 
@@ -15,10 +16,10 @@ use std::path::{Path, PathBuf};
 use std::process::{Command, ExitCode};
 use std::time::Instant;
 
-use revisor_core::compare::compare;
+use revisor_core::compare::CompareWork;
 use revisor_core::diff::ChangeKind;
 use revisor_core::exclude::{DEFAULT_EXCLUSIONS, SystemEnvironment, expand};
-use revisor_core::job::Cancel;
+use revisor_core::job::{Cancel, Job, Outcome};
 use revisor_core::scan::{Entry, EntryKind, Progress, ScanOptions, scan, synthetic};
 use revisor_core::store::{ProfileSettings, Scope, Snapshot, SnapshotExclusion, Store};
 use windows_sys::Win32::System::ProcessStatus::{GetProcessMemoryInfo, PROCESS_MEMORY_COUNTERS};
@@ -164,17 +165,21 @@ fn with_changes(old: &[Entry]) -> Vec<Entry> {
     new
 }
 
-/// Compares the last two snapshots of the database the way the application will: loading
-/// both from the database and comparing them in one go.
+/// Compares the last two snapshots of the database the way the application does: as a
+/// background job that loads both from the database and compares them in one go.
 fn compare_last_two(db: &Path) -> Result<(), Box<dyn std::error::Error>> {
-    let store = Store::open(db)?;
-    let list = store.list()?;
+    let list = Store::open(db)?.list()?;
     let [.., a, b] = list.as_slice() else {
         return Err("the database has fewer than two snapshots".into());
     };
 
     let started = Instant::now();
-    let difference = compare(&store, a.id, b.id, &Cancel::new())?;
+    let job = Job::start(CompareWork::new(db, a.id, b.id));
+    let difference = match job.wait()? {
+        Outcome::Done(difference) => difference,
+        Outcome::Failed(e) => return Err(e.into()),
+        Outcome::Cancelled => return Err("the comparison was cancelled".into()),
+    };
     let elapsed = started.elapsed();
     let changes = || {
         difference

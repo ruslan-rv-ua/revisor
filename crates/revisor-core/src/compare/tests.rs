@@ -1,11 +1,14 @@
 use super::*;
 use crate::diff::ChangeKind;
+use crate::job::Job;
 use crate::scan::{FileId, synthetic};
 use crate::snapshot;
 use crate::store::{FolderSnapshot, ProfileSettings, Scope, Snapshot};
-use crate::testing::{TempDir, Tree, cancelled, field_names, junction};
+use crate::testing::{TempDir, Tree, cancelled, field_names, junction, poll_until_ended};
 use std::ffi::OsStr;
 use std::fs;
+use std::thread;
+use std::time::{Duration, Instant};
 
 fn create(tmp: &TempDir) -> Store {
     Store::create(
@@ -652,4 +655,155 @@ fn two_snapshots_of_an_unchanged_folder_give_an_empty_difference() {
     assert_eq!(render(&d), Vec::<String>::new());
     assert_eq!(d.folders.len(), 1);
     assert_eq!(d.folders[0].old.len(), 1 + 10 * 4 + 2);
+}
+
+/// An exclusive lock on the database of the profile in `tmp`, held until dropped: no
+/// other connection can read the database meanwhile, as none can while a snapshot is
+/// being committed or the database compacted.
+struct ExclusiveLock(rusqlite::Connection);
+
+impl ExclusiveLock {
+    fn take(tmp: &TempDir) -> Self {
+        let conn = rusqlite::Connection::open(tmp.db()).unwrap();
+        conn.execute_batch("BEGIN EXCLUSIVE").unwrap();
+        ExclusiveLock(conn)
+    }
+}
+
+impl Drop for ExclusiveLock {
+    fn drop(&mut self) {
+        self.0.execute_batch("ROLLBACK").unwrap();
+    }
+}
+
+/// Waits until the comparison of `job` is in `phase`.
+fn wait_for_phase(job: &Job<CompareWork>, phase: Phase) {
+    let deadline = Instant::now() + Duration::from_secs(60);
+    while job.progress().phase() != phase {
+        assert!(
+            Instant::now() < deadline,
+            "the comparison never got to {phase:?}"
+        );
+        thread::sleep(Duration::from_millis(1));
+    }
+}
+
+/// A profile in `tmp` with two snapshots of `C:\Data`, a file added between them; the
+/// database is closed again.
+fn two_snapshots(tmp: &TempDir) -> (i64, i64) {
+    let mut store = create(tmp);
+    let mut before = Tree::new();
+    before.add("a.txt", EntryKind::File);
+    let mut after = before.clone();
+    after.add("b.txt", EntryKind::File);
+    let a = save(&mut store, 1, vec![scanned(r"C:\Data", 1, &before)], vec![]);
+    let b = save(&mut store, 2, vec![scanned(r"C:\Data", 1, &after)], vec![]);
+    (a, b)
+}
+
+#[test]
+fn a_comparison_job_gives_its_difference_once_polled() {
+    let tmp = TempDir::new("compare");
+    let (a, b) = two_snapshots(&tmp);
+    let mut job = Job::start(CompareWork::new(&tmp.db(), b, a));
+    let outcome = poll_until_ended(&mut job);
+    let Ok(Outcome::Done(d)) = outcome else {
+        panic!("{outcome:?}");
+    };
+    assert_eq!((d.earlier.id, d.later.id), (a, b));
+    assert_eq!(render(&d), [r"+ C:\Data\b.txt"]);
+    let progress = job.progress();
+    assert_eq!(progress.phase(), Phase::Comparing);
+    // Two entries in the earlier tree, three in the later: each loaded and visited once.
+    assert_eq!((progress.done(), progress.total()), (10, 10));
+    assert_eq!(progress.percent(), 100);
+}
+
+#[test]
+fn a_comparison_waits_for_a_busy_database_and_goes_on_once_it_is_free() {
+    let tmp = TempDir::new("compare");
+    let (a, b) = two_snapshots(&tmp);
+    let lock = ExclusiveLock::take(&tmp);
+    let mut job = Job::start(CompareWork::new(&tmp.db(), a, b));
+    wait_for_phase(&job, Phase::Waiting);
+    assert!(
+        job.poll().is_none(),
+        "the comparison waits for the database"
+    );
+    drop(lock);
+    let outcome = poll_until_ended(&mut job);
+    assert!(
+        matches!(&outcome, Ok(Outcome::Done(d)) if render(d) == [r"+ C:\Data\b.txt"]),
+        "{outcome:?}"
+    );
+    assert_eq!(job.progress().phase(), Phase::Comparing);
+}
+
+#[test]
+fn a_cancel_ends_the_wait_for_a_busy_database() {
+    let tmp = TempDir::new("compare");
+    let (a, b) = two_snapshots(&tmp);
+    let _lock = ExclusiveLock::take(&tmp);
+    let mut job = Job::start(CompareWork::new(&tmp.db(), a, b));
+    wait_for_phase(&job, Phase::Waiting);
+    job.cancel();
+    let outcome = poll_until_ended(&mut job);
+    assert!(matches!(outcome, Ok(Outcome::Cancelled)), "{outcome:?}");
+}
+
+#[test]
+fn the_database_is_not_needed_once_the_trees_are_loaded() {
+    let tmp = TempDir::new("compare");
+    let (a, b) = two_snapshots(&tmp);
+    let store = Store::open(&tmp.db()).unwrap();
+    let progress = Progress::default();
+    let loaded = load(&store, a, b, &Cancel::new(), &progress).unwrap();
+    // The entries of both snapshots are loaded: half of the work.
+    assert_eq!((progress.done(), progress.total()), (5, 10));
+    assert_eq!(progress.percent(), 50);
+    assert_eq!(progress.phase(), Phase::Loading);
+    drop(store);
+    // The profile's database can go: the comparison holds everything it needs (#17).
+    fs::remove_file(tmp.db()).unwrap();
+    let d = loaded.compare(&Cancel::new(), &progress).unwrap();
+    assert_eq!(render(&d), [r"+ C:\Data\b.txt"]);
+    assert_eq!(progress.phase(), Phase::Comparing);
+    assert_eq!(progress.percent(), 100);
+}
+
+#[test]
+fn a_snapshot_deleted_after_loading_does_not_stop_the_comparison() {
+    let tmp = TempDir::new("compare");
+    let (a, b) = two_snapshots(&tmp);
+    let mut store = Store::open(&tmp.db()).unwrap();
+    let progress = Progress::default();
+    let loaded = load(&store, a, b, &Cancel::new(), &progress).unwrap();
+    store.delete(a).unwrap();
+    let d = loaded.compare(&Cancel::new(), &progress).unwrap();
+    assert_eq!((d.earlier.id, d.later.id), (a, b));
+    assert_eq!(render(&d), [r"+ C:\Data\b.txt"]);
+}
+
+#[test]
+fn a_comparison_job_closes_the_database_before_it_compares() {
+    let tmp = TempDir::new("compare");
+    let no_cancel = Cancel::new();
+    let (a, b) = {
+        let mut store = create(&tmp);
+        let tree = synthetic(200_000);
+        let a = store
+            .save(&Snapshot::of_tree(tree.clone()), &no_cancel)
+            .unwrap();
+        let b = store.save(&Snapshot::of_tree(tree), &no_cancel).unwrap();
+        (a, b)
+    };
+    let mut job = Job::start(CompareWork::new(&tmp.db(), a, b));
+    wait_for_phase(&job, Phase::Comparing);
+    // Nothing holds the file any more, whether the comparison still runs or is over.
+    fs::remove_file(tmp.db()).unwrap();
+    let outcome = poll_until_ended(&mut job);
+    assert!(
+        matches!(&outcome, Ok(Outcome::Done(d)) if d.folders[0].old.len() == 200_000),
+        "{outcome:?}"
+    );
 }

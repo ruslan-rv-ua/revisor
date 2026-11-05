@@ -25,6 +25,7 @@ use std::ffi::OsStr;
 use std::fmt;
 use std::os::windows::ffi::OsStrExt;
 use std::path::PathBuf;
+use std::sync::atomic::{AtomicU64, Ordering::Relaxed};
 
 use crate::exclude::{Branch, Exclusions};
 use crate::job::Cancel;
@@ -205,6 +206,22 @@ pub fn diff(
     rules: &Rules<'_>,
     cancel: &Cancel,
 ) -> Result<Diff, Cancelled> {
+    diff_counting(old, new, rules, cancel, &AtomicU64::new(0))
+}
+
+/// [`diff`] that counts the entries visited in `visited`, for the progress of a
+/// comparison (TASK-11 #8): an entry matched in both trees counts for both, one whose
+/// kind changed counts once as deleted and once as added. The count goes up every
+/// [`CANCEL_CHECK`] entries and at the end, and is never taken back. Entries the
+/// comparison leaves out — excluded, or under a folder inaccessible on one side only —
+/// are never visited, so the count may end short of the trees' size.
+pub fn diff_counting(
+    old: Subtree<'_>,
+    new: Subtree<'_>,
+    rules: &Rules<'_>,
+    cancel: &Cancel,
+    visited: &AtomicU64,
+) -> Result<Diff, Cancelled> {
     let roots = match (old.entries.is_empty(), new.entries.is_empty()) {
         (false, false) => vec![Item::Both(old.root, new.root)],
         (false, true) => vec![Item::Old(old.root)],
@@ -229,17 +246,32 @@ pub fn diff(
         new_keys: Keys::default(),
     };
     let mut seen = 0usize;
+    let mut counted = 0u64;
     while let Some(frame) = walk.frames.last_mut() {
         let Some(item) = frame.items.pop() else {
             walk.frames.pop();
             continue;
         };
-        if seen.is_multiple_of(CANCEL_CHECK) && cancel.is_cancelled() {
-            return Err(Cancelled);
+        if seen.is_multiple_of(CANCEL_CHECK) {
+            if cancel.is_cancelled() {
+                return Err(Cancelled);
+            }
+            visited.fetch_add(counted, Relaxed);
+            counted = 0;
         }
         seen += 1;
+        // A pair whose kinds differ is visited again as a deleted and an added entry.
+        counted += match item {
+            Item::Both(a, b) => {
+                let same_kind =
+                    walk.old.entries[a as usize].kind == walk.new.entries[b as usize].kind;
+                if same_kind { 2 } else { 0 }
+            }
+            Item::Old(_) | Item::New(_) => 1,
+        };
         walk.visit(item);
     }
+    visited.fetch_add(counted, Relaxed);
     Ok(walk.diff)
 }
 
