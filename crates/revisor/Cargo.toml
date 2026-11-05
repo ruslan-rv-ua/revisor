@@ -22,5 +22,9 @@ windows-sys = { version = "0.61", features = [
     "Win32_UI_WindowsAndMessaging",
 ] }
 
+[dev-dependencies]
+# The tests of the jobs hold a profile's database busy, as a snapshot being saved does.
+rusqlite = { version = "0.41", features = ["bundled"] }
+
 [build-dependencies]
 embed-manifest = "1.4"

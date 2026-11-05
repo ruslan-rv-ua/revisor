@@ -11,9 +11,10 @@ pub use en::En;
 pub use uk::Uk;
 
 use revisor_core::exclude::PatternError;
-use revisor_core::settings::{FocusAfterSnapshot, Language};
+use revisor_core::settings::{FocusAfterComparison, FocusAfterSnapshot, Language};
 
 use crate::commands::{CommandId, MenuId, Pane, Reason, SubmenuId};
+use crate::difference::Kind;
 
 /// An interface language.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -37,6 +38,8 @@ pub enum Failure {
     NotSettings,
     /// The user cancelled the action, say at the administrator prompt.
     Cancelled,
+    /// The snapshot was deleted while the action needed it (TASK-11).
+    SnapshotDeleted,
     Other {
         text: String,
         code: Option<i64>,
@@ -197,8 +200,34 @@ pub trait Strings {
     fn restart_now(&self) -> &'static str;
     fn later(&self) -> &'static str;
 
+    // Comparisons (TASK-11).
+    /// The progress field while the snapshots are compared.
+    fn comparing(&self) -> &'static str;
+    /// The progress field once the bar shows: with the percent done.
+    fn comparing_percent(&self, percent: u8) -> String;
+    /// The progress field while the comparison waits for the profile's database.
+    fn waiting_for_database(&self) -> &'static str;
+    fn comparison_finished(&self) -> &'static str;
+    fn comparison_cancelled(&self) -> &'static str;
+    fn comparison_failed(&self, reason: &str) -> String;
+    /// The reason when the comparison's thread ended without a result.
+    fn comparison_stopped(&self) -> &'static str;
+    /// The label of the list of the «Порівняти з…» window, without access key or colon;
+    /// `snapshot` is the current snapshot's name.
+    fn compare_with_label(&self, snapshot: &str) -> String;
+    /// The button of the «Порівняти з…» window that starts the comparison.
+    fn compare(&self) -> &'static str;
+    /// The label of the setting «Фокус після порівняння», without access key or colon.
+    fn focus_after_comparison(&self) -> &'static str;
+    fn comparison_focus_option(&self, value: FocusAfterComparison) -> &'static str;
+
+    // The difference list (TASK-11).
+    fn column_change(&self) -> &'static str;
+    fn column_path(&self) -> &'static str;
+    /// What a row of the difference list is: added, deleted, modified or inaccessible.
+    fn change_kind(&self, kind: Kind) -> &'static str;
+
     // The debug-only demo state (REVISOR_DEMO=1).
-    fn demo_change(&self, n: usize) -> String;
     fn demo_done(&self, command: &str) -> String;
 
     // Key names that are not printed on most keyboards.
@@ -328,6 +357,48 @@ mod tests {
             En.no_profiles_yet("Ctrl+N"),
             "No profiles yet. Press Ctrl+N to create the first profile."
         );
+    }
+
+    #[test]
+    fn the_comparison_strings_come_in_both_languages() {
+        assert_eq!(Uk.comparing_percent(45), "Порівняння знімків: 45 %…");
+        assert_eq!(En.comparing_percent(45), "Comparing snapshots: 45%…");
+        assert_eq!(
+            Uk.compare_with_label("05.11.2026 12:00:00"),
+            "Порівняти знімок 05.11.2026 12:00:00 зі знімком"
+        );
+        assert_eq!(
+            En.compare_with_label("11/5/2026 12:00:00 PM"),
+            "Compare the snapshot 11/5/2026 12:00:00 PM with"
+        );
+        assert_eq!(
+            Uk.comparison_failed("знімок тим часом видалено"),
+            "Знімки не порівняно: знімок тим часом видалено."
+        );
+        assert_eq!(
+            En.comparison_failed("the snapshot has been deleted meanwhile"),
+            "The snapshots were not compared: the snapshot has been deleted meanwhile."
+        );
+        let uk: Vec<&str> = FocusAfterComparison::ALL
+            .iter()
+            .map(|&v| Uk.comparison_focus_option(v))
+            .collect();
+        assert_eq!(uk, ["Якщо фокус не рухали", "Завжди", "Ніколи"]);
+        let en: Vec<&str> = FocusAfterComparison::ALL
+            .iter()
+            .map(|&v| En.comparison_focus_option(v))
+            .collect();
+        assert_eq!(en, ["If focus has not moved", "Always", "Never"]);
+        let kinds = [
+            Kind::Added,
+            Kind::Deleted,
+            Kind::Modified,
+            Kind::Inaccessible,
+        ];
+        let uk: Vec<&str> = kinds.iter().map(|&k| Uk.change_kind(k)).collect();
+        assert_eq!(uk, ["Додано", "Видалено", "Змінено", "Недоступно"]);
+        let en: Vec<&str> = kinds.iter().map(|&k| En.change_kind(k)).collect();
+        assert_eq!(en, ["Added", "Deleted", "Modified", "Inaccessible"]);
     }
 
     #[test]

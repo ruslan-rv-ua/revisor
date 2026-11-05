@@ -1,9 +1,9 @@
 //! The application's own settings (ADR-0007): one SQLite database in the data folder, apart
 //! from the profiles, for what belongs to no profile — the profile opened last, what the
 //! focus does when a snapshot ends, whether deleting snapshots asks first (TASK-9), the
-//! interface language (TASK-16). Each
-//! setting is one row of a key–value table, read and written through typed methods, so a
-//! later setting needs no change of the schema.
+//! interface language (TASK-16), what the focus does when a comparison ends (TASK-11).
+//! Each setting is one row of a key–value table, read and written through typed methods,
+//! so a later setting needs no change of the schema.
 
 use std::fmt;
 use std::fs;
@@ -34,6 +34,7 @@ const KEY_LAST_PROFILE: &str = "last_profile";
 const KEY_FOCUS_AFTER_SNAPSHOT: &str = "focus_after_snapshot";
 const KEY_CONFIRM_SNAPSHOT_DELETION: &str = "confirm_snapshot_deletion";
 const KEY_LANGUAGE: &str = "language";
+const KEY_FOCUS_AFTER_COMPARISON: &str = "focus_after_comparison";
 
 #[derive(Debug)]
 pub enum SettingsError {
@@ -89,6 +90,37 @@ impl FocusAfterSnapshot {
     pub fn as_str(self) -> &'static str {
         match self {
             Self::IfInList => "if_in_list",
+            Self::Always => "always",
+            Self::Never => "never",
+        }
+    }
+
+    pub fn parse(text: &str) -> Option<Self> {
+        Self::ALL.into_iter().find(|v| v.as_str() == text)
+    }
+}
+
+/// What happens to the focus when a comparison made in the background ends (TASK-11).
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub enum FocusAfterComparison {
+    /// The focus moves to the difference only when it is still where it was when the
+    /// comparison started, or on the comparison's progress.
+    #[default]
+    IfNotMoved,
+    /// The focus always moves to the difference.
+    Always,
+    /// The difference only replaces the one shown.
+    Never,
+}
+
+impl FocusAfterComparison {
+    /// Every value, in the order the settings window lists them.
+    pub const ALL: [Self; 3] = [Self::IfNotMoved, Self::Always, Self::Never];
+
+    /// The value as the database stores it.
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::IfNotMoved => "if_not_moved",
             Self::Always => "always",
             Self::Never => "never",
         }
@@ -237,6 +269,21 @@ impl Settings {
 
     pub fn set_language(&self, value: Language) -> Result<(), SettingsError> {
         self.set(KEY_LANGUAGE, value.as_str())
+    }
+
+    /// What the focus does when a comparison ends; the default when nothing is stored.
+    pub fn focus_after_comparison(&self) -> Result<FocusAfterComparison, SettingsError> {
+        Ok(match self.get(KEY_FOCUS_AFTER_COMPARISON)? {
+            Some(Value::Text(text)) => FocusAfterComparison::parse(&text).unwrap_or_default(),
+            _ => FocusAfterComparison::default(),
+        })
+    }
+
+    pub fn set_focus_after_comparison(
+        &self,
+        value: FocusAfterComparison,
+    ) -> Result<(), SettingsError> {
+        self.set(KEY_FOCUS_AFTER_COMPARISON, value.as_str())
     }
 
     fn get(&self, key: &str) -> Result<Option<Value>, SettingsError> {

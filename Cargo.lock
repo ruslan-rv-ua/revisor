@@ -885,6 +885,7 @@ version = "0.1.0"
 dependencies = [
  "embed-manifest",
  "revisor-core",
+ "rusqlite",
  "windows-sys",
  "wxdragon",
 ]

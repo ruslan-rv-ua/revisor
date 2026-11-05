@@ -160,3 +160,30 @@ fn the_focus_setting_names_round_trip() {
     assert_eq!(FocusAfterSnapshot::parse("sometimes"), None);
     assert_eq!(FocusAfterSnapshot::default(), FocusAfterSnapshot::IfInList);
 }
+
+#[test]
+fn the_comparison_focus_setting_is_kept_and_named() {
+    let tmp = TempDir::new("settings");
+    let settings = Settings::open(&db(&tmp)).unwrap();
+    assert_eq!(
+        settings.focus_after_comparison().unwrap(),
+        FocusAfterComparison::IfNotMoved
+    );
+    settings
+        .set_focus_after_comparison(FocusAfterComparison::Never)
+        .unwrap();
+    drop(settings);
+    let settings = Settings::open(&db(&tmp)).unwrap();
+    assert_eq!(
+        settings.focus_after_comparison().unwrap(),
+        FocusAfterComparison::Never
+    );
+    for value in FocusAfterComparison::ALL {
+        assert_eq!(FocusAfterComparison::parse(value.as_str()), Some(value));
+    }
+    assert_eq!(FocusAfterComparison::parse("sometimes"), None);
+    assert_eq!(
+        FocusAfterComparison::ALL[0],
+        FocusAfterComparison::default()
+    );
+}

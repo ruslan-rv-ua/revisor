@@ -174,6 +174,12 @@ impl<W: Work> Job<W> {
         self.started.elapsed()
     }
 
+    /// Whether the work still runs on its thread: once it has given its result, or
+    /// lost it, the thread is over, and so is whatever the work held open.
+    pub fn is_running(&self) -> bool {
+        !self.thread.is_finished()
+    }
+
     /// Asks the work to stop. It soon ends as cancelled, unless it is done by then, and
     /// its end comes through [`Job::poll`] or [`Job::wait`] like any other.
     pub fn cancel(&self) {

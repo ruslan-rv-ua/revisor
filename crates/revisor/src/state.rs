@@ -34,6 +34,10 @@ pub struct AppState {
     pub snapshots: usize,
     /// How many of them are selected in the snapshot list; deletion acts on them.
     pub selected_snapshots: usize,
+    /// The current snapshot: the row of the snapshot list with the focus, else the newest
+    /// one (TASK-9); none while there are no snapshots. Quick compare needs a snapshot
+    /// before it (TASK-11).
+    pub current_snapshot: Option<usize>,
     /// Whether a comparison has produced a difference to show.
     pub has_difference: bool,
     // The flags of the background jobs: the window sets them all at once, with `set_jobs`.
@@ -74,6 +78,7 @@ impl AppState {
             profile: Some("Demo".into()),
             snapshots: 3,
             selected_snapshots: 1,
+            current_snapshot: Some(2),
             has_difference: true,
             demo: true,
             ..Self::new()

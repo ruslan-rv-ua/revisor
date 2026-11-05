@@ -1,20 +1,24 @@
 //! The main window: the menu bar and context menus built from the command table, the
 //! status bar that speaks without moving the focus, the key handler, the two parts of
-//! the window, the snapshot being taken, with its progress and its outcome (TASK-8), and
-//! the snapshot list of the open profile with its comments, deletion and the compaction
-//! that follows it (TASK-9). The profile box lists the profiles (TASK-7); the difference
-//! list is a placeholder until TASK-11 fills it.
+//! the window, the snapshot being taken, with its progress and its outcome (TASK-8), the
+//! snapshot list of the open profile with its comments, deletion and the compaction
+//! that follows it (TASK-9), and the comparison of the current snapshot with another,
+//! made in the background, whose difference the difference list shows (TASK-11). The
+//! profile box lists the profiles (TASK-7).
 
 use std::cell::{Cell, RefCell};
+use std::ffi::c_void;
 use std::io;
 use std::path::{Path, PathBuf};
+use std::ptr;
 use std::rc::Rc;
 use std::thread;
 use std::time::Duration;
 
+use revisor_core::compare::{self, CompareError, Difference};
 use revisor_core::job::{Lost, Outcome};
 use revisor_core::profiles::{self, ProfileError, ProfileFile, Unreadable};
-use revisor_core::settings::{FocusAfterSnapshot, Language, Settings};
+use revisor_core::settings::{FocusAfterComparison, FocusAfterSnapshot, Language, Settings};
 use revisor_core::snapshot::{Phase, Report, SnapshotError};
 use revisor_core::store::{
     Compacted, FolderState, ProfileSettings, SnapshotInfo, Store, StoreError, Unavailable,
@@ -22,6 +26,8 @@ use revisor_core::store::{
 use wxdragon::prelude::*;
 
 use crate::commands::{COMMANDS, CommandId, CommandKind, MenuId, Pane, command};
+use crate::compare_window;
+use crate::difference::{self, Rows};
 use crate::failure;
 use crate::help;
 use crate::i18n::Strings;
@@ -54,12 +60,26 @@ const COMMENT_TIMEOUT: Duration = Duration::from_secs(60);
 /// at the profile (TASK-9 #30).
 const BUSY_RETRY: Duration = Duration::from_secs(1);
 
+/// How long a comparison runs before its progress gets a bar with the percent done
+/// (TASK-11 #8); the progress row itself shows it after [`crate::jobs::COMPARISON_SHOWN_AFTER`].
+const COMPARISON_BAR_AFTER: Duration = Duration::from_secs(5);
+
+/// How long the window waits between its looks at a comparison that still reads the
+/// database it is about to write or delete (TASK-11 #17).
+const HOLD_RETRY: Duration = Duration::from_millis(50);
+
 /// The file of the application's settings in the data folder (ADR-0007).
 pub const SETTINGS_FILE: &str = "settings.db";
 
-/// The widths of the snapshot list's columns: the name is fixed, the comment takes the rest.
-const DATE_TIME_WIDTH: i32 = 190;
-const COMMENT_WIDTH: i32 = 420;
+/// The widths of the snapshot list's columns, which the «Порівняти з…» window takes too:
+/// the name is fixed, the comment takes the rest.
+pub const DATE_TIME_WIDTH: i32 = 190;
+pub const COMMENT_WIDTH: i32 = 420;
+
+/// The widths of the difference list's columns: the kind of the change is short, the
+/// path takes the rest (TASK-11).
+const CHANGE_WIDTH: i32 = 130;
+const PATH_WIDTH: i32 = 700;
 
 /// The access keys of the labels of the main window. They do not take the letters of the
 /// menus, which would no longer open while the focus is in the panel.
@@ -69,11 +89,16 @@ const PROGRESS_ACCESS: u8 = b'P';
 /// The access key of the comment field in the «Коментар» window.
 const COMMENT_ACCESS: u8 = b'C';
 
-/// «Скасувати (N)» next to the progress presses the command «Скасувати знімок», and
-/// «Скасувати стискання (O)» the command «Скасувати стискання»: the button takes the
-/// letter of the command of the job it shows.
+/// «Скасувати (N)» next to the progress presses the command «Скасувати знімок» or, for
+/// a comparison, «Скасувати порівняння», and «Скасувати стискання (O)» the command
+/// «Скасувати стискання»: the button takes the letter of the command of the job it
+/// shows.
 fn cancel_snapshot_access() -> u8 {
     command(CommandId::CancelSnapshot).access
+}
+
+fn cancel_comparison_access() -> u8 {
+    command(CommandId::CancelComparison).access
 }
 
 fn cancel_compaction_access() -> u8 {
@@ -84,6 +109,7 @@ fn cancel_compaction_access() -> u8 {
 fn cancel_command(kind: Kind) -> CommandId {
     match kind {
         Kind::Snapshot => CommandId::CancelSnapshot,
+        Kind::Comparison => CommandId::CancelComparison,
         Kind::Compaction => CommandId::CancelCompaction,
     }
 }
@@ -126,19 +152,34 @@ pub struct MainWindow {
     announcer: Announcer,
     panel: Panel,
     profile: Choice,
-    /// The progress of the snapshot being taken, or of the compaction, shown only while
-    /// one is.
+    /// The progress of the job the progress row shows — a snapshot being taken, a
+    /// comparison that has run for a second, a compaction — shown only while one is.
     progress_label: StaticText,
     progress_text: TextCtrl,
+    /// The percent of a comparison done, shown once it has run for a while (TASK-11 #8).
+    gauge: Gauge,
     /// Cancels the job the progress row shows.
     cancel_button: Button,
     snapshots: ListCtrl,
+    /// The difference list: a virtual list over `difference_rows`, which it asks for the
+    /// text of the rows it shows (TASK-11 #5).
     difference: ListCtrl,
+    difference_rows: Rc<RefCell<Rows>>,
     /// Polls the jobs.
     timer: Timer<Frame>,
-    /// The background jobs: a snapshot being taken and a database being compacted
-    /// (ADR-0011).
+    /// The background jobs: a snapshot being taken, a comparison being made and a
+    /// database being compacted (ADR-0011).
     jobs: RefCell<Jobs>,
+    /// The kind of the job the progress row showed when it was last refreshed, so a
+    /// change of the job shown — a comparison that has run for a second — is noticed.
+    shown_kind: Cell<Option<Kind>>,
+    /// Whether the progress row has said, in the status bar, that the comparison shown
+    /// waits for the database (`Some(true)`) or compares (`Some(false)`) (TASK-11 #7,
+    /// #16); `None` while the row shows no comparison.
+    said_waiting: Cell<Option<bool>>,
+    /// The control that had the keyboard focus when the comparison was started, for the
+    /// setting «Фокус після порівняння» (TASK-11 #12).
+    comparison_focus: Cell<*mut c_void>,
     /// The folder of profiles, `data\profiles` next to the exe.
     profiles_dir: PathBuf,
     /// The application's settings (ADR-0007), or the reason their file could not be used,
@@ -196,6 +237,7 @@ impl MainWindow {
         let progress_text = TextCtrl::builder(&panel)
             .with_style(TextCtrlStyle::ReadOnly)
             .build();
+        let gauge = Gauge::builder(&panel).with_range(100).build();
         let cancel_button = Button::builder(&panel)
             .with_label(&button_label(
                 s,
@@ -215,10 +257,30 @@ impl MainWindow {
         );
         snapshots.insert_column(1, s.column_comment(), ListColumnFormat::Left, COMMENT_WIDTH);
         win32::full_row_select_no_sort(snapshots.get_handle());
+        // A virtual list: a difference may have a million rows (TASK-11 #6), and the
+        // list asks for the text of the ones it shows.
         let difference = ListCtrl::builder(&panel)
-            .with_style(ListCtrlStyle::Report)
+            .with_style(ListCtrlStyle::Report | ListCtrlStyle::Virtual | ListCtrlStyle::SingleSel)
             .build();
-        difference.insert_column(0, s.pane(Pane::Difference), ListColumnFormat::Left, 600);
+        difference.insert_column(0, s.column_change(), ListColumnFormat::Left, CHANGE_WIDTH);
+        difference.insert_column(1, s.column_path(), ListColumnFormat::Left, PATH_WIDTH);
+        win32::full_row_select_no_sort(difference.get_handle());
+        let difference_rows = Rc::new(RefCell::new(Rows::default()));
+        let rows_shown = Rc::clone(&difference_rows);
+        difference.set_virtual_text_callback(move |row, column| {
+            let rows = rows_shown.borrow();
+            let row = usize::try_from(row).unwrap_or(usize::MAX);
+            match column {
+                0 => rows
+                    .kind(row)
+                    .map(|kind| s.change_kind(kind).to_string())
+                    .unwrap_or_default(),
+                _ => rows
+                    .path(row)
+                    .map(|path| path.to_string_lossy().into_owned())
+                    .unwrap_or_default(),
+            }
+        });
         for (list, pane) in [
             (&snapshots, Pane::Snapshots),
             (&difference, Pane::Difference),
@@ -227,9 +289,6 @@ impl MainWindow {
         }
         // The panel answers for the lists' text while they are empty.
         win32::subclass_list_parent(panel.get_handle());
-        if state.demo {
-            fill_demo(s, &difference);
-        }
 
         let profile_row = BoxSizer::builder(Orientation::Horizontal).build();
         profile_row.add(
@@ -247,6 +306,12 @@ impl MainWindow {
             5,
         );
         progress_row.add(&progress_text, 1, SizerFlag::All, 5);
+        progress_row.add(
+            &gauge,
+            1,
+            SizerFlag::AlignCenterVertical | SizerFlag::All,
+            5,
+        );
         progress_row.add(&cancel_button, 0, SizerFlag::All, 5);
         let sizer = BoxSizer::builder(Orientation::Vertical).build();
         sizer.add_sizer(&profile_row, 0, SizerFlag::Expand, 0);
@@ -270,11 +335,16 @@ impl MainWindow {
             profile,
             progress_label,
             progress_text,
+            gauge,
             cancel_button,
             snapshots,
             difference,
+            difference_rows,
             timer,
             jobs: RefCell::new(Jobs::default()),
+            shown_kind: Cell::new(None),
+            said_waiting: Cell::new(None),
+            comparison_focus: Cell::new(ptr::null_mut()),
             profiles_dir: data_dir.join("profiles"),
             settings,
             profiles: RefCell::new(Vec::new()),
@@ -339,7 +409,8 @@ impl MainWindow {
 
         // Closing during a snapshot cancels it, so it asks first (TASK-8 #26); a close
         // that cannot be refused, as at a shutdown, stops the snapshot without asking. A
-        // compaction goes on behind the hidden window, and the process ends with it
+        // comparison is cancelled without a question and not waited for (TASK-11 #18).
+        // A compaction goes on behind the hidden window, and the process ends with it
         // (TASK-9 #30); a close that cannot be refused interrupts it instead.
         let w = Rc::clone(self);
         self.frame.on_close(move |data| {
@@ -357,6 +428,7 @@ impl MainWindow {
                     true
                 };
                 if may_close {
+                    w.jobs.borrow().cancel(Kind::Comparison);
                     w.finish_compaction_hidden(!can_veto);
                     event.skip(true);
                 } else {
@@ -381,12 +453,15 @@ impl MainWindow {
             w.show_profile(selected);
         });
 
-        // Deletion acts on the selected snapshots, so the commands know how many there are.
+        // Deletion acts on the selected snapshots, and a comparison on the current one, so
+        // the commands know how many there are and which is current.
         let w = Rc::clone(self);
         self.snapshots.on_item_selected(move |_| w.sync_selection());
         let w = Rc::clone(self);
         self.snapshots
             .on_item_deselected(move |_| w.sync_selection());
+        let w = Rc::clone(self);
+        self.snapshots.on_item_focused(move |_| w.sync_selection());
 
         // A right click: the list under the mouse has the focus by then.
         let w = Rc::clone(self);
@@ -465,6 +540,24 @@ impl MainWindow {
             FocusPlace::SnapshotProgress
         } else {
             FocusPlace::Elsewhere
+        }
+    }
+
+    /// Where the keyboard focus is, as far as a difference's arrival cares (TASK-11 #12,
+    /// #21): in the difference list, still where it was when the comparison started, on
+    /// the comparison's progress, or elsewhere.
+    fn comparison_focus_place(&self) -> difference::FocusPlace {
+        let focused = win32::focused_window();
+        if focused == self.difference.get_handle() {
+            difference::FocusPlace::DifferenceList
+        } else if focused == self.comparison_focus.get() {
+            difference::FocusPlace::Unmoved
+        } else if focused == self.progress_text.get_handle()
+            || focused == self.cancel_button.get_handle()
+        {
+            difference::FocusPlace::Progress
+        } else {
+            difference::FocusPlace::Elsewhere
         }
     }
 
@@ -555,6 +648,9 @@ impl MainWindow {
             CommandId::DeleteSnapshots => self.delete_snapshots(),
             CommandId::CancelSnapshot => self.cancel_snapshot(),
             CommandId::CancelCompaction => self.cancel_compaction(),
+            CommandId::CompareWithPrevious => self.compare_with_previous(),
+            CommandId::CompareWith => self.compare_with(),
+            CommandId::CancelComparison => self.cancel_comparison(),
             CommandId::KeyboardShortcuts => help::show_shortcuts(&self.frame, s),
             CommandId::About => help::show_about(&self.frame, s),
             // Only the demo state gets here: the other commands' tasks are not done yet.
@@ -810,6 +906,7 @@ impl MainWindow {
         if !confirm(&self.frame, s, title, &question, delete, true) {
             return;
         }
+        self.wait_for_comparison_to_load(&open.path);
         match profiles::delete(&open.path) {
             Ok(()) => {
                 self.load_profiles(None);
@@ -834,6 +931,14 @@ impl MainWindow {
             .as_ref()
             .ok()
             .and_then(|settings| settings.focus_after_snapshot().ok())
+            .unwrap_or_default()
+    }
+
+    fn focus_after_comparison(&self) -> FocusAfterComparison {
+        self.settings
+            .as_ref()
+            .ok()
+            .and_then(|settings| settings.focus_after_comparison().ok())
             .unwrap_or_default()
     }
 
@@ -862,6 +967,7 @@ impl MainWindow {
         let initial = Values {
             language: self.language(),
             focus_after_snapshot: self.focus_after_snapshot(),
+            focus_after_comparison: self.focus_after_comparison(),
             confirm_snapshot_deletion: self.confirm_deletion(),
         };
         let Some(values) = settings_window::show(&self.frame, s, initial) else {
@@ -871,6 +977,7 @@ impl MainWindow {
             Ok(settings) => settings
                 .set_language(values.language)
                 .and_then(|()| settings.set_focus_after_snapshot(values.focus_after_snapshot))
+                .and_then(|()| settings.set_focus_after_comparison(values.focus_after_comparison))
                 .and_then(|()| {
                     settings.set_confirm_snapshot_deletion(values.confirm_snapshot_deletion)
                 })
@@ -934,10 +1041,14 @@ impl MainWindow {
             .or_else(|| count.checked_sub(1))
     }
 
-    /// Keeps the state's count of selected snapshots as the list has it.
+    /// Keeps the state's count of selected snapshots and its current snapshot as the list
+    /// has them.
     fn sync_selection(&self) {
         let selected = win32::selected_count(self.snapshots.get_handle());
-        self.state.borrow_mut().selected_snapshots = selected;
+        let current = self.current_row();
+        let mut state = self.state.borrow_mut();
+        state.selected_snapshots = selected;
+        state.current_snapshot = current;
     }
 
     /// What the empty snapshot list says, in its area and in its name for screen readers:
@@ -1088,6 +1199,7 @@ impl MainWindow {
             }
         }
         let ids: Vec<i64> = chosen.iter().map(|row| row.id).collect();
+        self.wait_for_comparison_to_load(&open.path);
         let deleted = Store::open(&open.path).and_then(|mut store| {
             store.delete_many(&ids)?;
             Ok(store)
@@ -1148,6 +1260,141 @@ impl MainWindow {
         }
     }
 
+    // --- The comparison (TASK-11) -------------------------------------------------------
+
+    /// Compares the current snapshot with the one before it in the list (#1).
+    fn compare_with_previous(&self) {
+        let Some(open) = self.open_profile() else {
+            return;
+        };
+        let Some(row) = self.current_row().filter(|&row| row > 0) else {
+            return;
+        };
+        let (current, previous) = {
+            let rows = self.rows.borrow();
+            (rows[row].id, rows[row - 1].id)
+        };
+        self.start_comparison(open, current, previous);
+    }
+
+    /// Asks which other snapshot of the profile to compare the current one with, and
+    /// compares (#2, #3). The comparison then starts from the snapshot list, wherever
+    /// the command came from (#12).
+    fn compare_with(&self) {
+        let s = self.s;
+        let Some(open) = self.open_profile() else {
+            return;
+        };
+        let Some(row) = self.current_row() else {
+            return;
+        };
+        let rows = self.rows.borrow().clone();
+        let chosen = self.with_jobs_paused(|| compare_window::show(&self.frame, s, &rows, row));
+        let Some(other) = chosen else {
+            return;
+        };
+        self.snapshots.set_focus();
+        self.start_comparison(open, rows[row].id, other.id);
+    }
+
+    /// Starts comparing the snapshots `a` and `b` of `profile` in the background, in
+    /// place of a comparison that still runs (#15), remembering where the keyboard focus
+    /// is for the difference's arrival (#12). The progress row shows the comparison once
+    /// it has run for a second (#7).
+    fn start_comparison(&self, profile: ProfileFile, a: i64, b: i64) {
+        self.comparison_focus.set(win32::focused_window());
+        self.jobs.borrow_mut().start_comparison(profile, a, b);
+        self.sync_jobs();
+    }
+
+    /// Asks the comparison to stop; its end comes through the timer, like any other.
+    fn cancel_comparison(&self) {
+        self.jobs.borrow().cancel(Kind::Comparison);
+    }
+
+    /// Waits until no comparison of the profile whose database is at `path` reads that
+    /// database any more: its trees load in seconds, and deleting the profile's
+    /// snapshots, or the profile, goes on then (#17).
+    fn wait_for_comparison_to_load(&self, path: &Path) {
+        while self.jobs.borrow().comparison_holds_database(path) {
+            thread::sleep(HOLD_RETRY);
+        }
+    }
+
+    /// Ends the comparison in the window: a difference takes the place of the one shown,
+    /// as the setting «Фокус після порівняння» says; a cancelled or failed comparison
+    /// leaves the difference as it was and says so (#10). Where the focus is decides
+    /// where it goes, so it is read before the progress row goes and takes the focus
+    /// with it.
+    fn comparison_ended(&self, ended: Ended<Outcome<Difference, CompareError>>) {
+        let s = self.s;
+        let focus = self.comparison_focus_place();
+        self.sync_jobs();
+        match ended.outcome {
+            Ok(Outcome::Done(difference)) => self.show_difference(difference, focus),
+            Ok(Outcome::Cancelled) => self.say(s.comparison_cancelled()),
+            Ok(Outcome::Failed(e)) => {
+                let reason = s.failure(&failure::of_compare(&e));
+                self.say(&s.comparison_failed(&reason));
+            }
+            Err(Lost) => self.say(&s.comparison_failed(s.comparison_stopped())),
+        }
+    }
+
+    /// Puts `difference` in the difference list in place of the one shown, with the
+    /// focus moving to its first row, or the end said without it, as its arrival says
+    /// (#12–#14, #21).
+    fn show_difference(&self, difference: Difference, focus: difference::FocusPlace) {
+        let s = self.s;
+        let count = {
+            let mut rows = self.difference_rows.borrow_mut();
+            rows.replace(difference);
+            rows.len()
+        };
+        let list = self.difference.get_handle();
+        self.difference.set_item_count(count as i64);
+        if !self.difference_rows.borrow().is_empty() {
+            win32::select_only(list, 0);
+        }
+        self.state.borrow_mut().has_difference = true;
+        match difference::arrival(self.focus_after_comparison(), focus) {
+            difference::Arrival::Replace => self.say(s.comparison_finished()),
+            difference::Arrival::Focus => self.difference.set_focus(),
+            difference::Arrival::Refocus => win32::refocus(list),
+        }
+        self.refresh_menus();
+    }
+
+    /// The progress field for the comparison the row shows, with the bar once the
+    /// comparison has run for [`COMPARISON_BAR_AFTER`] (#8). A phase the row has not
+    /// said yet — comparing, or waiting for the database — is said in the status bar,
+    /// which screen readers read without the focus moving (#7, #16).
+    fn comparison_progress_text(&self, progress: &compare::Progress, elapsed: Duration) -> String {
+        let s = self.s;
+        let waiting = progress.phase() == compare::Phase::Waiting;
+        let phase_text = if waiting {
+            s.waiting_for_database()
+        } else {
+            s.comparing()
+        };
+        if self.said_waiting.get() != Some(waiting) {
+            self.said_waiting.set(Some(waiting));
+            self.say(phase_text);
+        }
+        let bar = elapsed >= COMPARISON_BAR_AFTER;
+        if bar != self.gauge.is_shown() {
+            self.gauge.show(bar);
+            self.panel.layout();
+        }
+        if bar && !waiting {
+            let percent = progress.percent();
+            self.gauge.set_value(i32::from(percent));
+            s.comparing_percent(percent)
+        } else {
+            phase_text.to_string()
+        }
+    }
+
     /// On closing: a compaction that is running goes on behind the hidden window, and the
     /// process ends only when it has (TASK-9 #30); with `interrupt`, as at a shutdown,
     /// the compaction is interrupted instead, which leaves the database as it was.
@@ -1178,24 +1425,29 @@ impl MainWindow {
         self.jobs.borrow().cancel(Kind::Snapshot);
     }
 
-    /// Shows the progress of the snapshot and reports the jobs that have ended, together
-    /// when both have.
+    /// Shows the progress of the job the row shows and reports the jobs that have ended,
+    /// together when several have.
     fn poll_jobs(&self) {
         self.speaking(|| {
-            self.show_snapshot_progress();
+            self.show_job_progress();
             let ended = self.jobs.borrow_mut().poll();
             for event in ended {
                 match event {
                     Event::Snapshot(ended) => self.snapshot_ended(ended, false),
+                    Event::Comparison(ended) => self.comparison_ended(ended),
                     Event::Compaction(ended) => self.compaction_ended(ended),
                 }
             }
         });
     }
 
-    /// Shows what the snapshot being taken has done so far, when the progress row shows
-    /// it.
-    fn show_snapshot_progress(&self) {
+    /// Shows what the job the progress row shows has done so far. When the row comes to
+    /// show another job — a comparison that has run for a second (TASK-11 #7) — it is
+    /// set up for that job first.
+    fn show_job_progress(&self) {
+        if self.shown_kind() != self.shown_kind.get() {
+            self.refresh_progress_row();
+        }
         let s = self.s;
         let text = match self.jobs.borrow().shown() {
             Some(Shown::Snapshot(progress)) => {
@@ -1208,6 +1460,9 @@ impl MainWindow {
                     }
                     Phase::Saving | Phase::Saved => s.snapshot_saving(entries, &entries_text),
                 }
+            }
+            Some(Shown::Comparison { progress, elapsed }) => {
+                self.comparison_progress_text(progress, elapsed)
             }
             _ => return,
         };
@@ -1256,16 +1511,23 @@ impl MainWindow {
 
     /// Shows the progress row for the job it shows, with the Cancel button named after
     /// that job's command, or hides it when there is none; the focus leaves a hidden row
-    /// for the snapshot list. The timer runs while any job does.
+    /// for the snapshot list. The timer runs while any job does: a comparison is polled
+    /// before its row shows (TASK-11 #7).
     fn refresh_progress_row(&self) {
         let s = self.s;
-        // The button is «Скасувати (N)» for a snapshot and, so that its letter is in its
-        // English name as everywhere, the command's own name for a compaction.
+        // The button is «Скасувати (N)» for a snapshot and a comparison and, so that its
+        // letter is in its English name as everywhere, the command's own name for a
+        // compaction.
         let shown = match self.jobs.borrow().shown() {
             Some(Shown::Snapshot(_)) => Some((
                 Kind::Snapshot,
                 s.snapshot_progress(0, &win32::format_count(0), ""),
                 button_label(s, s.cancel(), cancel_snapshot_access(), false),
+            )),
+            Some(Shown::Comparison { progress, elapsed }) => Some((
+                Kind::Comparison,
+                self.comparison_progress_text(progress, elapsed),
+                button_label(s, s.cancel(), cancel_comparison_access(), false),
             )),
             Some(Shown::Compaction(profile)) => Some((
                 Kind::Compaction,
@@ -1279,6 +1541,11 @@ impl MainWindow {
             )),
             None => None,
         };
+        let kind = shown.as_ref().map(|(kind, ..)| *kind);
+        if kind != Some(Kind::Comparison) {
+            self.said_waiting.set(None);
+            self.gauge.show(false);
+        }
         match &shown {
             None => {
                 let focused = win32::focused_window();
@@ -1287,19 +1554,23 @@ impl MainWindow {
                 {
                     self.snapshots.set_focus();
                 }
-                self.timer.stop();
             }
             Some((kind, text, button)) => {
                 // A snapshot's text is replaced by its progress on the next tick.
-                if *kind == Kind::Compaction || self.progress_text.get_value().is_empty() {
+                if *kind != Kind::Snapshot || self.progress_text.get_value().is_empty() {
                     self.progress_text.change_value(text);
                 }
                 self.cancel_button.set_label(button);
-                if !self.timer.is_running() {
-                    self.timer.start(PROGRESS_INTERVAL, false);
-                }
             }
         }
+        if self.jobs.borrow().any() {
+            if !self.timer.is_running() {
+                self.timer.start(PROGRESS_INTERVAL, false);
+            }
+        } else {
+            self.timer.stop();
+        }
+        self.shown_kind.set(kind);
         let visible = shown.is_some();
         self.progress_label.show(visible);
         self.progress_text.show(visible);
@@ -1590,14 +1861,6 @@ fn file_name(path: &Path) -> String {
         .into_owned()
 }
 
-/// Stand-in rows so the difference list's keys and context menu can be checked with NVDA
-/// before TASK-11; the snapshot list is the real one.
-fn fill_demo(s: &dyn Strings, difference: &ListCtrl) {
-    for n in 0..3 {
-        difference.insert_item(n as i64, &s.demo_change(n + 1), None);
-    }
-}
-
 /// Gives the window the same icon Explorer shows for the exe. wxMSW does not adopt the
 /// exe's icon resource for a frame, so the frame takes it from the SVG that app.ico is
 /// generated from. A failure leaves the generic window icon, which is not worth failing over.
@@ -1619,6 +1882,7 @@ mod tests {
     fn the_labels_of_the_main_window_take_no_menu_letter_and_differ() {
         for labels in [
             [PROFILE_ACCESS, PROGRESS_ACCESS, cancel_snapshot_access()],
+            [PROFILE_ACCESS, PROGRESS_ACCESS, cancel_comparison_access()],
             [PROFILE_ACCESS, PROGRESS_ACCESS, cancel_compaction_access()],
         ] {
             for (i, &label) in labels.iter().enumerate() {
@@ -1634,6 +1898,7 @@ mod tests {
         assert!(has(En.profile(), PROFILE_ACCESS));
         assert!(has(En.progress(), PROGRESS_ACCESS));
         assert!(has(En.cancel(), cancel_snapshot_access()));
+        assert!(has(En.cancel(), cancel_comparison_access()));
         assert!(has(
             En.command(CommandId::CancelCompaction),
             cancel_compaction_access()

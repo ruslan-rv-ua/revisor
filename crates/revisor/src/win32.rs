@@ -36,7 +36,7 @@ use windows_sys::Win32::UI::Controls::{
     LVS_NOSORTHEADER, NMHDR, NMLVEMPTYMARKUP,
 };
 use windows_sys::Win32::UI::Input::KeyboardAndMouse::{
-    GetFocus, GetKeyState, GetKeyboardLayout, VK_MENU, VkKeyScanExW,
+    GetFocus, GetKeyState, GetKeyboardLayout, SetFocus, VK_MENU, VkKeyScanExW,
 };
 use windows_sys::Win32::UI::Shell::{
     DefSubclassProc, RemoveWindowSubclass, SHGSI_ICON, SHGSI_SMALLICON, SHGetStockIconInfo,
@@ -222,6 +222,18 @@ pub fn alt_down() -> bool {
 pub fn focused_window() -> *mut c_void {
     // SAFETY: no arguments.
     unsafe { GetFocus() }
+}
+
+/// Makes a list that has the keyboard focus announce itself again to screen readers, as
+/// if the focus had just come to it from elsewhere: the focus leaves the list for a
+/// moment and comes back, which raises the focus event NVDA reads the list's name and
+/// its focused row on (TASK-11 #21). Replacing the rows under the focus raises none.
+pub fn refocus(list: *mut c_void) {
+    // SAFETY: plain focus calls on windows of this thread.
+    unsafe {
+        SetFocus(ptr::null_mut());
+        SetFocus(list);
+    }
 }
 
 /// Whether a window is a text field (an EDIT control), which needs Delete for itself.

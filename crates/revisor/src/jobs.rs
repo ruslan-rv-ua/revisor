@@ -5,24 +5,37 @@
 //! the jobs here and holds none of their parts itself.
 
 use std::path::Path;
+use std::time::Duration;
 
+use revisor_core::compare::{self, CompareError, CompareWork, Difference};
 use revisor_core::job::{Job, Lost, Outcome};
 use revisor_core::profiles::ProfileFile;
 use revisor_core::snapshot::{self, Report, SnapshotError, SnapshotWork};
 use revisor_core::store::{Compacted, Compaction, SnapshotInfo, Store, StoreError};
 
+/// How long a comparison runs before the progress row shows it (TASK-11 #7): a shorter
+/// one shows no progress at all.
+pub const COMPARISON_SHOWN_AFTER: Duration = Duration::from_secs(1);
+
 /// A kind of background job; at most one of each runs at a time.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Kind {
     Snapshot,
+    Comparison,
     Compaction,
 }
 
-/// What the progress row shows: the progress of the snapshot being taken, else the
-/// profile whose database is being compacted.
+/// What the progress row shows: the progress of the snapshot being taken, else that of
+/// a comparison that has run for a second or more, else the profile whose database is
+/// being compacted.
 #[derive(Clone, Copy, Debug)]
 pub enum Shown<'a> {
     Snapshot(&'a snapshot::Progress),
+    Comparison {
+        progress: &'a compare::Progress,
+        /// How long the comparison has run.
+        elapsed: Duration,
+    },
     Compaction(&'a ProfileFile),
 }
 
@@ -30,6 +43,7 @@ impl Shown<'_> {
     pub fn kind(&self) -> Kind {
         match self {
             Shown::Snapshot(_) => Kind::Snapshot,
+            Shown::Comparison { .. } => Kind::Comparison,
             Shown::Compaction(_) => Kind::Compaction,
         }
     }
@@ -61,6 +75,7 @@ pub struct Ended<O> {
 #[derive(Debug)]
 pub enum Event {
     Snapshot(Ended<Outcome<Report, SnapshotError>>),
+    Comparison(Ended<Outcome<Difference, CompareError>>),
     Compaction(Ended<Outcome<Compacted, StoreError>>),
 }
 
@@ -68,6 +83,12 @@ pub enum Event {
 struct Snapshotting {
     profile: ProfileFile,
     job: Job<SnapshotWork>,
+}
+
+/// A comparison being made, and the profile its snapshots are of.
+struct Comparing {
+    profile: ProfileFile,
+    job: Job<CompareWork>,
 }
 
 /// A database being compacted, with its profile and that profile's snapshots left after
@@ -83,6 +104,7 @@ struct Compacting {
 #[derive(Default)]
 pub struct Jobs {
     snapshot: Option<Snapshotting>,
+    comparison: Option<Comparing>,
     compaction: Option<Compacting>,
 }
 
@@ -92,6 +114,17 @@ impl Jobs {
         debug_assert!(self.snapshot.is_none(), "one snapshot at a time");
         let job = Job::start(SnapshotWork::new(&profile.path, None));
         self.snapshot = Some(Snapshotting { profile, job });
+    }
+
+    /// Starts comparing the snapshots `a` and `b` of `profile`. A comparison that still
+    /// runs is cancelled and forgotten: only one difference can be shown, and the later
+    /// comparison is the one wanted (TASK-11 #15).
+    pub fn start_comparison(&mut self, profile: ProfileFile, a: i64, b: i64) {
+        if let Some(comparing) = self.comparison.take() {
+            comparing.job.cancel();
+        }
+        let job = Job::start(CompareWork::new(&profile.path, a, b));
+        self.comparison = Some(Comparing { profile, job });
     }
 
     /// Starts compacting the database of `profile` on `store`, the connection its
@@ -121,6 +154,11 @@ impl Jobs {
                     snapshotting.job.cancel();
                 }
             }
+            Kind::Comparison => {
+                if let Some(comparing) = &self.comparison {
+                    comparing.job.cancel();
+                }
+            }
             Kind::Compaction => {
                 if let Some(compacting) = &self.compaction {
                     compacting.job.cancel();
@@ -129,14 +167,18 @@ impl Jobs {
         }
     }
 
-    /// The jobs that have ended, a snapshot before a compaction; they leave their places.
-    /// A snapshot whose save is over is waited for a moment, so that it ends with the
-    /// command that waited for its save (TASK-21).
+    /// The jobs that have ended, a snapshot before a comparison before a compaction;
+    /// they leave their places. A snapshot whose save is over is waited for a moment, so
+    /// that it ends with the command that waited for its save (TASK-21).
     pub fn poll(&mut self) -> Vec<Event> {
         let mut ended = Vec::new();
         if let Some(outcome) = self.snapshot.as_mut().and_then(|s| s.job.poll()) {
             let Snapshotting { profile, .. } = self.snapshot.take().expect("polled just now");
             ended.push(Event::Snapshot(Ended { profile, outcome }));
+        }
+        if let Some(outcome) = self.comparison.as_mut().and_then(|c| c.job.poll()) {
+            let Comparing { profile, .. } = self.comparison.take().expect("polled just now");
+            ended.push(Event::Comparison(Ended { profile, outcome }));
         }
         if let Some(outcome) = self.compaction.as_mut().and_then(|c| c.job.poll()) {
             let Compacting { profile, .. } = self.compaction.take().expect("polled just now");
@@ -145,26 +187,38 @@ impl Jobs {
         ended
     }
 
-    /// What the progress row shows: a snapshot before a compaction.
+    /// What the progress row shows: a snapshot before a comparison that has run for
+    /// [`COMPARISON_SHOWN_AFTER`] or longer, before a compaction.
     pub fn shown(&self) -> Option<Shown<'_>> {
-        match (&self.snapshot, &self.compaction) {
-            (Some(snapshotting), _) => Some(Shown::Snapshot(snapshotting.job.progress())),
-            (None, Some(compacting)) => Some(Shown::Compaction(&compacting.profile)),
-            (None, None) => None,
+        if let Some(snapshotting) = &self.snapshot {
+            return Some(Shown::Snapshot(snapshotting.job.progress()));
         }
+        if let Some(comparing) = &self.comparison {
+            let elapsed = comparing.job.elapsed();
+            if elapsed >= COMPARISON_SHOWN_AFTER {
+                return Some(Shown::Comparison {
+                    progress: comparing.job.progress(),
+                    elapsed,
+                });
+            }
+        }
+        self.compaction
+            .as_ref()
+            .map(|compacting| Shown::Compaction(&compacting.profile))
     }
 
     /// Whether a job of `kind` runs.
     pub fn runs(&self, kind: Kind) -> bool {
         match kind {
             Kind::Snapshot => self.snapshot.is_some(),
+            Kind::Comparison => self.comparison.is_some(),
             Kind::Compaction => self.compaction.is_some(),
         }
     }
 
     /// Whether any job runs.
     pub fn any(&self) -> bool {
-        self.snapshot.is_some() || self.compaction.is_some()
+        self.snapshot.is_some() || self.comparison.is_some() || self.compaction.is_some()
     }
 
     /// The flags of the state, with `open` the database of the open profile.
@@ -173,8 +227,7 @@ impl Jobs {
         Flags {
             snapshot_running: self.snapshot.is_some(),
             snapshotting_open_profile: self.snapshot.as_ref().is_some_and(|s| is_open(&s.profile)),
-            // Comparisons come with TASK-11.
-            comparison_running: false,
+            comparison_running: self.comparison.is_some(),
             compaction_running: self.compaction.is_some(),
             compacting_open_profile: self
                 .compaction
@@ -189,6 +242,19 @@ impl Jobs {
         let compacting = self.compaction.as_ref()?;
         (compacting.profile.path == path)
             .then_some((&compacting.profile, compacting.snapshots.as_slice()))
+    }
+
+    /// Whether a comparison of the profile whose database is at `path` reads that
+    /// database now: it runs and loads its trees. Deleting the profile's snapshots, or
+    /// the profile, waits for that, which is a matter of seconds (TASK-11 #17); a
+    /// comparison that waits for the database holds nothing of it, and one whose trees
+    /// are loaded has closed it.
+    pub fn comparison_holds_database(&self, path: &Path) -> bool {
+        self.comparison.as_ref().is_some_and(|c| {
+            c.profile.path == path
+                && c.job.is_running()
+                && c.job.progress().phase() == compare::Phase::Loading
+        })
     }
 
     /// Stops the snapshot being taken, if there is one, and waits for it, which is quick:
@@ -218,8 +284,10 @@ impl Jobs {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use revisor_core::job::Cancel;
     use revisor_core::profiles;
-    use revisor_core::store::ProfileSettings;
+    use revisor_core::scan::synthetic;
+    use revisor_core::store::{ProfileSettings, Snapshot};
     use std::fs;
     use std::path::PathBuf;
     use std::thread;
@@ -250,10 +318,34 @@ mod tests {
         }
     }
 
+    /// An exclusive lock on the database of `profile`, held until the connection is
+    /// dropped: no other connection can read the database meanwhile, as none can while a
+    /// snapshot is committed or the database compacted.
+    fn lock(profile: &ProfileFile) -> rusqlite::Connection {
+        let conn = rusqlite::Connection::open(&profile.path).unwrap();
+        conn.execute_batch("BEGIN EXCLUSIVE").unwrap();
+        conn
+    }
+
     /// Starts compacting the database of `profile`, with `snapshots` as its snapshots.
     fn compact(jobs: &mut Jobs, profile: &ProfileFile, snapshots: Vec<SnapshotInfo>) {
         let store = Store::open(&profile.path).unwrap();
         jobs.start_compaction(profile.clone(), snapshots, store);
+    }
+
+    /// Takes two snapshots of `profile` and gives their ids, oldest first.
+    fn two_snapshots(profile: &ProfileFile) -> (i64, i64) {
+        let mut jobs = Jobs::default();
+        for _ in 0..2 {
+            jobs.start_snapshot(profile.clone());
+            poll_until_idle(&mut jobs);
+        }
+        let ids: Vec<i64> = profiles::snapshots_of(&profile.path)
+            .unwrap()
+            .iter()
+            .map(|s| s.id)
+            .collect();
+        (ids[0], ids[1])
     }
 
     /// Polls `jobs`, as the window's timer does, until no job is left, and gives the
@@ -273,13 +365,18 @@ mod tests {
     fn the_flags_come_from_the_jobs_for_the_open_profile() {
         let dir = Profiles::new("flags");
         let (a, b) = (dir.profile("A"), dir.profile("B"));
+        let (first, second) = two_snapshots(&a);
         let mut jobs = Jobs::default();
         assert_eq!(jobs.flags(Some(&a.path)), Flags::default());
 
+        // The comparison waits for the locked database, so it runs meanwhile.
+        let held = lock(&a);
+        jobs.start_comparison(a.clone(), first, second);
         jobs.start_snapshot(a.clone());
         compact(&mut jobs, &b, Vec::new());
         let running = Flags {
             snapshot_running: true,
+            comparison_running: true,
             compaction_running: true,
             ..Flags::default()
         };
@@ -299,24 +396,46 @@ mod tests {
         );
         assert_eq!(jobs.flags(None), running);
 
-        poll_until_idle(&mut jobs);
+        drop(held);
+        let ended = poll_until_idle(&mut jobs);
         assert_eq!(jobs.flags(Some(&a.path)), Flags::default());
         assert_eq!(jobs.flags(Some(&b.path)), Flags::default());
+        assert!(
+            ended.iter().any(|e| matches!(
+                e,
+                Event::Comparison(Ended { profile, outcome: Ok(Outcome::Done(d)) })
+                    if *profile == a && (d.earlier.id, d.later.id) == (first, second)
+            )),
+            "{ended:?}"
+        );
     }
 
     #[test]
-    fn the_progress_row_shows_a_snapshot_before_a_compaction() {
+    fn the_progress_row_shows_a_snapshot_before_a_comparison_before_a_compaction() {
         let dir = Profiles::new("shown");
         let (a, b) = (dir.profile("A"), dir.profile("B"));
+        let (first, second) = two_snapshots(&a);
         let mut jobs = Jobs::default();
         assert!(jobs.shown().is_none());
 
         compact(&mut jobs, &b, Vec::new());
         assert!(matches!(jobs.shown(), Some(Shown::Compaction(p)) if *p == b));
+        // A comparison shows only once it has run for a second (TASK-11 #7).
+        let held = lock(&a);
+        jobs.start_comparison(a.clone(), first, second);
+        assert!(matches!(jobs.shown(), Some(Shown::Compaction(_))));
+        thread::sleep(COMPARISON_SHOWN_AFTER + Duration::from_millis(100));
+        assert!(matches!(
+            jobs.shown(),
+            Some(Shown::Comparison { progress, elapsed })
+                if progress.phase() == compare::Phase::Waiting && elapsed >= COMPARISON_SHOWN_AFTER
+        ));
+        assert_eq!(jobs.shown().map(|s| s.kind()), Some(Kind::Comparison));
         jobs.start_snapshot(a.clone());
         assert!(matches!(jobs.shown(), Some(Shown::Snapshot(_))));
         assert_eq!(jobs.shown().map(|s| s.kind()), Some(Kind::Snapshot));
 
+        drop(held);
         let ended = poll_until_idle(&mut jobs);
         assert!(jobs.shown().is_none());
         assert!(
@@ -329,10 +448,93 @@ mod tests {
         assert!(
             ended.iter().any(|e| matches!(
                 e,
+                Event::Comparison(Ended { profile, outcome: Ok(Outcome::Done(_)) }) if *profile == a
+            )),
+            "{ended:?}"
+        );
+        assert!(
+            ended.iter().any(|e| matches!(
+                e,
                 Event::Compaction(Ended { profile, outcome: Ok(Outcome::Done(_)) }) if *profile == b
             )),
             "{ended:?}"
         );
+    }
+
+    #[test]
+    fn a_new_comparison_takes_the_place_of_the_one_that_runs() {
+        let dir = Profiles::new("replace");
+        let a = dir.profile("A");
+        let (first, second) = two_snapshots(&a);
+        let mut jobs = Jobs::default();
+        let held = lock(&a);
+        jobs.start_comparison(a.clone(), first, first);
+        jobs.start_comparison(a.clone(), first, second);
+        assert!(jobs.runs(Kind::Comparison));
+        drop(held);
+        let ended = poll_until_idle(&mut jobs);
+        // The first comparison is forgotten: only the second one ends.
+        let comparisons: Vec<(i64, i64)> = ended
+            .iter()
+            .filter_map(|e| match e {
+                Event::Comparison(Ended {
+                    outcome: Ok(Outcome::Done(d)),
+                    ..
+                }) => Some((d.earlier.id, d.later.id)),
+                _ => None,
+            })
+            .collect();
+        assert_eq!(comparisons, [(first, second)]);
+        assert_eq!(ended.len(), 1, "{ended:?}");
+    }
+
+    #[test]
+    fn a_comparison_holds_the_database_while_it_loads_its_trees() {
+        let dir = Profiles::new("holds");
+        let (a, b) = (dir.profile("A"), dir.profile("B"));
+        // Two large snapshots, so that loading them takes a while.
+        let (first, second) = {
+            let mut store = Store::open(&a.path).unwrap();
+            let tree = synthetic(200_000);
+            let first = store
+                .save(&Snapshot::of_tree(tree.clone()), &Cancel::new())
+                .unwrap();
+            let second = store
+                .save(&Snapshot::of_tree(tree), &Cancel::new())
+                .unwrap();
+            (first, second)
+        };
+        let mut jobs = Jobs::default();
+        assert!(!jobs.comparison_holds_database(&a.path));
+
+        // A comparison that waits for the database holds nothing of it.
+        let held = lock(&a);
+        jobs.start_comparison(a.clone(), first, second);
+        let deadline = Instant::now() + Duration::from_secs(60);
+        while jobs.shown().is_none_or(|s| s.kind() != Kind::Comparison) {
+            assert!(Instant::now() < deadline, "the comparison never showed");
+            thread::sleep(Duration::from_millis(5));
+        }
+        assert!(!jobs.comparison_holds_database(&a.path));
+        // Then it loads, holding the database, and lets it go once the trees are loaded,
+        // polled or not.
+        drop(held);
+        while !jobs.comparison_holds_database(&a.path) {
+            assert!(Instant::now() < deadline, "the comparison never loaded");
+            assert!(
+                jobs.poll().is_empty(),
+                "the comparison ended before it was seen loading"
+            );
+            thread::sleep(Duration::from_millis(1));
+        }
+        assert!(!jobs.comparison_holds_database(&b.path));
+        while jobs.comparison_holds_database(&a.path) {
+            assert!(Instant::now() < deadline, "the comparison never loaded");
+            thread::sleep(Duration::from_millis(1));
+        }
+        assert!(jobs.runs(Kind::Comparison));
+        poll_until_idle(&mut jobs);
+        assert!(!jobs.comparison_holds_database(&a.path));
     }
 
     #[test]

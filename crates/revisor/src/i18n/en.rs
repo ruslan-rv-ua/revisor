@@ -1,11 +1,12 @@
 //! English interface strings, the base language.
 
 use revisor_core::exclude::PatternError;
-use revisor_core::settings::{FocusAfterSnapshot, Language};
+use revisor_core::settings::{FocusAfterComparison, FocusAfterSnapshot, Language};
 
 use super::plural::{Category, category};
 use super::{Failure, Lang, Strings};
 use crate::commands::{CommandId, MenuId, Pane, Reason, SubmenuId};
+use crate::difference::Kind;
 
 pub struct En;
 
@@ -101,6 +102,8 @@ impl Strings for En {
             }
             Reason::CompactionOfThisProfile => "the database of this profile is being compacted",
             Reason::NoSelection => "no snapshot is selected",
+            Reason::NoPreviousSnapshot => "there is no previous snapshot",
+            Reason::NoOtherSnapshot => "the profile has no other snapshot",
             Reason::AlreadyAdmin => "revisor is already running as administrator",
             Reason::NotYet => "this version of revisor does not have this command yet",
         }
@@ -336,6 +339,7 @@ impl Strings for En {
                 "this is not a revisor settings file: move it out of the data folder".into()
             }
             Failure::Cancelled => "the action was cancelled".into(),
+            Failure::SnapshotDeleted => "the snapshot has been deleted meanwhile".into(),
             Failure::Other {
                 text,
                 code: Some(code),
@@ -582,8 +586,69 @@ impl Strings for En {
         "Later"
     }
 
-    fn demo_change(&self, n: usize) -> String {
-        format!("Demo change {n}")
+    fn comparing(&self) -> &'static str {
+        "Comparing snapshots…"
+    }
+
+    fn comparing_percent(&self, percent: u8) -> String {
+        format!("Comparing snapshots: {percent}%…")
+    }
+
+    fn waiting_for_database(&self) -> &'static str {
+        "Waiting for the profile database…"
+    }
+
+    fn comparison_finished(&self) -> &'static str {
+        "Comparison finished."
+    }
+
+    fn comparison_cancelled(&self) -> &'static str {
+        "Comparison cancelled."
+    }
+
+    fn comparison_failed(&self, reason: &str) -> String {
+        format!("The snapshots were not compared: {reason}.")
+    }
+
+    fn comparison_stopped(&self) -> &'static str {
+        "the comparison stopped unexpectedly"
+    }
+
+    fn compare_with_label(&self, snapshot: &str) -> String {
+        format!("Compare the snapshot {snapshot} with")
+    }
+
+    fn compare(&self) -> &'static str {
+        "Compare"
+    }
+
+    fn focus_after_comparison(&self) -> &'static str {
+        "Focus after a comparison"
+    }
+
+    fn comparison_focus_option(&self, value: FocusAfterComparison) -> &'static str {
+        match value {
+            FocusAfterComparison::IfNotMoved => "If focus has not moved",
+            FocusAfterComparison::Always => "Always",
+            FocusAfterComparison::Never => "Never",
+        }
+    }
+
+    fn column_change(&self) -> &'static str {
+        "Change"
+    }
+
+    fn column_path(&self) -> &'static str {
+        "Path"
+    }
+
+    fn change_kind(&self, kind: Kind) -> &'static str {
+        match kind {
+            Kind::Added => "Added",
+            Kind::Deleted => "Deleted",
+            Kind::Modified => "Modified",
+            Kind::Inaccessible => "Inaccessible",
+        }
     }
 
     fn demo_done(&self, command: &str) -> String {
