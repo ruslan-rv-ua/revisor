@@ -129,10 +129,17 @@ impl Change {
 pub struct Inaccessible {
     pub old: Option<u32>,
     pub new: Option<u32>,
+    /// How many changes come before the entry in tree order: the entry stands right
+    /// before the change at this index, so the changes and the inaccessible entries
+    /// merge into one list in tree order (TASK-13 #20). An entry that is also modified
+    /// comes before its change.
+    pub changes_before: u32,
 }
 
 /// Differences between two trees, in tree order: each folder comes before its contents,
-/// and the children of a folder are sorted by name.
+/// and the children of a folder are sorted by name. The two lists are each in tree order;
+/// [`Inaccessible::changes_before`] says where the inaccessible entries stand among the
+/// changes.
 #[derive(Clone, Debug, Default)]
 pub struct Diff {
     pub changes: Vec<Change>,
@@ -524,7 +531,12 @@ impl Walk<'_, '_> {
     }
 
     fn inaccessible(&mut self, old: Option<u32>, new: Option<u32>) {
-        self.diff.inaccessible.push(Inaccessible { old, new });
+        let changes_before = self.diff.changes.len() as u32;
+        self.diff.inaccessible.push(Inaccessible {
+            old,
+            new,
+            changes_before,
+        });
     }
 
     /// Where a folder named `name`, an item of the frame on top, stands against the

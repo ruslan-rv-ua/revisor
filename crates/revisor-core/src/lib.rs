@@ -6,7 +6,7 @@ pub mod elevation;
 pub mod exclude;
 pub mod folders;
 pub mod job;
-mod names;
+pub mod names;
 pub mod profiles;
 pub mod scan;
 pub mod settings;
