@@ -504,6 +504,44 @@ fn inaccessible_entries_are_never_added_or_deleted() {
 }
 
 #[test]
+fn inaccessible_entries_say_where_they_stand_among_the_changes() {
+    // Tree order: app, app\app.exe, app\readme.txt, …, link, locked, Notes.txt, z.txt.
+    let old = sample();
+    let mut new = sample();
+    new.get(r"app\app.exe").size = 1;
+    let exe = new.get(r"app\app.exe");
+    exe.inaccessible = true;
+    exe.version = VersionInfo::NotRead;
+    new.add("locked", EntryKind::Dir).inaccessible = true;
+    new.get("Notes.txt").size = 7;
+    new.add("z.txt", EntryKind::File);
+    let diff = diff(
+        Subtree::whole(&old.0),
+        Subtree::whole(&new.0),
+        &Rules::plain(),
+        &Cancel::new(),
+    )
+    .unwrap();
+    let changes: Vec<String> = diff
+        .changes
+        .iter()
+        .map(|c| rel_path(&new.0, c.new.unwrap()))
+        .collect();
+    assert_eq!(changes, [r"app\app.exe", "Notes.txt", "z.txt"]);
+    // The exe is inaccessible and modified: listed before its change. The locked
+    // folder stands between the exe and Notes.txt.
+    let placed: Vec<(String, u32)> = diff
+        .inaccessible
+        .iter()
+        .map(|i| (rel_path(&new.0, i.new.unwrap()), i.changes_before))
+        .collect();
+    assert_eq!(
+        placed,
+        [(r"app\app.exe".to_string(), 0), ("locked".to_string(), 1)]
+    );
+}
+
+#[test]
 fn children_of_an_unreadable_folder_are_not_added_or_deleted() {
     let old = sample();
     // The folder could not be listed this time: only part of it is known.

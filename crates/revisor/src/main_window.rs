@@ -3,9 +3,10 @@
 //! the window, the snapshot being taken, with its progress and its outcome (TASK-8), the
 //! snapshot list of the open profile with its comments, deletion and the compaction
 //! that follows it (TASK-9), the comparison of the current snapshot with another, made
-//! in the background, whose difference the difference list shows (TASK-11), and
-//! «Знімок + порівняння», which chains a snapshot and its comparison (TASK-12). The
-//! profile box lists the profiles (TASK-7).
+//! in the background, whose difference the difference list shows (TASK-11) with the field
+//! «Порівняння» above it and its filter under it (TASK-13), and «Знімок + порівняння»,
+//! which chains a snapshot and its comparison (TASK-12). The profile box lists the
+//! profiles (TASK-7).
 
 use std::cell::{Cell, RefCell};
 use std::ffi::c_void;
@@ -19,7 +20,9 @@ use std::time::Duration;
 use revisor_core::compare::{self, CompareError, Difference};
 use revisor_core::job::{Lost, Outcome};
 use revisor_core::profiles::{self, ProfileError, ProfileFile, Unreadable};
-use revisor_core::settings::{FocusAfterComparison, FocusAfterSnapshot, Language, Settings};
+use revisor_core::settings::{
+    DifferenceSort, FocusAfterComparison, FocusAfterSnapshot, Language, Settings,
+};
 use revisor_core::snapshot::{Phase, Report, SnapshotError};
 use revisor_core::store::{
     Compacted, FolderState, ProfileSettings, SnapshotInfo, Store, StoreError, Unavailable,
@@ -28,7 +31,7 @@ use wxdragon::prelude::*;
 
 use crate::commands::{COMMANDS, CommandId, CommandKind, MenuId, Pane, command};
 use crate::compare_window;
-use crate::difference::{self, Rows};
+use crate::difference::{self, Column, List, View};
 use crate::failure;
 use crate::help;
 use crate::i18n::Strings;
@@ -50,6 +53,15 @@ use crate::snapshots::{
 use crate::state::{AppState, ChangeType, SortColumn};
 use crate::status::Announcer;
 use crate::win32;
+
+/// The commands that show or hide the types of the difference list's rows, in the order
+/// of [`ChangeType::ALL`] (TASK-13 #22).
+const TYPE_COMMANDS: [CommandId; 4] = [
+    CommandId::ShowAdded,
+    CommandId::ShowDeleted,
+    CommandId::ShowModified,
+    CommandId::ShowInaccessible,
+];
 
 /// The wx id of the first command; the others follow in table order.
 const FIRST_COMMAND_ID: i32 = 1000;
@@ -81,15 +93,28 @@ pub const SETTINGS_FILE: &str = "settings.db";
 pub const DATE_TIME_WIDTH: i32 = 190;
 pub const COMMENT_WIDTH: i32 = 420;
 
-/// The widths of the difference list's columns: the kind of the change is short, the
-/// path takes the rest (TASK-11).
-const CHANGE_WIDTH: i32 = 130;
-const PATH_WIDTH: i32 = 700;
+/// The widths of the difference list's columns, in the order of [`Column::ALL`]: the
+/// folder, the longest, comes last (TASK-13 #12).
+const COLUMN_WIDTHS: [i32; 6] = [220, 140, 200, 90, 160, 420];
+
+/// The height of the field «Порівняння»: the line of the pair, the summary and a warning
+/// show at once; more warnings scroll (TASK-13 #1).
+const COMPARISON_HEIGHT: i32 = 64;
+
+/// How long the typing in the field «Фільтр:» pauses, in milliseconds, before the status
+/// bar says how many rows the filter shows (TASK-13 #26): a message after every letter
+/// would cut off the screen reader's echo of the typing.
+const SHOWING_PAUSE: i32 = 1000;
 
 /// The access keys of the labels of the main window. They do not take the letters of the
 /// menus, which would no longer open while the focus is in the panel.
 const PROFILE_ACCESS: u8 = b'R';
 const PROGRESS_ACCESS: u8 = b'P';
+/// The field «Порівняння», the field «Фільтр:» and the check boxes of the types under the
+/// difference list, in the order of [`ChangeType::ALL`] (TASK-13).
+const COMPARISON_ACCESS: u8 = b'M';
+const FILTER_ACCESS: u8 = b'L';
+const TYPE_ACCESS: [u8; 4] = *b"ATEB";
 
 /// The access key of the comment field in the «Коментар» window.
 const COMMENT_ACCESS: u8 = b'C';
@@ -120,10 +145,14 @@ fn cancel_command(kind: Kind) -> CommandId {
 }
 
 /// The positions of the labels and buttons in [`MainWindow::labels`], which
-/// `Route::FocusLabel` names them by.
+/// `Route::FocusLabel` names them by; the check boxes of the types follow
+/// `LABEL_TYPES`, one after another.
 const LABEL_PROFILE: usize = 0;
 const LABEL_PROGRESS: usize = 1;
 const LABEL_CANCEL: usize = 2;
+const LABEL_COMPARISON: usize = 3;
+const LABEL_FILTER: usize = 4;
+const LABEL_TYPES: usize = 5;
 
 /// The access keys of the action buttons of questions: «Видалити», «Перезапустити» and
 /// «Закрити».
@@ -166,16 +195,34 @@ pub struct MainWindow {
     /// Cancels the job the progress row shows.
     cancel_button: Button,
     snapshots: ListCtrl,
-    /// The difference lists: two virtual lists over `difference_rows`, which they ask for
+    /// The field «Порівняння» above the difference list: the pair of snapshots, the
+    /// summary and the warnings, or, before the first comparison, how to compare
+    /// (TASK-13 #1, #11).
+    comparison_field: TextCtrl,
+    /// The panel the difference lists take turns in: the one shown fills it, the other is
+    /// disabled and has no size (TASK-13).
+    difference_holder: Panel,
+    /// The difference lists: two virtual lists over `difference_list`, which they ask for
     /// the text of the rows they show (TASK-11 #5), one of them shown at a time. A new
     /// difference goes into the other list, which then takes the shown one's place: the
     /// focus comes to it as to a new list, which screen readers name again even when the
     /// focus was in the old one (#21); nothing says so when the rows under the focus are
-    /// merely replaced.
+    /// merely replaced. Neither list is ever hidden: UI Automation goes through every row
+    /// of a list that is shown after it was hidden, which keeps the window busy for
+    /// seconds with a large difference (TASK-13 #29), so the other list is disabled — no
+    /// stop for Tab — and has no size instead.
     differences: [ListCtrl; 2],
     /// Which of `differences` is shown.
     shown_difference: Cell<usize>,
-    difference_rows: Rc<RefCell<Rows>>,
+    /// The model of the difference list (TASK-13).
+    difference_list: Rc<RefCell<List>>,
+    /// The field «Фільтр:» and the check boxes of the types under the difference list
+    /// (TASK-13 #22, #24), which work once there is a difference.
+    filter_field: TextCtrl,
+    type_boxes: [CheckBox; 4],
+    /// Says how many rows the filter shows once the typing in the field «Фільтр:» pauses
+    /// (TASK-13 #26).
+    showing_timer: Timer<Frame>,
     /// Polls the jobs.
     timer: Timer<Frame>,
     /// The background jobs: a snapshot being taken, a comparison being made and a
@@ -236,6 +283,30 @@ impl MainWindow {
         frame.set_existing_status_bar(Some(&status));
         win32::make_live_region(status.get_handle());
 
+        let settings_path = data_dir.join(SETTINGS_FILE);
+        let settings =
+            Settings::open(&settings_path).map_err(|e| s.failure(&failure::of_settings(&e)));
+        // The view of the difference list and the size format, as kept (TASK-13 #17, #28).
+        let view = settings
+            .as_ref()
+            .ok()
+            .map(|settings| View {
+                types: settings.difference_types().unwrap_or([true; 4]),
+                sort: settings.difference_sort().unwrap_or_default(),
+            })
+            .unwrap_or_default();
+        let size_format = settings
+            .as_ref()
+            .ok()
+            .and_then(|settings| settings.size_format().ok())
+            .unwrap_or_default();
+        let difference_list = Rc::new(RefCell::new(List::new(
+            s,
+            Box::new(win32::RegionalFormat),
+            view,
+            size_format,
+        )));
+
         let panel = Panel::builder(&frame).build();
         // Made in tab order. Each label comes right before its control, so screen readers
         // name the control after it.
@@ -270,38 +341,59 @@ impl MainWindow {
         snapshots.insert_column(1, s.column_comment(), ListColumnFormat::Left, COMMENT_WIDTH);
         win32::full_row_select_no_sort(snapshots.get_handle());
         win32::set_accessible_name(snapshots.get_handle(), s.pane(Pane::Snapshots));
+        let comparison_label = StaticText::builder(&panel)
+            .with_label(&field_label(s, s.comparison_field(), COMPARISON_ACCESS))
+            .build();
+        // Read with the arrows a line at a time, so the lines do not wrap (TASK-13 #1).
+        let comparison_field = TextCtrl::builder(&panel)
+            .with_style(
+                TextCtrlStyle::MultiLine | TextCtrlStyle::ReadOnly | TextCtrlStyle::DontWrap,
+            )
+            .build();
+        comparison_field.set_min_size(Size::new(-1, COMPARISON_HEIGHT));
         // Virtual lists: a difference may have a million rows (TASK-11 #6), and a list
-        // asks for the text of the ones it shows. Two of them, the second hidden at first.
-        let difference_rows = Rc::new(RefCell::new(Rows::default()));
+        // asks for the text of the ones it shows. Two of them in a panel of their own, the
+        // second disabled and without a size at first.
+        let difference_holder = Panel::builder(&panel).build();
         let differences = [(); 2].map(|()| {
-            let list = ListCtrl::builder(&panel)
+            let list = ListCtrl::builder(&difference_holder)
                 .with_style(
                     ListCtrlStyle::Report | ListCtrlStyle::Virtual | ListCtrlStyle::SingleSel,
                 )
                 .build();
-            list.insert_column(0, s.column_change(), ListColumnFormat::Left, CHANGE_WIDTH);
-            list.insert_column(1, s.column_path(), ListColumnFormat::Left, PATH_WIDTH);
-            win32::full_row_select_no_sort(list.get_handle());
-            win32::set_accessible_name(list.get_handle(), s.pane(Pane::Difference));
-            let rows_shown = Rc::clone(&difference_rows);
+            for (i, column) in Column::ALL.into_iter().enumerate() {
+                let format = match column {
+                    Column::Size => ListColumnFormat::Right,
+                    _ => ListColumnFormat::Left,
+                };
+                list.insert_column(i as i64, s.column(column), format, COLUMN_WIDTHS[i]);
+            }
+            // The headers sort the list (TASK-13 #21).
+            win32::full_row_select(list.get_handle());
+            let model = Rc::clone(&difference_list);
             list.set_virtual_text_callback(move |row, column| {
-                let rows = rows_shown.borrow();
                 let row = usize::try_from(row).unwrap_or(usize::MAX);
-                match column {
-                    0 => rows
-                        .kind(row)
-                        .map(|kind| s.change_kind(kind).to_string())
-                        .unwrap_or_default(),
-                    _ => rows
-                        .path(row)
-                        .map(|path| path.to_string_lossy().into_owned())
-                        .unwrap_or_default(),
-                }
+                let column = usize::try_from(column)
+                    .ok()
+                    .and_then(|i| Column::ALL.get(i).copied());
+                column.map_or_else(String::new, |column| model.borrow().cell(row, column))
             });
             list
         });
-        differences[1].show(false);
-        // The panel answers for the lists' text while they are empty.
+        differences[1].enable(false);
+        // The holder answers for the difference lists' text while they are empty.
+        win32::subclass_list_parent(difference_holder.get_handle());
+        let filter_label = StaticText::builder(&panel)
+            .with_label(&field_label(s, s.filter_field(), FILTER_ACCESS))
+            .build();
+        let filter_field = TextCtrl::builder(&panel).build();
+        let type_boxes = ChangeType::ALL.map(|kind| {
+            let name = s.command(TYPE_COMMANDS[kind as usize]);
+            CheckBox::builder(&panel)
+                .with_label(&button_label(s, name, TYPE_ACCESS[kind as usize], false))
+                .build()
+        });
+        // The panel answers for the snapshot list's text while it is empty.
         win32::subclass_list_parent(panel.get_handle());
 
         let profile_row = BoxSizer::builder(Orientation::Horizontal).build();
@@ -327,19 +419,39 @@ impl MainWindow {
             5,
         );
         progress_row.add(&cancel_button, 0, SizerFlag::All, 5);
+        let filter_row = BoxSizer::builder(Orientation::Horizontal).build();
+        filter_row.add(
+            &filter_label,
+            0,
+            SizerFlag::AlignCenterVertical | SizerFlag::All,
+            5,
+        );
+        filter_row.add(&filter_field, 1, SizerFlag::All, 5);
+        for check_box in &type_boxes {
+            filter_row.add(
+                check_box,
+                0,
+                SizerFlag::AlignCenterVertical | SizerFlag::All,
+                5,
+            );
+        }
         let sizer = BoxSizer::builder(Orientation::Vertical).build();
         sizer.add_sizer(&profile_row, 0, SizerFlag::Expand, 0);
         sizer.add_sizer(&progress_row, 0, SizerFlag::Expand, 0);
         sizer.add(&snapshots, 1, SizerFlag::Expand | SizerFlag::All, 5);
-        for list in &differences {
-            sizer.add(list, 2, SizerFlag::Expand | SizerFlag::All, 5);
-        }
+        sizer.add(
+            &comparison_label,
+            0,
+            SizerFlag::Left | SizerFlag::Right | SizerFlag::Top,
+            5,
+        );
+        sizer.add(&comparison_field, 0, SizerFlag::Expand | SizerFlag::All, 5);
+        sizer.add(&difference_holder, 2, SizerFlag::Expand | SizerFlag::All, 5);
+        sizer.add_sizer(&filter_row, 0, SizerFlag::Expand, 0);
         panel.set_sizer(sizer, true);
         let timer = Timer::new(&frame);
+        let showing_timer = Timer::new(&frame);
 
-        let settings_path = data_dir.join(SETTINGS_FILE);
-        let settings =
-            Settings::open(&settings_path).map_err(|e| s.failure(&failure::of_settings(&e)));
         let window = Rc::new(Self {
             frame,
             s,
@@ -354,9 +466,14 @@ impl MainWindow {
             gauge,
             cancel_button,
             snapshots,
+            comparison_field,
+            difference_holder,
             differences,
             shown_difference: Cell::new(0),
-            difference_rows,
+            difference_list,
+            filter_field,
+            type_boxes,
+            showing_timer,
             timer,
             jobs: RefCell::new(Jobs::default()),
             shown_kind: Cell::new(None),
@@ -480,6 +597,39 @@ impl MainWindow {
         let w = Rc::clone(self);
         self.snapshots.on_item_focused(move |_| w.sync_selection());
 
+        // The list shown fills the panel of the difference lists.
+        let w = Rc::clone(self);
+        self.difference_holder.on_size(move |data| {
+            w.place_difference_lists();
+            if let WindowEventData::Size(event) = data {
+                event.event.skip(true);
+            }
+        });
+
+        // The difference list (TASK-13): its headers sort it, the focus picks the one row
+        // selected, and its filter's field and check boxes change what it shows.
+        for (i, list) in self.differences.iter().enumerate() {
+            let w = Rc::clone(self);
+            list.on_column_click(move |event| {
+                if let Some(column) = event.get_column() {
+                    w.sort_by_column(column);
+                }
+            });
+            let w = Rc::clone(self);
+            list.on_item_focused(move |event| w.difference_focused(i, event.get_item_index()));
+        }
+        let w = Rc::clone(self);
+        self.filter_field.on_text_changed(move |_| w.filter_typed());
+        for kind in ChangeType::ALL {
+            let w = Rc::clone(self);
+            self.type_boxes[kind as usize].on_toggled(move |_| w.type_toggled(kind));
+        }
+        let w = Rc::clone(self);
+        self.showing_timer.on_tick(move |_| {
+            let text = w.difference_list.borrow().showing();
+            w.say(&text);
+        });
+
         // A right click: the list under the mouse has the focus by then.
         let w = Rc::clone(self);
         self.panel.on_context_menu(move |event| {
@@ -496,18 +646,24 @@ impl MainWindow {
         });
     }
 
-    /// The access keys of the main window's labels and buttons, for `keyboard::route`:
-    /// those of the progress row only while it is shown, with the Cancel button's letter
-    /// being that of the command of the job shown.
+    /// The access keys of the main window's labels and buttons, for `keyboard::route`, at
+    /// the positions `LABEL_*`: those of the progress row only while it is shown, with
+    /// the Cancel button's letter being that of the command of the job shown; a place
+    /// left empty holds 0, which is no letter.
     fn labels(&self) -> Vec<u8> {
-        match self.shown_kind() {
-            Some(kind) => vec![
-                PROFILE_ACCESS,
-                PROGRESS_ACCESS,
-                command(cancel_command(kind)).access,
-            ],
-            None => vec![PROFILE_ACCESS],
-        }
+        let (progress, cancel) = match self.shown_kind() {
+            Some(kind) => (PROGRESS_ACCESS, command(cancel_command(kind)).access),
+            None => (0, 0),
+        };
+        let mut labels = vec![
+            PROFILE_ACCESS,
+            progress,
+            cancel,
+            COMPARISON_ACCESS,
+            FILTER_ACCESS,
+        ];
+        labels.extend(TYPE_ACCESS);
+        labels
     }
 
     /// The kind of the job the progress row shows, if it shows one.
@@ -531,6 +687,21 @@ impl MainWindow {
         } else if focused == self.profile.get_handle() {
             Focus {
                 part: Some(Pane::Snapshots),
+                control: Control::Other,
+            }
+        } else if focused == self.filter_field.get_handle() {
+            Focus {
+                part: Some(Pane::Difference),
+                control: Control::FilterField,
+            }
+        } else if focused == self.comparison_field.get_handle() {
+            Focus {
+                part: Some(Pane::Difference),
+                control: Control::TextEntry,
+            }
+        } else if self.type_boxes.iter().any(|b| b.get_handle() == focused) {
+            Focus {
+                part: Some(Pane::Difference),
                 control: Control::Other,
             }
         } else if !focused.is_null() && win32::is_text_field(focused) {
@@ -611,7 +782,19 @@ impl MainWindow {
                     self.run(cancel_command(kind));
                 }
             }
+            Route::FocusLabel(LABEL_COMPARISON) => self.comparison_field.set_focus(),
+            // The filter's controls work once there is a difference; before that their
+            // letters say why not, as the commands do.
+            Route::FocusLabel(LABEL_FILTER) => self.run(CommandId::FilterByText),
+            Route::FocusLabel(label) if (LABEL_TYPES..LABEL_TYPES + 4).contains(&label) => {
+                let i = label - LABEL_TYPES;
+                self.run(TYPE_COMMANDS[i]);
+                if self.type_boxes[i].is_enabled() {
+                    self.type_boxes[i].set_focus();
+                }
+            }
             Route::FocusLabel(_) => {}
+            Route::ClearFilter => self.speaking(|| self.clear_filter()),
             Route::ContextMenu(pane) => self.show_context_menu(pane, None),
             Route::SelectAll(pane) => win32::select_all(self.list(pane).get_handle()),
             Route::Pass => {}
@@ -681,37 +864,29 @@ impl MainWindow {
             CommandId::CompareWithPrevious => self.compare_with_previous(),
             CommandId::CompareWith => self.compare_with(),
             CommandId::CancelComparison => self.cancel_comparison(),
+            CommandId::FilterByText => self.filter_by_text(),
+            CommandId::ShowAdded => self.toggle_type(ChangeType::Added),
+            CommandId::ShowDeleted => self.toggle_type(ChangeType::Deleted),
+            CommandId::ShowModified => self.toggle_type(ChangeType::Modified),
+            CommandId::ShowInaccessible => self.toggle_type(ChangeType::Inaccessible),
+            CommandId::SortByPath => self.sort_by(SortColumn::Path),
+            CommandId::SortByName => self.sort_by(SortColumn::Name),
+            CommandId::SortByChange => self.sort_by(SortColumn::Change),
+            CommandId::SortByWhatChanged => self.sort_by(SortColumn::WhatChanged),
+            CommandId::SortBySize => self.sort_by(SortColumn::Size),
+            CommandId::SortByDateModified => self.sort_by(SortColumn::DateModified),
+            CommandId::SortByFolder => self.sort_by(SortColumn::Folder),
+            CommandId::SortAscending => self.sort_direction(false),
+            CommandId::SortDescending => self.sort_direction(true),
             CommandId::KeyboardShortcuts => help::show_shortcuts(&self.frame, s),
             CommandId::About => help::show_about(&self.frame, s),
-            // Only the demo state gets here: the other commands' tasks are not done yet.
-            _ => {
-                self.demo_run(id);
+            // Only the demo state gets here: TASK-14's commands are not done yet.
+            CommandId::Details | CommandId::ShowInExplorer => {
                 self.say(&s.demo_done(s.command(id)));
             }
         }
         self.refresh_menus();
         true
-    }
-
-    /// What the demo state does for a command: the filter and sort items keep their marks.
-    fn demo_run(&self, id: CommandId) {
-        let mut state = self.state.borrow_mut();
-        match id {
-            CommandId::ShowAdded => state.toggle_shown(ChangeType::Added),
-            CommandId::ShowDeleted => state.toggle_shown(ChangeType::Deleted),
-            CommandId::ShowModified => state.toggle_shown(ChangeType::Modified),
-            CommandId::ShowInaccessible => state.toggle_shown(ChangeType::Inaccessible),
-            CommandId::SortByPath => state.sort = SortColumn::Path,
-            CommandId::SortByName => state.sort = SortColumn::Name,
-            CommandId::SortByChange => state.sort = SortColumn::Change,
-            CommandId::SortByWhatChanged => state.sort = SortColumn::WhatChanged,
-            CommandId::SortBySize => state.sort = SortColumn::Size,
-            CommandId::SortByDateModified => state.sort = SortColumn::DateModified,
-            CommandId::SortByFolder => state.sort = SortColumn::Folder,
-            CommandId::SortAscending => state.descending = false,
-            CommandId::SortDescending => state.descending = true,
-            _ => {}
-        }
     }
 
     // --- Profiles (TASK-7, TASK-9) ----------------------------------------------------
@@ -751,6 +926,9 @@ impl MainWindow {
         }
         *self.profiles.borrow_mut() = found;
         self.show_profile(selected);
+        // The difference names its profile as it is now: renamed, or deleted (TASK-13 #5).
+        self.refresh_pair();
+        self.describe_difference();
         if !unreadable.is_empty() {
             let messages: Vec<String> = unreadable
                 .iter()
@@ -924,6 +1102,7 @@ impl MainWindow {
         };
         let known = self.profiles.borrow().clone();
         let path = open.path.clone();
+        let old_path = open.path.clone();
         let updated = profile_window::show(
             &self.frame,
             s,
@@ -935,8 +1114,19 @@ impl MainWindow {
             },
         );
         if let Some(file) = updated {
+            self.profile_renamed(&old_path, &file);
             self.load_profiles(Some(&file.path));
             self.say(&s.profile_changed(&file.name));
+        }
+    }
+
+    /// The profile whose database was at `old` is now `profile`, its file renamed with it
+    /// (TASK-7): the difference of it, shown or still being made, names it so (TASK-13 #5).
+    fn profile_renamed(&self, old: &Path, profile: &ProfileFile) {
+        self.jobs.borrow_mut().profile_renamed(old, profile);
+        let mut list = self.difference_list.borrow_mut();
+        if list.profile().is_some_and(|p| p.path == old) {
+            list.set_profile(Some(profile.clone()));
         }
     }
 
@@ -1016,6 +1206,7 @@ impl MainWindow {
             language: self.language(),
             focus_after_snapshot: self.focus_after_snapshot(),
             focus_after_comparison: self.focus_after_comparison(),
+            size_format: self.difference_list.borrow().size_format(),
             confirm_snapshot_deletion: self.confirm_deletion(),
         };
         let Some(values) = settings_window::show(&self.frame, s, initial) else {
@@ -1026,6 +1217,7 @@ impl MainWindow {
                 .set_language(values.language)
                 .and_then(|()| settings.set_focus_after_snapshot(values.focus_after_snapshot))
                 .and_then(|()| settings.set_focus_after_comparison(values.focus_after_comparison))
+                .and_then(|()| settings.set_size_format(values.size_format))
                 .and_then(|()| {
                     settings.set_confirm_snapshot_deletion(values.confirm_snapshot_deletion)
                 })
@@ -1039,6 +1231,13 @@ impl MainWindow {
                 return;
             }
         }
+        // Sizes in the list and the summary as the setting «Розмір» says (TASK-13 #17).
+        let current = {
+            let mut list = self.difference_list.borrow_mut();
+            list.set_size_format(values.size_format);
+            list.current()
+        };
+        self.refresh_difference(current);
         // «Same as Windows» is read now, not at the start: the language of Windows may
         // have changed meanwhile, and the next start would take the new one.
         let next = crate::language_of(values.language, win32::ui_language);
@@ -1190,6 +1389,8 @@ impl MainWindow {
                 );
                 let removed = comment.is_none();
                 self.rows.borrow_mut()[row].comment = comment;
+                self.refresh_pair();
+                self.describe_difference();
                 self.say(if removed {
                     s.comment_removed()
                 } else {
@@ -1277,6 +1478,8 @@ impl MainWindow {
         self.state.borrow_mut().snapshots = rows.len();
         self.sync_selection();
         self.update_empty_text();
+        self.refresh_pair();
+        self.describe_difference();
         self.jobs
             .borrow_mut()
             .start_compaction(open.clone(), rows, store);
@@ -1393,11 +1596,12 @@ impl MainWindow {
         let s = self.s;
         let focus = self.comparison_focus_place();
         self.sync_jobs();
-        match ended.outcome {
+        let Ended { profile, outcome } = ended;
+        match outcome {
             Ok(Outcome::Done(difference)) => {
                 let arrival = difference::arrival(self.focus_after_comparison(), focus);
                 let to_difference = arrival == difference::Arrival::Focus;
-                self.show_difference(difference, to_difference);
+                self.show_difference(difference, profile, to_difference);
                 if to_difference {
                     // The focus says it: the status bar only stops showing the
                     // comparison's progress, without a word from the screen reader.
@@ -1415,32 +1619,279 @@ impl MainWindow {
         }
     }
 
-    /// Puts `difference` in the difference list that is not shown, which then takes the
-    /// place of the shown one, with the keyboard focus moving to its first row when
-    /// `focus` says so (#12–#14, #21).
-    fn show_difference(&self, difference: Difference, focus: bool) {
-        let count = {
-            let mut rows = self.difference_rows.borrow_mut();
-            rows.replace(difference);
-            rows.len()
-        };
+    /// Puts `difference`, of `profile`, in the difference list that is not shown, which
+    /// then takes the place of the shown one, with the keyboard focus moving to its first
+    /// row when `focus` says so (#12–#14, #21). The view stays, the text filter goes
+    /// (TASK-13 #28), and the new list is named by the summary of its difference before
+    /// it shows, so a screen reader names it so when the focus comes to it (TASK-13 #3).
+    fn show_difference(&self, difference: Difference, profile: ProfileFile, focus: bool) {
+        let current = self
+            .difference_list
+            .borrow_mut()
+            .replace(difference, profile);
+        self.filter_field.change_value("");
+        self.showing_timer.stop();
+        self.refresh_pair();
+        let count = self.difference_list.borrow().len();
         let old = self.difference();
         let next = 1 - self.shown_difference.get();
         let new = &self.differences[next];
         new.set_item_count(count as i64);
-        if !self.difference_rows.borrow().is_empty() {
-            win32::select_only(new.get_handle(), 0);
+        if let Some(row) = current {
+            win32::select_only(new.get_handle(), row);
         }
-        new.show(true);
+        new.enable(true);
         self.shown_difference.set(next);
-        self.state.borrow_mut().has_difference = true;
+        self.place_difference_lists();
+        self.describe_difference();
         if focus {
             new.set_focus();
         }
-        old.show(false);
+        // Disabled once the focus has left it, so that the focus does not go elsewhere.
+        old.enable(false);
         old.set_item_count(0);
-        self.panel.layout();
+    }
+
+    /// The list shown fills the panel of the difference lists; the other has no size.
+    fn place_difference_lists(&self) {
+        let size = self.difference_holder.get_client_size();
+        let shown = self.shown_difference.get();
+        for (i, list) in self.differences.iter().enumerate() {
+            if i == shown {
+                list.set_size_with_pos(0, 0, size.width, size.height);
+            } else {
+                list.set_size_with_pos(0, 0, 0, 0);
+            }
+        }
+    }
+
+    // --- The difference list (TASK-13) --------------------------------------------------
+
+    /// The focus of the difference list `list` has moved to the row at `index`: the model
+    /// keeps it, and it is the one row selected, as the list selects only the change with
+    /// the focus (#19).
+    fn difference_focused(&self, list: usize, index: i32) {
+        let Ok(index) = usize::try_from(index) else {
+            return;
+        };
+        if list != self.shown_difference.get() {
+            return;
+        }
+        self.difference_list.borrow_mut().focus(index);
+        let hwnd = self.differences[list].get_handle();
+        if !win32::is_selected(hwnd, index) {
+            win32::select_only(hwnd, index);
+        }
+    }
+
+    /// Brings the difference list in line with the model once the view or the difference
+    /// changed: its rows, the row with the focus, at `current` (#21, #27), and what is
+    /// said about the difference.
+    fn refresh_difference(&self, current: Option<usize>) {
+        let list = self.difference();
+        let count = self.difference_list.borrow().len();
+        list.set_item_count(count as i64);
+        if let Some(row) = current {
+            win32::select_only(list.get_handle(), row);
+        }
+        if count > 0 {
+            list.refresh_items(0, count as i64 - 1);
+        }
+        self.describe_difference();
+    }
+
+    /// What is said about the difference shown: the name of the list and the text of its
+    /// empty area (#3, #11, #25), the field «Порівняння» (#1, #11), the check boxes and
+    /// the menu's marks, which follow the view (#22), the sort arrow of the headers (#21),
+    /// and the filter's controls, which work once there is a difference (#30).
+    fn describe_difference(&self) {
+        let s = self.s;
+        let (name, text, view, has_difference) = {
+            let list = self.difference_list.borrow();
+            (
+                list.list_name(),
+                list.comparison_text(),
+                list.view(),
+                list.has_difference(),
+            )
+        };
+        let text = text.unwrap_or_else(|| {
+            let key = |id| command(id).shortcut.map(|k| k.name(s)).unwrap_or_default();
+            s.nothing_compared_yet(
+                &key(CommandId::CompareWithPrevious),
+                &key(CommandId::CompareWith),
+            )
+        });
+        let list = self.difference().get_handle();
+        win32::set_accessible_name(list, &name);
+        win32::set_empty_text(list, &name);
+        // The caret stays where it is while the text does.
+        if self.comparison_field.get_value() != text {
+            self.comparison_field.change_value(&text);
+        }
+        for kind in ChangeType::ALL {
+            let check_box = &self.type_boxes[kind as usize];
+            check_box.set_value(view.types[kind as usize]);
+            check_box.enable(has_difference);
+        }
+        self.filter_field.enable(has_difference);
+        let arrow = Column::ALL
+            .iter()
+            .position(|column| column.sort() == view.sort.column)
+            .map(|i| (i, view.sort.descending));
+        win32::set_sort_arrow(list, arrow);
+        {
+            let mut state = self.state.borrow_mut();
+            state.has_difference = has_difference;
+            state.shown_types = view.types;
+            state.sort = view.sort;
+        }
         self.refresh_menus();
+    }
+
+    /// Brings the line of the pair in line with the profile and the snapshots of the
+    /// difference as they are now (#5): the profile renamed or deleted, a snapshot deleted,
+    /// a comment changed. The profile is known by its file.
+    fn refresh_pair(&self) {
+        let Some(profile) = self.difference_list.borrow().profile().cloned() else {
+            return;
+        };
+        let now = self
+            .profiles
+            .borrow()
+            .iter()
+            .find(|p| p.path == profile.path)
+            .cloned();
+        let snapshots = now.as_ref().and_then(|now| self.snapshots_now(now));
+        let mut list = self.difference_list.borrow_mut();
+        list.set_profile(now);
+        if let Some(snapshots) = snapshots {
+            list.set_snapshots(&snapshots);
+        }
+    }
+
+    /// The snapshots `profile` has now: those of the snapshot list while it is open, those
+    /// a compaction keeps while it has closed the database, else as the database says, if
+    /// it can be read at once.
+    fn snapshots_now(&self, profile: &ProfileFile) -> Option<Vec<SnapshotInfo>> {
+        if self.is_open(profile) {
+            return Some(self.rows.borrow().clone());
+        }
+        if let Some((_, rows)) = self.jobs.borrow().closed_profile(&profile.path) {
+            return Some(rows.to_vec());
+        }
+        Store::open_with_timeout(&profile.path, Duration::ZERO)
+            .and_then(|store| store.list())
+            .ok()
+    }
+
+    /// Shows the rows of `types` (#22), from the check boxes, the menu and its keys; the
+    /// view is kept for the next differences and starts (#28), and the status bar says
+    /// how many rows the list shows (#26).
+    fn set_types(&self, types: [bool; 4]) {
+        let current = self.difference_list.borrow_mut().set_types(types);
+        self.refresh_difference(current);
+        if let Ok(settings) = &self.settings {
+            let _ = settings.set_difference_types(types);
+        }
+        let text = self.difference_list.borrow().showing();
+        self.say(&text);
+    }
+
+    /// The menu item of a type, or its key: shows the type, or hides it.
+    fn toggle_type(&self, kind: ChangeType) {
+        let mut types = self.difference_list.borrow().view().types;
+        types[kind as usize] ^= true;
+        self.set_types(types);
+    }
+
+    /// The check box of a type was clicked or pressed.
+    fn type_toggled(&self, kind: ChangeType) {
+        let shown = self.type_boxes[kind as usize].get_value();
+        let mut types = self.difference_list.borrow().view().types;
+        if types[kind as usize] != shown {
+            types[kind as usize] = shown;
+            self.speaking(|| self.set_types(types));
+        }
+    }
+
+    /// Puts the list in the order `sort` (#21), kept for the next differences and starts
+    /// (#28); the focus stays on its change.
+    fn set_sort(&self, sort: DifferenceSort) {
+        let current = self.difference_list.borrow_mut().set_sort(sort);
+        self.refresh_difference(current);
+        if let Ok(settings) = &self.settings {
+            let _ = settings.set_difference_sort(sort);
+        }
+    }
+
+    /// A column of the menu «Сортувати за»: sorts by it, the direction as it is, as in
+    /// File Explorer.
+    fn sort_by(&self, column: SortColumn) {
+        let sort = self.difference_list.borrow().view().sort;
+        self.set_sort(DifferenceSort { column, ..sort });
+    }
+
+    /// «За зростанням» or «За спаданням».
+    fn sort_direction(&self, descending: bool) {
+        let sort = self.difference_list.borrow().view().sort;
+        self.set_sort(DifferenceSort { descending, ..sort });
+    }
+
+    /// A click on the header of the column `column`: sorts by it ascending, or, when the
+    /// list is sorted by it already, the other way (#21). Without a difference there is
+    /// nothing to sort, as the commands say.
+    fn sort_by_column(&self, column: i32) {
+        let Some(column) = usize::try_from(column)
+            .ok()
+            .and_then(|i| Column::ALL.get(i))
+        else {
+            return;
+        };
+        let (sort, has_difference) = {
+            let list = self.difference_list.borrow();
+            (list.view().sort, list.has_difference())
+        };
+        if !has_difference {
+            return;
+        }
+        let column = column.sort();
+        let descending = sort.column == column && !sort.descending;
+        self.speaking(|| self.set_sort(DifferenceSort { column, descending }));
+    }
+
+    /// The text of the field «Фільтр:» changed as the user typed: the list follows at
+    /// once, the focus staying in the field, and how many rows it shows is said once the
+    /// typing pauses (#24, #26).
+    fn filter_typed(&self) {
+        let text = self.filter_field.get_value();
+        if text == self.difference_list.borrow().text() {
+            return;
+        }
+        let current = self.difference_list.borrow_mut().set_text(&text);
+        self.refresh_difference(current);
+        self.showing_timer.start(SHOWING_PAUSE, true);
+    }
+
+    /// Esc in the field «Фільтр:»: the field empties, so the list shows every row of the
+    /// types shown, and that is said (#24, #26).
+    fn clear_filter(&self) {
+        if self.filter_field.get_value().is_empty() {
+            return;
+        }
+        self.filter_field.change_value("");
+        self.showing_timer.stop();
+        let current = self.difference_list.borrow_mut().set_text("");
+        self.refresh_difference(current);
+        let text = self.difference_list.borrow().showing();
+        self.say(&text);
+    }
+
+    /// «Фільтрувати за текстом»: the focus goes to the field «Фільтр:» with its text
+    /// selected, to be typed over, as in a search box (#23).
+    fn filter_by_text(&self) {
+        self.filter_field.set_focus();
+        self.filter_field.select_all();
     }
 
     /// The progress field for the comparison the row shows, with the bar once the
@@ -1582,7 +2033,7 @@ impl MainWindow {
                     self.open_profile_at(&profile.path);
                 }
                 let to_difference = arrival != difference::Arrival::Replace;
-                self.show_difference(difference, to_difference);
+                self.show_difference(difference, profile.clone(), to_difference);
                 let mut text = self.snapshot_report(&report);
                 // The focus on the difference says the comparison is over.
                 if !to_difference {
@@ -2160,23 +2611,43 @@ mod tests {
 
     #[test]
     fn the_labels_of_the_main_window_take_no_menu_letter_and_differ() {
-        for labels in [
-            [PROFILE_ACCESS, PROGRESS_ACCESS, cancel_snapshot_access()],
-            [PROFILE_ACCESS, PROGRESS_ACCESS, cancel_comparison_access()],
-            [PROFILE_ACCESS, PROGRESS_ACCESS, cancel_compaction_access()],
+        for cancel in [
+            cancel_snapshot_access(),
+            cancel_comparison_access(),
+            cancel_compaction_access(),
         ] {
+            let mut labels = vec![
+                PROFILE_ACCESS,
+                PROGRESS_ACCESS,
+                cancel,
+                COMPARISON_ACCESS,
+                FILTER_ACCESS,
+            ];
+            labels.extend(TYPE_ACCESS);
             for (i, &label) in labels.iter().enumerate() {
                 assert!(MenuId::ALL.iter().all(|m| m.access() != label));
-                assert!(!labels[..i].contains(&label));
+                assert!(!labels[..i].contains(&label), "{}", char::from(label));
             }
             assert_eq!(labels[LABEL_PROFILE], PROFILE_ACCESS);
             assert_eq!(labels[LABEL_PROGRESS], PROGRESS_ACCESS);
+            assert_eq!(labels[LABEL_COMPARISON], COMPARISON_ACCESS);
+            assert_eq!(labels[LABEL_FILTER], FILTER_ACCESS);
+            assert_eq!(labels[LABEL_TYPES..], TYPE_ACCESS);
         }
         assert_ne!(cancel_snapshot_access(), cancel_compaction_access());
         // The letters are in the English names, as everywhere.
         let has = |name: &str, letter: u8| name.to_ascii_uppercase().contains(char::from(letter));
         assert!(has(En.profile(), PROFILE_ACCESS));
         assert!(has(En.progress(), PROGRESS_ACCESS));
+        assert!(has(En.comparison_field(), COMPARISON_ACCESS));
+        assert!(has(En.filter_field(), FILTER_ACCESS));
+        for kind in ChangeType::ALL {
+            let i = kind as usize;
+            assert!(
+                has(En.command(TYPE_COMMANDS[i]), TYPE_ACCESS[i]),
+                "{kind:?}"
+            );
+        }
         assert!(has(En.cancel(), cancel_snapshot_access()));
         assert!(has(En.cancel(), cancel_comparison_access()));
         assert!(has(

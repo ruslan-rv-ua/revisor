@@ -1,11 +1,12 @@
 //! The settings window (TASK-9): the application's own settings (ADR-0007) that have a
 //! control of their own — the interface language (TASK-16), what the focus does when a
-//! snapshot ends, what it does when a comparison ends (TASK-11), and whether deleting
-//! snapshots asks first. The profile opened last is kept without a control.
+//! snapshot ends, what it does when a comparison ends (TASK-11), how sizes are written
+//! (TASK-13), and whether deleting snapshots asks first. The profile opened last and the
+//! view of the difference list are kept without a control.
 
 use std::rc::Rc;
 
-use revisor_core::settings::{FocusAfterComparison, FocusAfterSnapshot, Language};
+use revisor_core::settings::{FocusAfterComparison, FocusAfterSnapshot, Language, SizeFormat};
 use wxdragon::prelude::*;
 
 use crate::commands::CommandId;
@@ -19,6 +20,7 @@ pub struct Values {
     pub language: Language,
     pub focus_after_snapshot: FocusAfterSnapshot,
     pub focus_after_comparison: FocusAfterComparison,
+    pub size_format: SizeFormat,
     pub confirm_snapshot_deletion: bool,
 }
 
@@ -29,14 +31,16 @@ enum Control {
     Language,
     FocusAfterSnapshot,
     FocusAfterComparison,
+    SizeFormat,
     ConfirmDeletion,
 }
 
 impl Control {
-    const ALL: [Control; 4] = [
+    const ALL: [Control; 5] = [
         Self::Language,
         Self::FocusAfterSnapshot,
         Self::FocusAfterComparison,
+        Self::SizeFormat,
         Self::ConfirmDeletion,
     ];
 
@@ -46,6 +50,7 @@ impl Control {
             Self::Language => b'L',
             Self::FocusAfterSnapshot => b'F',
             Self::FocusAfterComparison => b'M',
+            Self::SizeFormat => b'S',
             Self::ConfirmDeletion => b'C',
         }
     }
@@ -55,6 +60,7 @@ impl Control {
             Self::Language => s.language(),
             Self::FocusAfterSnapshot => s.focus_after_snapshot(),
             Self::FocusAfterComparison => s.focus_after_comparison(),
+            Self::SizeFormat => s.size_format(),
             Self::ConfirmDeletion => s.confirm_snapshot_deletion(),
         }
     }
@@ -64,9 +70,10 @@ impl Control {
     fn label(self, s: &dyn Strings) -> String {
         let (name, access) = (self.name(s), self.access());
         match self {
-            Self::Language | Self::FocusAfterSnapshot | Self::FocusAfterComparison => {
-                field_label(s, name, access)
-            }
+            Self::Language
+            | Self::FocusAfterSnapshot
+            | Self::FocusAfterComparison
+            | Self::SizeFormat => field_label(s, name, access),
             Self::ConfirmDeletion => button_label(s, name, access, false),
         }
     }
@@ -76,6 +83,7 @@ struct Window {
     language: Choice,
     focus: Choice,
     comparison_focus: Choice,
+    size_format: Choice,
     confirm: CheckBox,
 }
 
@@ -121,6 +129,18 @@ pub fn show(parent: &Frame, s: &'static dyn Strings, initial: Values) -> Option<
         .position(|&v| v == initial.focus_after_comparison)
         .unwrap_or(0);
     comparison_focus.set_selection(chosen as u32);
+    let size_label = StaticText::builder(&dialog)
+        .with_label(&Control::SizeFormat.label(s))
+        .build();
+    let size_format = Choice::builder(&dialog).build();
+    for value in SizeFormat::ALL {
+        size_format.append(s.size_option(value));
+    }
+    let chosen = SizeFormat::ALL
+        .iter()
+        .position(|&v| v == initial.size_format)
+        .unwrap_or(0);
+    size_format.set_selection(chosen as u32);
     let confirm = CheckBox::builder(&dialog)
         .with_label(&Control::ConfirmDeletion.label(s))
         .build();
@@ -144,6 +164,8 @@ pub fn show(parent: &Frame, s: &'static dyn Strings, initial: Values) -> Option<
     sizer.add(&focus, 0, SizerFlag::Expand | SizerFlag::All, 12);
     sizer.add(&comparison_focus_label, 0, side, 12);
     sizer.add(&comparison_focus, 0, SizerFlag::Expand | SizerFlag::All, 12);
+    sizer.add(&size_label, 0, side, 12);
+    sizer.add(&size_format, 0, SizerFlag::Expand | SizerFlag::All, 12);
     sizer.add(&confirm, 0, side | SizerFlag::Bottom, 12);
     let commit_row = BoxSizer::builder(Orientation::Horizontal).build();
     commit_row.add(&ok, 0, SizerFlag::AlignLeft, 8);
@@ -160,6 +182,7 @@ pub fn show(parent: &Frame, s: &'static dyn Strings, initial: Values) -> Option<
         language,
         focus,
         comparison_focus,
+        size_format,
         confirm,
     });
     // Access keys by the key's position, so they work in the Ukrainian layout too
@@ -195,6 +218,7 @@ impl Window {
             Control::Language => self.language.set_focus(),
             Control::FocusAfterSnapshot => self.focus.set_focus(),
             Control::FocusAfterComparison => self.comparison_focus.set_focus(),
+            Control::SizeFormat => self.size_format.set_focus(),
             Control::ConfirmDeletion => {
                 self.confirm.set_value(!self.confirm.get_value());
                 self.confirm.set_focus();
@@ -207,6 +231,7 @@ impl Window {
         let language = self.language.get_selection().unwrap_or(0) as usize;
         let chosen = self.focus.get_selection().unwrap_or(0) as usize;
         let comparison = self.comparison_focus.get_selection().unwrap_or(0) as usize;
+        let size = self.size_format.get_selection().unwrap_or(0) as usize;
         Values {
             language: Language::ALL.get(language).copied().unwrap_or_default(),
             focus_after_snapshot: FocusAfterSnapshot::ALL
@@ -217,6 +242,7 @@ impl Window {
                 .get(comparison)
                 .copied()
                 .unwrap_or_default(),
+            size_format: SizeFormat::ALL.get(size).copied().unwrap_or_default(),
             confirm_snapshot_deletion: self.confirm.get_value(),
         }
     }
@@ -260,6 +286,8 @@ mod tests {
             Control::FocusAfterComparison.label(&Uk),
             "Фокус після порівняння (&M):"
         );
+        assert_eq!(Control::SizeFormat.label(&En), "&Size:");
+        assert_eq!(Control::SizeFormat.label(&Uk), "Розмір (&S):");
         assert_eq!(
             Control::ConfirmDeletion.label(&En),
             "&Confirm snapshot deletion"
@@ -284,6 +312,16 @@ mod tests {
             .collect();
         assert_eq!(en, ["Same as Windows", "English", "Українська"]);
         assert_eq!(Language::ALL[0], Language::default());
+    }
+
+    #[test]
+    fn the_size_options_are_named_in_both_languages_in_setting_order() {
+        // TASK-13 #17; the first is the default.
+        let uk: Vec<&str> = SizeFormat::ALL.iter().map(|&v| Uk.size_option(v)).collect();
+        assert_eq!(uk, ["Як у Провіднику", "По 1000", "У байтах"]);
+        let en: Vec<&str> = SizeFormat::ALL.iter().map(|&v| En.size_option(v)).collect();
+        assert_eq!(en, ["Like File Explorer", "Decimal", "In bytes"]);
+        assert_eq!(SizeFormat::ALL[0], SizeFormat::default());
     }
 
     #[test]

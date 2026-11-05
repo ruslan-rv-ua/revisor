@@ -180,7 +180,17 @@ mod tests {
 
     #[test]
     fn context_menus_hold_only_available_commands_with_the_enter_action_first() {
-        let demo = AppState::demo();
+        // A profile with snapshots and a difference, in the demo state, which lets the
+        // commands of TASK-14 on the difference list's menu run.
+        let demo = AppState {
+            profile: Some("Дім".into()),
+            snapshots: 3,
+            selected_snapshots: 1,
+            current_snapshot: Some(2),
+            has_difference: true,
+            demo: true,
+            ..AppState::new()
+        };
         assert_eq!(
             context_menu(Pane::Snapshots, &demo),
             ContextMenu {
@@ -206,7 +216,7 @@ mod tests {
         assert_eq!(context_menu(Pane::Snapshots, &AppState::new()), empty);
         let no_difference = AppState {
             has_difference: false,
-            ..AppState::demo()
+            ..demo
         };
         assert_eq!(context_menu(Pane::Difference, &no_difference), empty);
     }

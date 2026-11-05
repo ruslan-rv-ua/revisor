@@ -1,7 +1,8 @@
 //! The application's own settings (ADR-0007): one SQLite database in the data folder, apart
 //! from the profiles, for what belongs to no profile — the profile opened last, what the
 //! focus does when a snapshot ends, whether deleting snapshots asks first (TASK-9), the
-//! interface language (TASK-16), what the focus does when a comparison ends (TASK-11).
+//! interface language (TASK-16), what the focus does when a comparison ends (TASK-11), how
+//! sizes are written, and which rows the difference list shows in which order (TASK-13).
 //! Each setting is one row of a key–value table, read and written through typed methods,
 //! so a later setting needs no change of the schema.
 
@@ -35,6 +36,10 @@ const KEY_FOCUS_AFTER_SNAPSHOT: &str = "focus_after_snapshot";
 const KEY_CONFIRM_SNAPSHOT_DELETION: &str = "confirm_snapshot_deletion";
 const KEY_LANGUAGE: &str = "language";
 const KEY_FOCUS_AFTER_COMPARISON: &str = "focus_after_comparison";
+const KEY_SIZE_FORMAT: &str = "size_format";
+const KEY_DIFFERENCE_TYPES: &str = "difference_types";
+const KEY_DIFFERENCE_SORT: &str = "difference_sort";
+const KEY_DIFFERENCE_DESCENDING: &str = "difference_descending";
 
 #[derive(Debug)]
 pub enum SettingsError {
@@ -129,6 +134,123 @@ impl FocusAfterComparison {
     pub fn parse(text: &str) -> Option<Self> {
         Self::ALL.into_iter().find(|v| v.as_str() == text)
     }
+}
+
+/// How sizes are written in the difference list and its summary (TASK-13 #17).
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub enum SizeFormat {
+    /// As File Explorer writes them: three significant digits of KB, MB, GB and so on, of
+    /// 1024 bytes each, so the numbers agree with those of Windows.
+    #[default]
+    Explorer,
+    /// The same with units of 1000 bytes.
+    Decimal,
+    /// In bytes, with the digits grouped.
+    Bytes,
+}
+
+impl SizeFormat {
+    /// Every value, in the order the settings window lists them.
+    pub const ALL: [Self; 3] = [Self::Explorer, Self::Decimal, Self::Bytes];
+
+    /// The value as the database stores it.
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::Explorer => "explorer",
+            Self::Decimal => "decimal",
+            Self::Bytes => "bytes",
+        }
+    }
+
+    pub fn parse(text: &str) -> Option<Self> {
+        Self::ALL.into_iter().find(|v| v.as_str() == text)
+    }
+}
+
+/// A type of the rows of the difference list, by which its filter shows them (TASK-13
+/// #22), in the order of the filter's check boxes: added, deleted and modified entries,
+/// replaced ones among the modified, and inaccessible entries, which are not changes.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+pub enum ChangeType {
+    Added,
+    Deleted,
+    Modified,
+    Inaccessible,
+}
+
+impl ChangeType {
+    /// Every type, in the order of the check boxes.
+    pub const ALL: [Self; 4] = [
+        Self::Added,
+        Self::Deleted,
+        Self::Modified,
+        Self::Inaccessible,
+    ];
+
+    /// The type as the database stores it.
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::Added => "added",
+            Self::Deleted => "deleted",
+            Self::Modified => "modified",
+            Self::Inaccessible => "inaccessible",
+        }
+    }
+
+    pub fn parse(text: &str) -> Option<Self> {
+        Self::ALL.into_iter().find(|v| v.as_str() == text)
+    }
+}
+
+/// What the difference list is sorted by (TASK-13 #21): the path, as a tree, which is the
+/// default, or one of its columns.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Hash)]
+pub enum SortColumn {
+    #[default]
+    Path,
+    Name,
+    Change,
+    WhatChanged,
+    Size,
+    DateModified,
+    Folder,
+}
+
+impl SortColumn {
+    /// Every value, in the order of the menu «Сортувати за».
+    pub const ALL: [Self; 7] = [
+        Self::Path,
+        Self::Name,
+        Self::Change,
+        Self::WhatChanged,
+        Self::Size,
+        Self::DateModified,
+        Self::Folder,
+    ];
+
+    /// The value as the database stores it.
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::Path => "path",
+            Self::Name => "name",
+            Self::Change => "change",
+            Self::WhatChanged => "what_changed",
+            Self::Size => "size",
+            Self::DateModified => "date_modified",
+            Self::Folder => "folder",
+        }
+    }
+
+    pub fn parse(text: &str) -> Option<Self> {
+        Self::ALL.into_iter().find(|v| v.as_str() == text)
+    }
+}
+
+/// The order of the difference list (TASK-13 #21): what it is sorted by, and which way.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct DifferenceSort {
+    pub column: SortColumn,
+    pub descending: bool,
 }
 
 /// The interface language the user chose (TASK-16). The application maps it to a language
@@ -284,6 +406,62 @@ impl Settings {
         value: FocusAfterComparison,
     ) -> Result<(), SettingsError> {
         self.set(KEY_FOCUS_AFTER_COMPARISON, value.as_str())
+    }
+
+    /// How sizes are written; the default when nothing is stored.
+    pub fn size_format(&self) -> Result<SizeFormat, SettingsError> {
+        Ok(match self.get(KEY_SIZE_FORMAT)? {
+            Some(Value::Text(text)) => SizeFormat::parse(&text).unwrap_or_default(),
+            _ => SizeFormat::default(),
+        })
+    }
+
+    pub fn set_size_format(&self, value: SizeFormat) -> Result<(), SettingsError> {
+        self.set(KEY_SIZE_FORMAT, value.as_str())
+    }
+
+    /// Which types of rows the difference list shows, indexed by [`ChangeType`]; all of
+    /// them when nothing is stored (TASK-13 #28).
+    pub fn difference_types(&self) -> Result<[bool; 4], SettingsError> {
+        Ok(match self.get(KEY_DIFFERENCE_TYPES)? {
+            Some(Value::Text(text)) => {
+                let mut shown = [false; 4];
+                for name in text.split(',') {
+                    if let Some(kind) = ChangeType::parse(name) {
+                        shown[kind as usize] = true;
+                    }
+                }
+                shown
+            }
+            _ => [true; 4],
+        })
+    }
+
+    pub fn set_difference_types(&self, shown: [bool; 4]) -> Result<(), SettingsError> {
+        let names: Vec<&str> = ChangeType::ALL
+            .into_iter()
+            .filter(|&kind| shown[kind as usize])
+            .map(ChangeType::as_str)
+            .collect();
+        self.set(KEY_DIFFERENCE_TYPES, names.join(","))
+    }
+
+    /// The order of the difference list; by path, ascending, when nothing is stored.
+    pub fn difference_sort(&self) -> Result<DifferenceSort, SettingsError> {
+        let column = match self.get(KEY_DIFFERENCE_SORT)? {
+            Some(Value::Text(text)) => SortColumn::parse(&text).unwrap_or_default(),
+            _ => SortColumn::default(),
+        };
+        let descending = matches!(
+            self.get(KEY_DIFFERENCE_DESCENDING)?,
+            Some(Value::Integer(n)) if n != 0
+        );
+        Ok(DifferenceSort { column, descending })
+    }
+
+    pub fn set_difference_sort(&self, sort: DifferenceSort) -> Result<(), SettingsError> {
+        self.set(KEY_DIFFERENCE_SORT, sort.column.as_str())?;
+        self.set(KEY_DIFFERENCE_DESCENDING, i64::from(sort.descending))
     }
 
     fn get(&self, key: &str) -> Result<Option<Value>, SettingsError> {

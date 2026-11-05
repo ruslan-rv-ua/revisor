@@ -22,6 +22,16 @@ fn a_new_settings_file_is_made_with_the_defaults() {
     );
     assert!(settings.confirm_snapshot_deletion().unwrap());
     assert_eq!(settings.language().unwrap(), Language::SameAsWindows);
+    // The difference list (TASK-13 #17, #28): sizes as in Explorer, every type, by path.
+    assert_eq!(settings.size_format().unwrap(), SizeFormat::Explorer);
+    assert_eq!(settings.difference_types().unwrap(), [true; 4]);
+    assert_eq!(
+        settings.difference_sort().unwrap(),
+        DifferenceSort {
+            column: SortColumn::Path,
+            descending: false
+        }
+    );
     let conn = rusqlite::Connection::open(db(&tmp)).unwrap();
     let version: i64 = conn
         .pragma_query_value(None, "user_version", |r| r.get(0))
@@ -64,6 +74,61 @@ fn settings_survive_a_restart() {
     );
     assert!(settings.confirm_snapshot_deletion().unwrap());
     assert_eq!(settings.last_profile().unwrap(), None);
+}
+
+#[test]
+fn the_view_of_the_difference_list_survives_a_restart() {
+    let tmp = TempDir::new("settings");
+    let sort = DifferenceSort {
+        column: SortColumn::WhatChanged,
+        descending: true,
+    };
+    {
+        let settings = Settings::open(&db(&tmp)).unwrap();
+        settings.set_size_format(SizeFormat::Bytes).unwrap();
+        settings
+            .set_difference_types([false, true, false, true])
+            .unwrap();
+        settings.set_difference_sort(sort).unwrap();
+    }
+    let settings = Settings::open(&db(&tmp)).unwrap();
+    assert_eq!(settings.size_format().unwrap(), SizeFormat::Bytes);
+    assert_eq!(
+        settings.difference_types().unwrap(),
+        [false, true, false, true]
+    );
+    assert_eq!(settings.difference_sort().unwrap(), sort);
+    // Every type hidden is kept as such, not taken for nothing stored.
+    settings.set_difference_types([false; 4]).unwrap();
+    assert_eq!(settings.difference_types().unwrap(), [false; 4]);
+    settings.set_size_format(SizeFormat::Decimal).unwrap();
+    assert_eq!(settings.size_format().unwrap(), SizeFormat::Decimal);
+    for column in SortColumn::ALL {
+        let sort = DifferenceSort {
+            column,
+            descending: false,
+        };
+        settings.set_difference_sort(sort).unwrap();
+        assert_eq!(settings.difference_sort().unwrap(), sort);
+    }
+}
+
+#[test]
+fn values_are_stored_by_name() {
+    for value in SizeFormat::ALL {
+        assert_eq!(SizeFormat::parse(value.as_str()), Some(value));
+    }
+    for value in ChangeType::ALL {
+        assert_eq!(ChangeType::parse(value.as_str()), Some(value));
+    }
+    for value in SortColumn::ALL {
+        assert_eq!(SortColumn::parse(value.as_str()), Some(value));
+    }
+    assert_eq!(SortColumn::parse("colour"), None);
+    // The check boxes index the shown types by their order.
+    for (i, kind) in ChangeType::ALL.into_iter().enumerate() {
+        assert_eq!(kind as usize, i);
+    }
 }
 
 #[test]

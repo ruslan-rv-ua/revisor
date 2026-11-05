@@ -443,6 +443,7 @@ impl Loaded {
                     inaccessible: vec![Inaccessible {
                         old: None,
                         new: Some(b),
+                        changes_before: 0,
                     }],
                 },
                 [Located::Found(a), Located::Unknown] => Diff {
@@ -450,6 +451,7 @@ impl Loaded {
                     inaccessible: vec![Inaccessible {
                         old: Some(a),
                         new: None,
+                        changes_before: 0,
                     }],
                 },
                 [Located::Unknown, _] | [_, Located::Unknown] => Diff::default(),

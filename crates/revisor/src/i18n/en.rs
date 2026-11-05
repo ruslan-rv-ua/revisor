@@ -1,12 +1,17 @@
 //! English interface strings, the base language.
 
+use revisor_core::compare::{Side, Warning};
 use revisor_core::exclude::PatternError;
-use revisor_core::settings::{FocusAfterComparison, FocusAfterSnapshot, Language};
+use revisor_core::scan::EntryKind;
+use revisor_core::settings::{FocusAfterComparison, FocusAfterSnapshot, Language, SizeFormat};
 
 use super::plural::{Category, category};
 use super::{Failure, Lang, Strings};
 use crate::commands::{CommandId, MenuId, Pane, Reason, SubmenuId};
-use crate::difference::Kind;
+use crate::difference::{
+    Column, Counted, Field, InaccessibleIn, PairText, RowChange, SizeChange, SnapshotText,
+    SummaryText,
+};
 
 pub struct En;
 
@@ -24,6 +29,22 @@ impl En {
         match category(Lang::En, (count as u64).into()) {
             Category::One => format!("{count} snapshot"),
             _ => format!("{count} snapshots"),
+        }
+    }
+
+    /// `noun` with a count: "1 change", "20 changes".
+    fn counted(&self, count: &Counted, one: &str, other: &str) -> String {
+        match category(Lang::En, count.n.into()) {
+            Category::One => format!("{} {one}", count.text),
+            _ => format!("{} {other}", count.text),
+        }
+    }
+
+    /// "the earlier", "the later".
+    fn side(&self, side: Side) -> &'static str {
+        match side {
+            Side::Earlier => "earlier",
+            Side::Later => "later",
         }
     }
 }
@@ -642,20 +663,243 @@ impl Strings for En {
         "There is nothing to compare the snapshot with: the profile has no other snapshot."
     }
 
-    fn column_change(&self) -> &'static str {
-        "Change"
+    fn column(&self, column: Column) -> &'static str {
+        match column {
+            Column::Name => "Name",
+            Column::Change => "Change",
+            Column::WhatChanged => "What changed",
+            Column::Size => "Size",
+            Column::DateModified => "Date modified",
+            Column::Folder => "Folder",
+        }
     }
 
-    fn column_path(&self) -> &'static str {
-        "Path"
+    fn change(&self, change: RowChange, kind: EntryKind) -> &'static str {
+        match (kind, change) {
+            (EntryKind::File, RowChange::Added) => "Added",
+            (EntryKind::File, RowChange::Deleted) => "Deleted",
+            (EntryKind::File, RowChange::Modified) => "Modified",
+            (EntryKind::File, RowChange::Replaced) => "Replaced",
+            (EntryKind::File, RowChange::Inaccessible) => "Inaccessible",
+            (EntryKind::Dir, RowChange::Added) => "Folder added",
+            (EntryKind::Dir, RowChange::Deleted) => "Folder deleted",
+            (EntryKind::Dir, RowChange::Modified) => "Folder modified",
+            (EntryKind::Dir, RowChange::Replaced) => "Folder replaced",
+            (EntryKind::Dir, RowChange::Inaccessible) => "Inaccessible folder",
+            (EntryKind::Link, RowChange::Added) => "Link added",
+            (EntryKind::Link, RowChange::Deleted) => "Link deleted",
+            (EntryKind::Link, RowChange::Modified) => "Link modified",
+            (EntryKind::Link, RowChange::Replaced) => "Link replaced",
+            (EntryKind::Link, RowChange::Inaccessible) => "Inaccessible link",
+        }
     }
 
-    fn change_kind(&self, kind: Kind) -> &'static str {
-        match kind {
-            Kind::Added => "Added",
-            Kind::Deleted => "Deleted",
-            Kind::Modified => "Modified",
-            Kind::Inaccessible => "Inaccessible",
+    fn field(&self, field: Field) -> &'static str {
+        match field {
+            Field::FileVersion => "file version",
+            Field::ProductVersion => "product version",
+            Field::LinkTarget => "link target",
+            Field::Size => "size",
+            Field::DateModified => "date modified",
+            Field::DateCreated => "date created",
+            Field::Attributes => "attributes",
+            Field::NameCase => "case of the name",
+        }
+    }
+
+    fn inaccessible_in(&self, which: InaccessibleIn) -> &'static str {
+        match which {
+            InaccessibleIn::Earlier => "in the earlier snapshot",
+            InaccessibleIn::Later => "in the later snapshot",
+            InaccessibleIn::Both => "in both snapshots",
+        }
+    }
+
+    fn bytes(&self, bytes: u64, text: &str) -> String {
+        match category(Lang::En, bytes.into()) {
+            Category::One => format!("{text} byte"),
+            _ => format!("{text} bytes"),
+        }
+    }
+
+    fn size_unit(&self, power: u32) -> &'static str {
+        match power {
+            1 => "KB",
+            2 => "MB",
+            3 => "GB",
+            4 => "TB",
+            5 => "PB",
+            _ => "EB",
+        }
+    }
+
+    fn pair(&self, pair: &PairText) -> String {
+        let snapshot = |snapshot: &SnapshotText, last: bool| {
+            let mut text = snapshot.name.clone();
+            if snapshot.deleted {
+                text.push_str(" (snapshot deleted)");
+            }
+            if let Some(comment) = &snapshot.comment {
+                text.push_str(&format!(", \u{201c}{comment}\u{201d}"));
+                if !last {
+                    text.push(',');
+                }
+            }
+            text
+        };
+        let mut profile = pair.profile.clone();
+        if pair.profile_deleted {
+            profile.push_str(" (profile deleted)");
+        }
+        format!(
+            "{profile}: from {} to {}",
+            snapshot(&pair.earlier, false),
+            snapshot(&pair.later, true)
+        )
+    }
+
+    fn summary(&self, summary: &SummaryText) -> String {
+        let t = summary;
+        let mut text = if t.changes.n == 0 {
+            "No changes.".to_string()
+        } else {
+            let mut parts = Vec::new();
+            if t.added.n > 0 {
+                parts.push(format!("{} added", t.added.text));
+            }
+            if t.deleted.n > 0 {
+                parts.push(format!("{} deleted", t.deleted.text));
+            }
+            if t.modified.n > 0 {
+                let mut modified = format!("{} modified", t.modified.text);
+                if t.replaced.n > 0 {
+                    modified.push_str(&format!(", {} of them replaced", t.replaced.text));
+                }
+                parts.push(modified);
+            }
+            format!(
+                "{}: {}.",
+                self.counted(&t.changes, "change", "changes"),
+                parts.join(", ")
+            )
+        };
+        if t.inaccessible.n > 0 {
+            text.push_str(&format!(" {} inaccessible.", t.inaccessible.text));
+        }
+        if t.changes.n > 0 {
+            text.push_str(&match &t.size {
+                SizeChange::Increased(size) => format!(" Size increased by {size}."),
+                SizeChange::Decreased(size) => format!(" Size decreased by {size}."),
+                SizeChange::Unchanged => " Size did not change.".to_string(),
+            });
+        }
+        if t.warnings.n > 0 {
+            text.push_str(&format!(
+                " {}.",
+                self.counted(&t.warnings, "warning", "warnings")
+            ));
+        }
+        text
+    }
+
+    fn showing(&self, shown_text: &str, total_text: &str) -> String {
+        format!("Showing {shown_text} of {total_text}.")
+    }
+
+    fn warning(&self, warning: &Warning, reason: &str) -> String {
+        match warning {
+            Warning::FolderOnlyIn { path, side } => format!(
+                "The folder \u{201c}{}\u{201d} is only in the {} snapshot, so it was not compared.",
+                path.display(),
+                self.side(*side)
+            ),
+            Warning::FolderNarrowed {
+                wider,
+                side,
+                compared,
+            } => format!(
+                "In the {} snapshot the folder \u{201c}{}\u{201d} is wider, so only its part \u{201c}{}\u{201d}, which both snapshots have, was compared.",
+                self.side(*side),
+                wider.display(),
+                compared.display()
+            ),
+            Warning::FolderMissing {
+                path,
+                side: Side::Earlier,
+            } => format!(
+                "The folder \u{201c}{}\u{201d} was missing in the earlier snapshot, so its contents show as added.",
+                path.display()
+            ),
+            Warning::FolderMissing {
+                path,
+                side: Side::Later,
+            } => format!(
+                "The folder \u{201c}{}\u{201d} is missing in the later snapshot, so its contents show as deleted.",
+                path.display()
+            ),
+            Warning::FolderUnavailable { path, side, .. } => format!(
+                "The folder \u{201c}{}\u{201d} could not be read in the {} snapshot ({reason}), so its contents were not compared.",
+                path.display(),
+                self.side(*side)
+            ),
+            Warning::DifferentVolumes { path, .. } => format!(
+                "The folder \u{201c}{}\u{201d} lies on different volumes in the two snapshots, so it may have many changes.",
+                path.display()
+            ),
+            Warning::ExclusionOnlyIn { pattern, side } => format!(
+                "The exclusion \u{201c}{pattern}\u{201d} is only in the {} snapshot, and it was applied to both.",
+                self.side(*side)
+            ),
+            Warning::ExclusionAppliedDifferently {
+                pattern,
+                earlier,
+                later,
+            } => {
+                let applied = |applied: &Option<String>| match applied {
+                    Some(applied) => format!("meant \u{201c}{applied}\u{201d}"),
+                    None => "did not apply".to_string(),
+                };
+                format!(
+                    "The exclusion \u{201c}{pattern}\u{201d} {} in the earlier snapshot and {} in the later one; both were applied.",
+                    applied(earlier),
+                    applied(later)
+                )
+            }
+        }
+    }
+
+    fn no_difference_yet(&self) -> &'static str {
+        "No difference yet"
+    }
+
+    fn no_match(&self) -> &'static str {
+        "No changes match the filter"
+    }
+
+    fn nothing_compared_yet(&self, quick: &str, choose: &str) -> String {
+        format!(
+            "Nothing compared yet. Press {quick} to compare the current snapshot with the \
+             previous one, or {choose} to choose the snapshot to compare it with."
+        )
+    }
+
+    fn comparison_field(&self) -> &'static str {
+        "Comparison"
+    }
+
+    fn filter_field(&self) -> &'static str {
+        "Filter"
+    }
+
+    fn size_format(&self) -> &'static str {
+        "Size"
+    }
+
+    fn size_option(&self, value: SizeFormat) -> &'static str {
+        match value {
+            SizeFormat::Explorer => "Like File Explorer",
+            SizeFormat::Decimal => "Decimal",
+            SizeFormat::Bytes => "In bytes",
         }
     }
 

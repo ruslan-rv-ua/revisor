@@ -276,9 +276,15 @@ fn has_snapshots(state: &AppState) -> Result<(), Reason> {
     require(state.snapshots > 0, Reason::NoSnapshots)
 }
 
-/// For the commands on the difference whose tasks are not done (TASK-13, TASK-14): they
-/// need a difference, and then their own task.
-fn has_difference(state: &AppState) -> Result<(), Reason> {
+/// The difference list shows a difference, of whichever profile (TASK-13 #6): its filter
+/// and its order can change.
+fn difference_shown(state: &AppState) -> Result<(), Reason> {
+    require(state.has_difference, Reason::NoDifference)
+}
+
+/// For the commands on the difference whose task is not done (TASK-14): they need a
+/// difference, and then their own task.
+fn difference_not_yet(state: &AppState) -> Result<(), Reason> {
     has_snapshots(state)?;
     require(state.has_difference, Reason::NoDifference)?;
     not_yet(state)
@@ -359,7 +365,7 @@ const fn shown_check(id: CommandId, access: u8, digit: u8) -> Command {
     Command {
         kind: CommandKind::Check,
         shortcut: Some(key(Key::Digit(digit)).ctrl()),
-        available: has_difference,
+        available: difference_shown,
         ..item(id, place(MenuId::Difference, 1), access)
     }
 }
@@ -372,14 +378,14 @@ const fn sort_radio(
 ) -> Command {
     Command {
         kind: CommandKind::Radio,
-        available: has_difference,
+        available: difference_shown,
         checked: Some(checked),
         ..item(id, sort_place(group), access)
     }
 }
 
 fn sorted_by(state: &AppState, column: SortColumn) -> bool {
-    state.sort == column
+    state.sort.column == column
 }
 
 pub static COMMANDS: &[Command] = &[
@@ -499,7 +505,7 @@ pub static COMMANDS: &[Command] = &[
             pane: Pane::Difference,
             group: 0,
         }),
-        available: has_difference,
+        available: difference_not_yet,
         ..item(CommandId::Details, place(MenuId::Difference, 0), b'D')
     },
     Command {
@@ -508,7 +514,7 @@ pub static COMMANDS: &[Command] = &[
             pane: Pane::Difference,
             group: 0,
         }),
-        available: has_difference,
+        available: difference_not_yet,
         ..item(
             CommandId::ShowInExplorer,
             place(MenuId::Difference, 0),
@@ -517,7 +523,7 @@ pub static COMMANDS: &[Command] = &[
     },
     Command {
         shortcut: Some(key(Key::Letter(b'F')).ctrl()),
-        available: has_difference,
+        available: difference_shown,
         ..item(CommandId::FilterByText, place(MenuId::Difference, 1), b'F')
     },
     Command {
@@ -557,8 +563,8 @@ pub static COMMANDS: &[Command] = &[
     sort_radio(CommandId::SortByFolder, 0, b'F', |s| {
         sorted_by(s, SortColumn::Folder)
     }),
-    sort_radio(CommandId::SortAscending, 1, b'A', |s| !s.descending),
-    sort_radio(CommandId::SortDescending, 1, b'E', |s| s.descending),
+    sort_radio(CommandId::SortAscending, 1, b'A', |s| !s.sort.descending),
+    sort_radio(CommandId::SortDescending, 1, b'E', |s| s.sort.descending),
     // Help
     Command {
         shortcut: Some(key(Key::F(1))),
@@ -696,14 +702,34 @@ mod tests {
         assert_eq!(validate(COMMANDS, &En), Vec::<String>::new());
     }
 
+    /// The commands of the difference list (TASK-13): the filter and the order.
+    const DIFFERENCE_VIEW: [CommandId; 14] = [
+        CommandId::FilterByText,
+        CommandId::ShowAdded,
+        CommandId::ShowDeleted,
+        CommandId::ShowModified,
+        CommandId::ShowInaccessible,
+        CommandId::SortByPath,
+        CommandId::SortByName,
+        CommandId::SortByChange,
+        CommandId::SortByWhatChanged,
+        CommandId::SortBySize,
+        CommandId::SortByDateModified,
+        CommandId::SortByFolder,
+        CommandId::SortAscending,
+        CommandId::SortDescending,
+    ];
+
     #[test]
     fn outside_the_demo_only_the_commands_of_finished_tasks_run() {
-        // A profile with snapshots, one selected, as a standard user, with nothing running.
+        // A profile with snapshots, one selected, and a difference, as a standard user,
+        // with nothing running.
         let state = AppState {
             profile: Some("Дім".into()),
             snapshots: 2,
             selected_snapshots: 1,
             current_snapshot: Some(1),
+            has_difference: true,
             ..AppState::new()
         };
         let finished = [
@@ -724,7 +750,7 @@ mod tests {
         ];
         for c in COMMANDS {
             let available = (c.available)(&state);
-            if finished.contains(&c.id) {
+            if finished.contains(&c.id) || DIFFERENCE_VIEW.contains(&c.id) {
                 assert_eq!(available, Ok(()), "{:?}", c.id);
             } else if c.id == CommandId::CancelSnapshot {
                 assert_eq!(available, Err(Reason::SnapshotNotRunning));
@@ -738,6 +764,75 @@ mod tests {
         }
         let take = command(CommandId::TakeSnapshot).available;
         assert_eq!(take(&AppState::new()), Err(Reason::NoProfiles));
+        // Details and Show in File Explorer wait for TASK-14, but in the demo state.
+        for id in [CommandId::Details, CommandId::ShowInExplorer] {
+            assert_eq!((command(id).available)(&state), Err(Reason::NotYet));
+            let demo = AppState {
+                demo: true,
+                ..state.clone()
+            };
+            assert_eq!((command(id).available)(&demo), Ok(()), "{id:?}");
+        }
+    }
+
+    #[test]
+    fn the_filter_and_the_order_need_a_difference_of_any_profile() {
+        // A difference shown while no profile is open, its profile deleted (TASK-13 #6).
+        let shown = AppState {
+            has_difference: true,
+            ..AppState::new()
+        };
+        for id in DIFFERENCE_VIEW {
+            assert_eq!((command(id).available)(&shown), Ok(()), "{id:?}");
+            assert_eq!(
+                (command(id).available)(&AppState::new()),
+                Err(Reason::NoDifference),
+                "{id:?}"
+            );
+            assert_eq!(command(id).place.menu, MenuId::Difference, "{id:?}");
+        }
+        // The keys of the document «Клавіатура й меню» (#30).
+        let keys = [
+            (CommandId::FilterByText, key(Key::Letter(b'F')).ctrl(), b'F'),
+            (CommandId::ShowAdded, key(Key::Digit(1)).ctrl(), b'A'),
+            (CommandId::ShowDeleted, key(Key::Digit(2)).ctrl(), b'T'),
+            (CommandId::ShowModified, key(Key::Digit(3)).ctrl(), b'M'),
+            (CommandId::ShowInaccessible, key(Key::Digit(4)).ctrl(), b'N'),
+        ];
+        for (id, shortcut, access) in keys {
+            assert_eq!(command(id).shortcut, Some(shortcut), "{id:?}");
+            assert_eq!(command(id).access, access, "{id:?}");
+        }
+        for id in &DIFFERENCE_VIEW[5..] {
+            let c = command(*id);
+            assert_eq!(c.place.submenu.map(|(sub, _)| sub), Some(SubmenuId::SortBy));
+            assert_eq!(c.shortcut, None, "the submenu has no shortcuts");
+        }
+    }
+
+    #[test]
+    fn the_marks_follow_the_view() {
+        let mut state = AppState {
+            has_difference: true,
+            ..AppState::new()
+        };
+        let checked = |id, state: &AppState| (command(id).checked.unwrap())(state);
+        // Every type shown, by path, ascending (TASK-13 #28).
+        for id in &DIFFERENCE_VIEW[1..5] {
+            assert!(checked(*id, &state), "{id:?}");
+        }
+        assert!(checked(CommandId::SortByPath, &state));
+        assert!(checked(CommandId::SortAscending, &state));
+        assert!(!checked(CommandId::SortDescending, &state));
+        state.shown_types[ChangeType::Deleted as usize] = false;
+        state.sort.column = SortColumn::Size;
+        state.sort.descending = true;
+        assert!(!checked(CommandId::ShowDeleted, &state));
+        assert!(checked(CommandId::ShowAdded, &state));
+        assert!(checked(CommandId::SortBySize, &state));
+        assert!(!checked(CommandId::SortByPath, &state));
+        assert!(checked(CommandId::SortDescending, &state));
+        assert!(!checked(CommandId::SortAscending, &state));
     }
 
     #[test]

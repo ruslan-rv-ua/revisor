@@ -165,8 +165,34 @@ def control_text(h):
     return buf.value
 
 
+def has_size(h):
+    rect = wt.RECT()
+    u32.GetWindowRect(h, ctypes.byref(rect))
+    return rect.right > rect.left and rect.bottom > rect.top
+
+
 def visible_controls(main, cls):
-    return [c for c in children(main) if class_name(c) == cls and u32.IsWindowVisible(c)]
+    """The controls of class `cls` on screen: shown and of some size. The difference list not
+    shown is disabled and has no size rather than hidden (TASK-13)."""
+    return [c for c in children(main)
+            if class_name(c) == cls and u32.IsWindowVisible(c) and has_size(c)]
+
+
+GWL_STYLE, ES_MULTILINE, ES_READONLY = -16, 0x0004, 0x0800
+
+
+def edit_style(h):
+    return u32.GetWindowLongW(h, GWL_STYLE)
+
+
+def progress_field(main):
+    """The progress field of the main window, if shown: its one single-line read-only field
+    (the field «Порівняння» is read-only too but has many lines, TASK-13)."""
+    for h in visible_controls(main, "Edit"):
+        style = edit_style(h)
+        if style & ES_READONLY and not style & ES_MULTILINE:
+            return h
+    return None
 
 
 def progress_text(main):
@@ -175,8 +201,8 @@ def progress_text(main):
     Under a modal dialog the jobs' timer sleeps and the field stays, so waiting for None there
     stalls forever: wait by time instead.
     """
-    edits = visible_controls(main, "Edit")
-    return control_text(edits[0]) if edits else None
+    h = progress_field(main)
+    return control_text(h) if h else None
 
 
 class GUITHREADINFO(ctypes.Structure):

@@ -13,7 +13,17 @@ pub enum Control {
     MainList,
     /// A text field, which needs Delete, Home, End and the like for itself.
     TextEntry,
+    /// The field «Фільтр:» under the difference list: a text field that Esc clears
+    /// (TASK-13 #24).
+    FilterField,
     Other,
+}
+
+impl Control {
+    /// Whether the control is a text field, which keeps the keys it edits with.
+    fn is_text(self) -> bool {
+        matches!(self, Control::TextEntry | Control::FilterField)
+    }
 }
 
 /// Where the focus is: the control, and the part of the window it belongs to, if any.
@@ -34,9 +44,12 @@ pub enum Route {
     FocusPane(Pane),
     /// Shift+F10 or the context menu key in a list: open that list's context menu.
     ContextMenu(Pane),
-    /// Ctrl+A in a list: select all its rows, which the list control does not do by
-    /// itself (TASK-9 #9).
+    /// Ctrl+A in the snapshot list: select all its rows, which the list control does not
+    /// do by itself (TASK-9 #9). The difference list selects one row only (TASK-13 #19).
     SelectAll(Pane),
+    /// Esc in the field «Фільтр:»: clear it, so the filter lets every row through
+    /// (TASK-13 #24).
+    ClearFilter,
     /// Alt with a label's access key: focus the control the label names.
     FocusLabel(usize),
     /// Not revisor's key: the focused control and Windows get it.
@@ -70,9 +83,12 @@ pub fn route(key: Shortcut, focus: Focus, state: &AppState, labels: &[u8]) -> Ro
     }
     if key == Shortcut::new(Key::Letter(b'A')).ctrl()
         && focus.control == Control::MainList
-        && let Some(pane) = focus.part
+        && focus.part == Some(Pane::Snapshots)
     {
-        return Route::SelectAll(pane);
+        return Route::SelectAll(Pane::Snapshots);
+    }
+    if key == Shortcut::new(Key::Esc) && focus.control == Control::FilterField {
+        return Route::ClearFilter;
     }
     if let Some(letter) = key.access_letter()
         && let Some(label) = labels.iter().position(|&l| l == letter)
@@ -91,7 +107,7 @@ pub fn route(key: Shortcut, focus: Focus, state: &AppState, labels: &[u8]) -> Ro
         return match c.scope {
             None => decide(c.id, c.available),
             Some(pane) if in_list(pane) => decide(c.id, c.available),
-            Some(_) if focus.control == Control::TextEntry => Route::Pass,
+            Some(_) if focus.control.is_text() => Route::Pass,
             Some(pane) => Route::OnlyIn(key, pane),
         };
     }
@@ -112,6 +128,10 @@ mod tests {
     };
     const FILTER_FIELD: Focus = Focus {
         part: Some(Pane::Difference),
+        control: Control::FilterField,
+    };
+    const COMPARISON_FIELD: Focus = Focus {
+        part: Some(Pane::Difference),
         control: Control::TextEntry,
     };
     const PROFILE_BOX: Focus = Focus {
@@ -123,11 +143,24 @@ mod tests {
         Shortcut::new(key)
     }
 
+    /// A profile with three snapshots, the newest current and selected, and a difference
+    /// shown: every finished command can run.
+    fn ready() -> AppState {
+        AppState {
+            profile: Some("Дім".into()),
+            snapshots: 3,
+            selected_snapshots: 1,
+            current_snapshot: Some(2),
+            has_difference: true,
+            ..AppState::new()
+        }
+    }
+
     #[test]
     fn a_shortcut_runs_its_command_or_says_why_not() {
         let f5 = key(Key::F(5));
         assert_eq!(
-            route(f5, SNAPSHOT_LIST, &AppState::demo(), &[]),
+            route(f5, SNAPSHOT_LIST, &ready(), &[]),
             Route::Run(CommandId::TakeSnapshot)
         );
         assert_eq!(
@@ -135,17 +168,12 @@ mod tests {
             Route::Refuse(CommandId::TakeSnapshot, Reason::NoProfiles)
         );
         assert_eq!(
-            route(f5.shift(), DIFFERENCE_LIST, &AppState::demo(), &[]),
+            route(f5.shift(), DIFFERENCE_LIST, &ready(), &[]),
             Route::Refuse(CommandId::CancelSnapshot, Reason::SnapshotNotRunning)
         );
         // Shortcuts work from the filter field too: it has no use for them.
         assert_eq!(
-            route(
-                key(Key::Digit(1)).ctrl(),
-                FILTER_FIELD,
-                &AppState::demo(),
-                &[]
-            ),
+            route(key(Key::Digit(1)).ctrl(), FILTER_FIELD, &ready(), &[]),
             Route::Run(CommandId::ShowAdded)
         );
         assert_eq!(
@@ -156,7 +184,7 @@ mod tests {
 
     #[test]
     fn keys_that_are_not_revisors_pass() {
-        let demo = AppState::demo();
+        let demo = ready();
         assert_eq!(
             route(key(Key::Letter(b'Q')).ctrl(), SNAPSHOT_LIST, &demo, &[]),
             Route::Pass
@@ -169,20 +197,23 @@ mod tests {
             route(key(Key::Down), SNAPSHOT_LIST, &demo, &[]),
             Route::Pass
         );
-        assert_eq!(route(key(Key::Esc), FILTER_FIELD, &demo, &[]), Route::Pass);
+        assert_eq!(
+            route(key(Key::Esc), COMPARISON_FIELD, &demo, &[]),
+            Route::Pass
+        );
     }
 
     #[test]
     fn a_key_limited_to_one_list_says_where_it_works() {
         let delete = key(Key::Delete);
-        let demo = AppState::demo();
+        let demo = ready();
         assert_eq!(
             route(delete, SNAPSHOT_LIST, &demo, &[]),
             Route::Run(CommandId::DeleteSnapshots)
         );
         let no_snapshots = AppState {
             snapshots: 0,
-            ..AppState::demo()
+            ..ready()
         };
         assert_eq!(
             route(delete, SNAPSHOT_LIST, &no_snapshots, &[]),
@@ -203,14 +234,15 @@ mod tests {
     #[test]
     fn enter_runs_the_lists_action_and_stays_the_controls_elsewhere() {
         let enter = key(Key::Enter);
-        let demo = AppState::demo();
+        let demo = ready();
         assert_eq!(
             route(enter, SNAPSHOT_LIST, &demo, &[]),
             Route::Run(CommandId::CompareWithPrevious)
         );
+        // Enter in the difference list is «Подробиці», whose task is TASK-14.
         assert_eq!(
             route(enter, DIFFERENCE_LIST, &demo, &[]),
-            Route::Run(CommandId::Details)
+            Route::Refuse(CommandId::Details, Reason::NotYet)
         );
         assert_eq!(
             route(enter, SNAPSHOT_LIST, &AppState::new(), &[]),
@@ -266,20 +298,81 @@ mod tests {
     }
 
     #[test]
-    fn ctrl_a_selects_all_rows_of_a_list_and_stays_the_controls_elsewhere() {
+    fn ctrl_a_selects_all_snapshots_and_stays_the_controls_elsewhere() {
         let ctrl_a = key(Key::Letter(b'A')).ctrl();
         let state = AppState::new();
         assert_eq!(
             route(ctrl_a, SNAPSHOT_LIST, &state, &[]),
             Route::SelectAll(Pane::Snapshots)
         );
-        assert_eq!(
-            route(ctrl_a, DIFFERENCE_LIST, &state, &[]),
-            Route::SelectAll(Pane::Difference)
-        );
+        // The difference list selects one change only (TASK-13 #19).
+        assert_eq!(route(ctrl_a, DIFFERENCE_LIST, &state, &[]), Route::Pass);
         // Text fields select their text with it; the profile box has no use for it.
         assert_eq!(route(ctrl_a, FILTER_FIELD, &state, &[]), Route::Pass);
         assert_eq!(route(ctrl_a, PROFILE_BOX, &state, &[]), Route::Pass);
+    }
+
+    #[test]
+    fn the_comparison_field_keeps_the_keys_that_read_select_and_copy_its_text() {
+        // The field is read with the arrows and copied (TASK-13 #1).
+        let state = ready();
+        for shortcut in [
+            key(Key::Down),
+            key(Key::Up),
+            key(Key::Home).ctrl(),
+            key(Key::End).shift(),
+            key(Key::Down).shift(),
+            key(Key::Letter(b'A')).ctrl(),
+            key(Key::Letter(b'C')).ctrl(),
+        ] {
+            assert_eq!(
+                route(shortcut, COMPARISON_FIELD, &state, &[]),
+                Route::Pass,
+                "{shortcut:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn the_filter_field_keeps_its_keys_and_esc_clears_it() {
+        let state = ready();
+        let esc = key(Key::Esc);
+        assert_eq!(route(esc, FILTER_FIELD, &state, &[]), Route::ClearFilter);
+        // Esc cancels no background job (document «Клавіатура й меню»).
+        for focus in [COMPARISON_FIELD, DIFFERENCE_LIST, SNAPSHOT_LIST] {
+            assert_eq!(route(esc, focus, &state, &[]), Route::Pass);
+        }
+        // Ctrl+1…Ctrl+4 and Ctrl+F work from the field too (TASK-13 #30).
+        let types = [
+            CommandId::ShowAdded,
+            CommandId::ShowDeleted,
+            CommandId::ShowModified,
+            CommandId::ShowInaccessible,
+        ];
+        for (digit, id) in (1..=4).zip(types) {
+            assert_eq!(
+                route(key(Key::Digit(digit)).ctrl(), FILTER_FIELD, &state, &[]),
+                Route::Run(id)
+            );
+        }
+        let ctrl_f = key(Key::Letter(b'F')).ctrl();
+        assert_eq!(
+            route(ctrl_f, DIFFERENCE_LIST, &state, &[]),
+            Route::Run(CommandId::FilterByText)
+        );
+        // Without a difference there is nothing to filter, and that is said.
+        assert_eq!(
+            route(ctrl_f, SNAPSHOT_LIST, &AppState::new(), &[]),
+            Route::Refuse(CommandId::FilterByText, Reason::NoDifference)
+        );
+        // Delete, Home and the like edit the text; F6 leads to the snapshot list.
+        for edit in [key(Key::Delete), key(Key::Home), key(Key::End).shift()] {
+            assert_eq!(route(edit, FILTER_FIELD, &state, &[]), Route::Pass);
+        }
+        assert_eq!(
+            route(key(Key::F(6)), FILTER_FIELD, &state, &[]),
+            Route::FocusPane(Pane::Snapshots)
+        );
     }
 
     #[test]
