@@ -2,6 +2,8 @@
 #![cfg_attr(not(debug_assertions), windows_subsystem = "windows")]
 
 mod commands;
+mod compare_window;
+mod difference;
 mod failure;
 mod help;
 mod i18n;

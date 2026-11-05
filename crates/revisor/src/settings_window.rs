@@ -1,11 +1,11 @@
 //! The settings window (TASK-9): the application's own settings (ADR-0007) that have a
 //! control of their own — the interface language (TASK-16), what the focus does when a
-//! snapshot ends, and whether deleting snapshots asks first. The profile opened last is
-//! kept without a control.
+//! snapshot ends, what it does when a comparison ends (TASK-11), and whether deleting
+//! snapshots asks first. The profile opened last is kept without a control.
 
 use std::rc::Rc;
 
-use revisor_core::settings::{FocusAfterSnapshot, Language};
+use revisor_core::settings::{FocusAfterComparison, FocusAfterSnapshot, Language};
 use wxdragon::prelude::*;
 
 use crate::commands::CommandId;
@@ -18,6 +18,7 @@ use crate::menus::{button_label, field_label};
 pub struct Values {
     pub language: Language,
     pub focus_after_snapshot: FocusAfterSnapshot,
+    pub focus_after_comparison: FocusAfterComparison,
     pub confirm_snapshot_deletion: bool,
 }
 
@@ -27,13 +28,15 @@ pub struct Values {
 enum Control {
     Language,
     FocusAfterSnapshot,
+    FocusAfterComparison,
     ConfirmDeletion,
 }
 
 impl Control {
-    const ALL: [Control; 3] = [
+    const ALL: [Control; 4] = [
         Self::Language,
         Self::FocusAfterSnapshot,
+        Self::FocusAfterComparison,
         Self::ConfirmDeletion,
     ];
 
@@ -42,6 +45,7 @@ impl Control {
         match self {
             Self::Language => b'L',
             Self::FocusAfterSnapshot => b'F',
+            Self::FocusAfterComparison => b'M',
             Self::ConfirmDeletion => b'C',
         }
     }
@@ -50,6 +54,7 @@ impl Control {
         match self {
             Self::Language => s.language(),
             Self::FocusAfterSnapshot => s.focus_after_snapshot(),
+            Self::FocusAfterComparison => s.focus_after_comparison(),
             Self::ConfirmDeletion => s.confirm_snapshot_deletion(),
         }
     }
@@ -59,7 +64,9 @@ impl Control {
     fn label(self, s: &dyn Strings) -> String {
         let (name, access) = (self.name(s), self.access());
         match self {
-            Self::Language | Self::FocusAfterSnapshot => field_label(s, name, access),
+            Self::Language | Self::FocusAfterSnapshot | Self::FocusAfterComparison => {
+                field_label(s, name, access)
+            }
             Self::ConfirmDeletion => button_label(s, name, access, false),
         }
     }
@@ -68,6 +75,7 @@ impl Control {
 struct Window {
     language: Choice,
     focus: Choice,
+    comparison_focus: Choice,
     confirm: CheckBox,
 }
 
@@ -101,6 +109,18 @@ pub fn show(parent: &Frame, s: &'static dyn Strings, initial: Values) -> Option<
         .position(|&v| v == initial.focus_after_snapshot)
         .unwrap_or(0);
     focus.set_selection(chosen as u32);
+    let comparison_focus_label = StaticText::builder(&dialog)
+        .with_label(&Control::FocusAfterComparison.label(s))
+        .build();
+    let comparison_focus = Choice::builder(&dialog).build();
+    for value in FocusAfterComparison::ALL {
+        comparison_focus.append(s.comparison_focus_option(value));
+    }
+    let chosen = FocusAfterComparison::ALL
+        .iter()
+        .position(|&v| v == initial.focus_after_comparison)
+        .unwrap_or(0);
+    comparison_focus.set_selection(chosen as u32);
     let confirm = CheckBox::builder(&dialog)
         .with_label(&Control::ConfirmDeletion.label(s))
         .build();
@@ -122,6 +142,8 @@ pub fn show(parent: &Frame, s: &'static dyn Strings, initial: Values) -> Option<
     sizer.add(&language, 0, SizerFlag::Expand | SizerFlag::All, 12);
     sizer.add(&focus_label, 0, side, 12);
     sizer.add(&focus, 0, SizerFlag::Expand | SizerFlag::All, 12);
+    sizer.add(&comparison_focus_label, 0, side, 12);
+    sizer.add(&comparison_focus, 0, SizerFlag::Expand | SizerFlag::All, 12);
     sizer.add(&confirm, 0, side | SizerFlag::Bottom, 12);
     let commit_row = BoxSizer::builder(Orientation::Horizontal).build();
     commit_row.add(&ok, 0, SizerFlag::AlignLeft, 8);
@@ -137,6 +159,7 @@ pub fn show(parent: &Frame, s: &'static dyn Strings, initial: Values) -> Option<
     let window = Rc::new(Window {
         language,
         focus,
+        comparison_focus,
         confirm,
     });
     // Access keys by the key's position, so they work in the Ukrainian layout too
@@ -171,6 +194,7 @@ impl Window {
         match control {
             Control::Language => self.language.set_focus(),
             Control::FocusAfterSnapshot => self.focus.set_focus(),
+            Control::FocusAfterComparison => self.comparison_focus.set_focus(),
             Control::ConfirmDeletion => {
                 self.confirm.set_value(!self.confirm.get_value());
                 self.confirm.set_focus();
@@ -182,10 +206,15 @@ impl Window {
     fn values(&self) -> Values {
         let language = self.language.get_selection().unwrap_or(0) as usize;
         let chosen = self.focus.get_selection().unwrap_or(0) as usize;
+        let comparison = self.comparison_focus.get_selection().unwrap_or(0) as usize;
         Values {
             language: Language::ALL.get(language).copied().unwrap_or_default(),
             focus_after_snapshot: FocusAfterSnapshot::ALL
                 .get(chosen)
+                .copied()
+                .unwrap_or_default(),
+            focus_after_comparison: FocusAfterComparison::ALL
+                .get(comparison)
                 .copied()
                 .unwrap_or_default(),
             confirm_snapshot_deletion: self.confirm.get_value(),
@@ -222,6 +251,14 @@ mod tests {
         assert_eq!(
             Control::FocusAfterSnapshot.label(&Uk),
             "Фокус після знімка (&F):"
+        );
+        assert_eq!(
+            Control::FocusAfterComparison.label(&En),
+            "Focus after a co&mparison:"
+        );
+        assert_eq!(
+            Control::FocusAfterComparison.label(&Uk),
+            "Фокус після порівняння (&M):"
         );
         assert_eq!(
             Control::ConfirmDeletion.label(&En),

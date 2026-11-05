@@ -117,6 +117,12 @@ pub enum Reason {
     CompactionOfThisProfile,
     /// No snapshot is selected in the snapshot list, so there is nothing to delete.
     NoSelection,
+    /// The current snapshot is the oldest: there is none before it to compare it with
+    /// (TASK-11).
+    NoPreviousSnapshot,
+    /// The profile has one snapshot only: there is no other one to compare it with
+    /// (TASK-11).
+    NoOtherSnapshot,
     /// revisor already runs as administrator.
     AlreadyAdmin,
     /// The command's own task has not been done yet.
@@ -261,9 +267,12 @@ fn has_snapshots(state: &AppState) -> Result<(), Reason> {
     require(state.snapshots > 0, Reason::NoSnapshots)
 }
 
+/// For the commands on the difference whose tasks are not done (TASK-13, TASK-14): they
+/// need a difference, and then their own task.
 fn has_difference(state: &AppState) -> Result<(), Reason> {
     has_snapshots(state)?;
-    require(state.has_difference, Reason::NoDifference)
+    require(state.has_difference, Reason::NoDifference)?;
+    not_yet(state)
 }
 
 /// For the commands on snapshots whose tasks are not done: they need snapshots and the
@@ -272,6 +281,28 @@ fn snapshots_not_yet(state: &AppState) -> Result<(), Reason> {
     has_snapshots(state)?;
     not_compacting(state)?;
     not_yet(state)
+}
+
+/// The current snapshot can be compared (TASK-11): the profile has snapshots and its
+/// database is open; a snapshot being taken is no obstacle (#16).
+fn comparison_possible(state: &AppState) -> Result<(), Reason> {
+    has_snapshots(state)?;
+    not_compacting(state)
+}
+
+/// Quick compare: the current snapshot has one before it.
+fn previous_comparable(state: &AppState) -> Result<(), Reason> {
+    comparison_possible(state)?;
+    require(
+        state.current_snapshot.is_some_and(|row| row > 0),
+        Reason::NoPreviousSnapshot,
+    )
+}
+
+/// Compare with: the profile has another snapshot to choose.
+fn other_comparable(state: &AppState) -> Result<(), Reason> {
+    comparison_possible(state)?;
+    require(state.snapshots > 1, Reason::NoOtherSnapshot)
 }
 
 fn snapshot_running(state: &AppState) -> Result<(), Reason> {
@@ -443,7 +474,7 @@ pub static COMMANDS: &[Command] = &[
             pane: Pane::Snapshots,
             group: 0,
         }),
-        available: snapshots_not_yet,
+        available: previous_comparable,
         ..item(
             CommandId::CompareWithPrevious,
             place(MenuId::Compare, 0),
@@ -457,7 +488,7 @@ pub static COMMANDS: &[Command] = &[
             pane: Pane::Snapshots,
             group: 0,
         }),
-        available: snapshots_not_yet,
+        available: other_comparable,
         ..item(CommandId::CompareWith, place(MenuId::Compare, 0), b'W')
     },
     Command {
@@ -677,6 +708,7 @@ mod tests {
             profile: Some("Дім".into()),
             snapshots: 2,
             selected_snapshots: 1,
+            current_snapshot: Some(1),
             ..AppState::new()
         };
         let finished = [
@@ -689,6 +721,8 @@ mod tests {
             CommandId::TakeSnapshot,
             CommandId::Comment,
             CommandId::DeleteSnapshots,
+            CommandId::CompareWithPrevious,
+            CommandId::CompareWith,
             CommandId::KeyboardShortcuts,
             CommandId::About,
         ];
@@ -700,6 +734,8 @@ mod tests {
                 assert_eq!(available, Err(Reason::SnapshotNotRunning));
             } else if c.id == CommandId::CancelCompaction {
                 assert_eq!(available, Err(Reason::CompactionNotRunning));
+            } else if c.id == CommandId::CancelComparison {
+                assert_eq!(available, Err(Reason::ComparisonNotRunning));
             } else {
                 assert!(available.is_err(), "{:?} runs before its task", c.id);
             }
@@ -832,6 +868,75 @@ mod tests {
             available(CommandId::TakeSnapshot, &other_open),
             Err(Reason::SnapshotRunning)
         );
+    }
+
+    #[test]
+    fn comparisons_need_a_previous_or_another_snapshot_and_run_during_a_snapshot() {
+        let available = |id, state: &AppState| (command(id).available)(state);
+        let two = AppState {
+            profile: Some("Дім".into()),
+            snapshots: 2,
+            current_snapshot: Some(1),
+            ..AppState::new()
+        };
+        assert_eq!(available(CommandId::CompareWithPrevious, &two), Ok(()));
+        assert_eq!(available(CommandId::CompareWith, &two), Ok(()));
+        // On the oldest snapshot there is nothing before it, but still another one.
+        let oldest = AppState {
+            current_snapshot: Some(0),
+            ..two.clone()
+        };
+        assert_eq!(
+            available(CommandId::CompareWithPrevious, &oldest),
+            Err(Reason::NoPreviousSnapshot)
+        );
+        assert_eq!(available(CommandId::CompareWith, &oldest), Ok(()));
+        let one = AppState {
+            snapshots: 1,
+            current_snapshot: Some(0),
+            ..two.clone()
+        };
+        assert_eq!(
+            available(CommandId::CompareWithPrevious, &one),
+            Err(Reason::NoPreviousSnapshot)
+        );
+        assert_eq!(
+            available(CommandId::CompareWith, &one),
+            Err(Reason::NoOtherSnapshot)
+        );
+        let none = AppState {
+            snapshots: 0,
+            current_snapshot: None,
+            ..two.clone()
+        };
+        for id in [CommandId::CompareWithPrevious, CommandId::CompareWith] {
+            assert_eq!(available(id, &none), Err(Reason::NoSnapshots), "{id:?}");
+            assert_eq!(
+                available(id, &AppState::new()),
+                Err(Reason::NoProfiles),
+                "{id:?}"
+            );
+        }
+        // A snapshot being taken is no obstacle (#16).
+        let snapshotting = AppState {
+            snapshot_running: true,
+            snapshotting_open_profile: true,
+            ..two.clone()
+        };
+        assert_eq!(
+            available(CommandId::CompareWithPrevious, &snapshotting),
+            Ok(())
+        );
+        assert_eq!(available(CommandId::CompareWith, &snapshotting), Ok(()));
+        assert_eq!(
+            available(CommandId::CancelComparison, &two),
+            Err(Reason::ComparisonNotRunning)
+        );
+        let comparing = AppState {
+            comparison_running: true,
+            ..two
+        };
+        assert_eq!(available(CommandId::CancelComparison, &comparing), Ok(()));
     }
 
     #[test]

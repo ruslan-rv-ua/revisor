@@ -2,11 +2,12 @@
 //! (document «Клавіатура й меню», section «Назви клавіш»).
 
 use revisor_core::exclude::PatternError;
-use revisor_core::settings::{FocusAfterSnapshot, Language};
+use revisor_core::settings::{FocusAfterComparison, FocusAfterSnapshot, Language};
 
 use super::plural::{Category, category};
 use super::{Failure, Lang, Strings};
 use crate::commands::{CommandId, MenuId, Pane, Reason, SubmenuId};
+use crate::difference::Kind;
 
 pub struct Uk;
 
@@ -102,6 +103,8 @@ impl Strings for Uk {
             Reason::CompactionRunning => "триває стискання бази, а водночас іде лише одне",
             Reason::CompactionOfThisProfile => "триває стискання бази цього профілю",
             Reason::NoSelection => "жодного знімка не виділено",
+            Reason::NoPreviousSnapshot => "попереднього знімка немає",
+            Reason::NoOtherSnapshot => "іншого знімка в профілі немає",
             Reason::AlreadyAdmin => "revisor уже працює від імені адміністратора",
             Reason::NotYet => "цієї команди ще немає в цій версії revisor",
         }
@@ -331,6 +334,7 @@ impl Strings for Uk {
                 "це не файл налаштувань revisor: перенесіть його з теки data".into()
             }
             Failure::Cancelled => "дію скасовано".into(),
+            Failure::SnapshotDeleted => "знімок тим часом видалено".into(),
             Failure::Other {
                 text,
                 code: Some(code),
@@ -580,8 +584,69 @@ impl Strings for Uk {
         "Пізніше"
     }
 
-    fn demo_change(&self, n: usize) -> String {
-        format!("Демо-зміна {n}")
+    fn comparing(&self) -> &'static str {
+        "Порівняння знімків…"
+    }
+
+    fn comparing_percent(&self, percent: u8) -> String {
+        format!("Порівняння знімків: {percent} %…")
+    }
+
+    fn waiting_for_database(&self) -> &'static str {
+        "Чекаю, доки звільниться база профілю…"
+    }
+
+    fn comparison_finished(&self) -> &'static str {
+        "Порівняння завершено."
+    }
+
+    fn comparison_cancelled(&self) -> &'static str {
+        "Порівняння скасовано."
+    }
+
+    fn comparison_failed(&self, reason: &str) -> String {
+        format!("Знімки не порівняно: {reason}.")
+    }
+
+    fn comparison_stopped(&self) -> &'static str {
+        "порівняння несподівано зупинилося"
+    }
+
+    fn compare_with_label(&self, snapshot: &str) -> String {
+        format!("Порівняти знімок {snapshot} зі знімком")
+    }
+
+    fn compare(&self) -> &'static str {
+        "Порівняти"
+    }
+
+    fn focus_after_comparison(&self) -> &'static str {
+        "Фокус після порівняння"
+    }
+
+    fn comparison_focus_option(&self, value: FocusAfterComparison) -> &'static str {
+        match value {
+            FocusAfterComparison::IfNotMoved => "Якщо фокус не рухали",
+            FocusAfterComparison::Always => "Завжди",
+            FocusAfterComparison::Never => "Ніколи",
+        }
+    }
+
+    fn column_change(&self) -> &'static str {
+        "Зміна"
+    }
+
+    fn column_path(&self) -> &'static str {
+        "Шлях"
+    }
+
+    fn change_kind(&self, kind: Kind) -> &'static str {
+        match kind {
+            Kind::Added => "Додано",
+            Kind::Deleted => "Видалено",
+            Kind::Modified => "Змінено",
+            Kind::Inaccessible => "Недоступно",
+        }
     }
 
     fn demo_done(&self, command: &str) -> String {

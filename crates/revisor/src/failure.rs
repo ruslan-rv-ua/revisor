@@ -4,6 +4,7 @@
 
 use std::io;
 
+use revisor_core::compare::CompareError;
 use revisor_core::settings::SettingsError;
 use revisor_core::store::StoreError;
 
@@ -55,6 +56,18 @@ pub fn of_store(e: &StoreError) -> Failure {
         // A cancelled snapshot (TASK-8) and an interrupted compaction (TASK-9) say so in
         // their own words.
         StoreError::Cancelled => Failure::Other {
+            text: e.to_string(),
+            code: None,
+        },
+    }
+}
+
+pub fn of_compare(e: &CompareError) -> Failure {
+    match e {
+        CompareError::Store(e) => of_store(e),
+        CompareError::NoSuchSnapshot(_) => Failure::SnapshotDeleted,
+        // A cancelled comparison (TASK-11) says so in its own words.
+        CompareError::Cancelled => Failure::Other {
             text: e.to_string(),
             code: None,
         },

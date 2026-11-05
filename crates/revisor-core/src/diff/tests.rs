@@ -7,6 +7,7 @@ use std::collections::HashSet;
 use std::ffi::{OsStr, OsString};
 use std::fs;
 use std::path::Path;
+use std::sync::atomic::AtomicU64;
 
 const FILE_ATTRIBUTE_HIDDEN: u32 = 0x2;
 const FILE_ATTRIBUTE_DIRECTORY: u32 = 0x10;
@@ -771,4 +772,32 @@ fn unchanged_folder_scanned_twice_has_no_changes() {
     let diff = diff_whole(&old, &new, &no_cancel).unwrap();
     assert!(diff.changes.is_empty(), "{:?}", lines(&old, &new));
     assert!(diff.inaccessible.is_empty());
+}
+
+#[test]
+fn the_entries_visited_are_counted_once_each() {
+    let mut old = Tree::new();
+    old.add("a.txt", EntryKind::File);
+    old.add("sub", EntryKind::Dir);
+    old.add(r"sub\b.txt", EntryKind::File);
+    old.add("same", EntryKind::Dir);
+    old.add(r"same\c.txt", EntryKind::File);
+    let mut new = old.clone();
+    // A kind change: visited as a deleted folder with its contents, then as an added file.
+    new.remove("sub");
+    new.add("sub", EntryKind::File);
+    new.add("d.txt", EntryKind::File);
+    let visited = AtomicU64::new(0);
+    diff_counting(
+        Subtree::whole(&old.0),
+        Subtree::whole(&new.0),
+        &Rules::plain(),
+        &Cancel::new(),
+        &visited,
+    )
+    .unwrap();
+    assert_eq!(
+        visited.load(std::sync::atomic::Ordering::Relaxed),
+        (old.0.len() + new.0.len()) as u64
+    );
 }

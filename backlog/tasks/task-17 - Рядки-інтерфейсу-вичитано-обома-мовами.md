@@ -4,6 +4,7 @@ title: Рядки інтерфейсу вичитано обома мовами
 status: To Do
 assignee: []
 created_date: '2026-11-01 18:32'
+updated_date: '2026-11-05 17:46'
 labels: []
 milestone: m-1
 dependencies:
@@ -16,6 +17,7 @@ dependencies:
   - TASK-14
   - TASK-15
   - TASK-16
+  - TASK-24
 references:
   - >-
     https://download.microsoft.com/download/6/4/a/64a8b98e-e69f-47c9-96dd-f8bc55c176c6/ukr-ukr-StyleGuide.pdf
