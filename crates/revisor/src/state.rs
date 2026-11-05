@@ -1,6 +1,8 @@
 //! What the main window knows about the work in progress; commands decide from it whether
 //! they can run now.
 
+use crate::jobs::Flags;
+
 /// A difference list column to sort by (TASK-13).
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub enum SortColumn {
@@ -34,6 +36,7 @@ pub struct AppState {
     pub selected_snapshots: usize,
     /// Whether a comparison has produced a difference to show.
     pub has_difference: bool,
+    // The flags of the background jobs: the window sets them all at once, with `set_jobs`.
     pub snapshot_running: bool,
     /// Whether the snapshot being taken is of the open profile, which then cannot be
     /// changed or deleted (TASK-8).
@@ -75,6 +78,23 @@ impl AppState {
             demo: true,
             ..Self::new()
         }
+    }
+
+    /// Takes the flags of the background jobs, all five at once, as the jobs give them
+    /// for the open profile (ADR-0011).
+    pub fn set_jobs(&mut self, flags: Flags) {
+        let Flags {
+            snapshot_running,
+            snapshotting_open_profile,
+            comparison_running,
+            compaction_running,
+            compacting_open_profile,
+        } = flags;
+        self.snapshot_running = snapshot_running;
+        self.snapshotting_open_profile = snapshotting_open_profile;
+        self.comparison_running = comparison_running;
+        self.compaction_running = compaction_running;
+        self.compacting_open_profile = compacting_open_profile;
     }
 
     pub fn shows(&self, change: ChangeType) -> bool {

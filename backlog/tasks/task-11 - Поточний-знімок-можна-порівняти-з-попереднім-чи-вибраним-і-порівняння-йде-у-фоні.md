@@ -6,7 +6,7 @@ title: >-
 status: To Do
 assignee: []
 created_date: '2026-10-30 15:19'
-updated_date: '2026-11-01 18:35'
+updated_date: '2026-11-05 00:03'
 labels: []
 milestone: m-1
 dependencies:
@@ -14,6 +14,7 @@ dependencies:
   - TASK-9
   - TASK-10
   - TASK-15
+  - TASK-23
 references:
   - 'https://learn.microsoft.com/en-us/windows/win32/uxguide/cmd-menus'
   - 'https://tortoisesvn.net/docs/release/TortoiseSVN_en/tsvn-dug-showlog.html'

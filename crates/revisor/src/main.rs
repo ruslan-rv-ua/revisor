@@ -5,6 +5,7 @@ mod commands;
 mod failure;
 mod help;
 mod i18n;
+mod jobs;
 mod keyboard;
 mod keys;
 mod main_window;

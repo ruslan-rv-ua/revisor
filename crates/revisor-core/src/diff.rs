@@ -25,9 +25,9 @@ use std::ffi::OsStr;
 use std::fmt;
 use std::os::windows::ffi::OsStrExt;
 use std::path::PathBuf;
-use std::sync::atomic::{self, AtomicBool};
 
 use crate::exclude::{Branch, Exclusions};
+use crate::job::Cancel;
 use crate::names::upcase;
 use crate::scan::{Entry, EntryKind, VersionInfo};
 
@@ -198,12 +198,12 @@ impl Rules<'_> {
 }
 
 /// Compares the subtree `old` with the subtree `new`: their roots are always matched
-/// with each other. Setting `cancel` stops with [`Cancelled`].
+/// with each other. Cancelling `cancel` stops with [`Cancelled`].
 pub fn diff(
     old: Subtree<'_>,
     new: Subtree<'_>,
     rules: &Rules<'_>,
-    cancel: &AtomicBool,
+    cancel: &Cancel,
 ) -> Result<Diff, Cancelled> {
     let roots = match (old.entries.is_empty(), new.entries.is_empty()) {
         (false, false) => vec![Item::Both(old.root, new.root)],
@@ -234,7 +234,7 @@ pub fn diff(
             walk.frames.pop();
             continue;
         };
-        if seen.is_multiple_of(CANCEL_CHECK) && cancel.load(atomic::Ordering::Relaxed) {
+        if seen.is_multiple_of(CANCEL_CHECK) && cancel.is_cancelled() {
             return Err(Cancelled);
         }
         seen += 1;

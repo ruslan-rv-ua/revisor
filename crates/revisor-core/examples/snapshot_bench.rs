@@ -15,8 +15,8 @@ use std::sync::atomic::AtomicBool;
 use std::thread;
 use std::time::{Duration, Instant};
 
-use revisor_core::scan::Progress;
-use revisor_core::snapshot::take;
+use revisor_core::job::Cancel;
+use revisor_core::snapshot::{Phase, Progress, take};
 use revisor_core::store::{FolderState, ProfileSettings, Store};
 use windows_sys::Win32::System::ProcessStatus::{GetProcessMemoryInfo, PROCESS_MEMORY_COUNTERS};
 use windows_sys::Win32::System::Threading::GetCurrentProcess;
@@ -63,7 +63,7 @@ fn run(folders: &[PathBuf], db: &Path) -> Result<(), Box<dyn std::error::Error>>
     }
 
     let progress = Progress::default();
-    let cancel = AtomicBool::new(false);
+    let cancel = Cancel::new();
     let done = AtomicBool::new(false);
     let started = Instant::now();
     let report = thread::scope(|s| {
@@ -73,10 +73,9 @@ fn run(folders: &[PathBuf], db: &Path) -> Result<(), Box<dyn std::error::Error>>
                 if done.load(std::sync::atomic::Ordering::Relaxed) {
                     break;
                 }
-                let phase = if progress.saving() {
-                    "saving"
-                } else {
-                    "scanning"
+                let phase = match progress.phase() {
+                    Phase::Scanning => "scanning",
+                    Phase::Saving | Phase::Saved => "saving",
                 };
                 println!(
                     "  {:6.1} s  {phase}: {} entries, {}",

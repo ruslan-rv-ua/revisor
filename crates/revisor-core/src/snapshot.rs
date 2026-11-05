@@ -1,20 +1,21 @@
 //! Taking a snapshot of a profile (TASK-8): each folder of the profile is examined and
 //! scanned with the profile's exclusions, and what was collected is saved in the
 //! profile's database in one transaction, so a snapshot that was cancelled or failed
-//! leaves nothing behind.
+//! leaves nothing behind. [`SnapshotWork`] takes it as a background job (ADR-0011).
 
 use std::fmt;
 use std::fs;
 use std::io;
-use std::path::Path;
-use std::sync::atomic::{AtomicBool, Ordering};
+use std::path::{Path, PathBuf};
+use std::sync::atomic::{AtomicU8, Ordering};
 use std::time::{Duration, Instant};
 
 use windows_sys::Win32::Foundation;
 
 use crate::exclude::{self, Exclusions, Expanded, SystemEnvironment};
 use crate::folders::{self, LocateError};
-use crate::scan::{self, Progress, ScanError, ScanOptions, ScanStats};
+use crate::job::{Cancel, Outcome, Work};
+use crate::scan::{self, ScanError, ScanOptions, ScanStats};
 use crate::store::{
     self, FolderSnapshot, FolderState, Snapshot, SnapshotExclusion, SnapshotFolder, Store,
     StoreError, Unavailable,
@@ -79,14 +80,93 @@ impl From<StoreError> for SnapshotError {
     }
 }
 
+/// What a snapshot being taken is doing.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub enum Phase {
+    /// The profile's folders are being scanned.
+    #[default]
+    Scanning,
+    /// The scans are over, and the snapshot is being saved.
+    Saving,
+    /// The save is over, well or not: the database is free again, and the snapshot's
+    /// result is a moment away, so whoever waited for the database can wait for the
+    /// result too and report both at once (TASK-21).
+    Saved,
+}
+
+/// What a snapshot being taken reports to whoever waits for it: what its scans have
+/// collected, and its phase. Shared with another thread, which reads it now and then.
+#[derive(Debug, Default)]
+pub struct Progress {
+    /// The scans of all the profile's folders report here, so the count goes on.
+    scan: scan::Progress,
+    phase: AtomicU8,
+}
+
+impl Progress {
+    /// How many entries the scans have collected so far.
+    pub fn entries(&self) -> u64 {
+        self.scan.entries()
+    }
+
+    /// The folder being read now, as a plain path.
+    pub fn folder(&self) -> PathBuf {
+        self.scan.folder()
+    }
+
+    pub fn phase(&self) -> Phase {
+        match self.phase.load(Ordering::Relaxed) {
+            0 => Phase::Scanning,
+            1 => Phase::Saving,
+            _ => Phase::Saved,
+        }
+    }
+
+    fn set_phase(&self, phase: Phase) {
+        self.phase.store(phase as u8, Ordering::Relaxed);
+    }
+}
+
+/// Taking a snapshot as a background job (ADR-0011): [`take`] on the job's thread.
+#[derive(Clone, Debug)]
+pub struct SnapshotWork {
+    db: PathBuf,
+    comment: Option<String>,
+}
+
+impl SnapshotWork {
+    /// A snapshot of the profile whose database is at `db`, with `comment`.
+    pub fn new(db: &Path, comment: Option<&str>) -> Self {
+        Self {
+            db: db.to_path_buf(),
+            comment: comment.map(String::from),
+        }
+    }
+}
+
+impl Work for SnapshotWork {
+    type Progress = Progress;
+    type Output = Outcome<Report, SnapshotError>;
+
+    fn run(self, progress: &Progress, cancel: &Cancel) -> Self::Output {
+        let result = take(&self.db, self.comment.as_deref(), progress, cancel);
+        Outcome::of(result, |e| matches!(e, SnapshotError::Cancelled))
+    }
+
+    /// Once the save is over, the result is a moment away.
+    fn about_to_end(progress: &Progress) -> bool {
+        progress.phase() == Phase::Saved
+    }
+}
+
 /// Takes a snapshot of the profile whose database is at `db` and saves it there. The
-/// scans report to `progress`, and setting `cancel` stops the snapshot with
-/// [`SnapshotError::Cancelled`].
+/// scans and the save report to `progress`, and cancelling `cancel` stops the snapshot
+/// with [`SnapshotError::Cancelled`].
 pub fn take(
     db: &Path,
     comment: Option<&str>,
     progress: &Progress,
-    cancel: &AtomicBool,
+    cancel: &Cancel,
 ) -> Result<Report, SnapshotError> {
     let started = Instant::now();
     let mut store = Store::open(db)?;
@@ -116,10 +196,16 @@ pub fn take(
     let mut totals = Totals::default();
     let mut folders = Vec::with_capacity(scope.folders.len());
     for path in &scope.folders {
-        if cancel.load(Ordering::Relaxed) {
+        if cancel.is_cancelled() {
             return Err(SnapshotError::Cancelled);
         }
-        folders.push(scan_folder(path, &options, cancel, progress, &mut totals)?);
+        folders.push(scan_folder(
+            path,
+            &options,
+            cancel,
+            &progress.scan,
+            &mut totals,
+        )?);
     }
     let snapshot = Snapshot {
         taken_at,
@@ -127,9 +213,9 @@ pub fn take(
         folders,
         exclusions,
     };
-    progress.set_saving(true);
+    progress.set_phase(Phase::Saving);
     let saved = store.save(&snapshot, cancel);
-    progress.set_saved(true);
+    progress.set_phase(Phase::Saved);
     let id = saved?;
     Ok(Report {
         id,
@@ -164,8 +250,8 @@ impl Totals {
 fn scan_folder(
     path: &Path,
     options: &ScanOptions,
-    cancel: &AtomicBool,
-    progress: &Progress,
+    cancel: &Cancel,
+    progress: &scan::Progress,
     totals: &mut Totals,
 ) -> Result<FolderSnapshot, SnapshotError> {
     let without_tree = |state| FolderSnapshot {

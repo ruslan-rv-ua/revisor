@@ -13,12 +13,12 @@ use std::fs;
 use std::mem::size_of;
 use std::path::{Path, PathBuf};
 use std::process::{Command, ExitCode};
-use std::sync::atomic::AtomicBool;
 use std::time::Instant;
 
 use revisor_core::compare::compare;
 use revisor_core::diff::ChangeKind;
 use revisor_core::exclude::{DEFAULT_EXCLUSIONS, SystemEnvironment, expand};
+use revisor_core::job::Cancel;
 use revisor_core::scan::{Entry, EntryKind, Progress, ScanOptions, scan, synthetic};
 use revisor_core::store::{ProfileSettings, Scope, Snapshot, SnapshotExclusion, Store};
 use windows_sys::Win32::System::ProcessStatus::{GetProcessMemoryInfo, PROCESS_MEMORY_COUNTERS};
@@ -73,7 +73,7 @@ fn main() -> ExitCode {
 }
 
 fn prepare(input: &Input, db: &Path) -> Result<(), Box<dyn std::error::Error>> {
-    let no_cancel = AtomicBool::new(false);
+    let no_cancel = Cancel::new();
     let started = Instant::now();
     let (old, new) = match input {
         Input::Scan(root) => {
@@ -174,7 +174,7 @@ fn compare_last_two(db: &Path) -> Result<(), Box<dyn std::error::Error>> {
     };
 
     let started = Instant::now();
-    let difference = compare(&store, a.id, b.id, &AtomicBool::new(false))?;
+    let difference = compare(&store, a.id, b.id, &Cancel::new())?;
     let elapsed = started.elapsed();
     let changes = || {
         difference

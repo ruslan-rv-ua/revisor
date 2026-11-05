@@ -12,12 +12,13 @@ use std::fmt;
 use std::io;
 use std::os::windows::ffi::{OsStrExt, OsStringExt};
 use std::path::{Path, PathBuf};
-use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
+use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Condvar, Mutex};
 use std::thread;
 use std::time::{Duration, Instant};
 
 use crate::exclude::{Branch, Exclusions};
+use crate::job::Cancel;
 
 const FILE_ATTRIBUTE_ARCHIVE: u32 = 0x20;
 const FILE_ATTRIBUTE_DIRECTORY: u32 = 0x10;
@@ -153,8 +154,6 @@ pub struct Scan {
 pub struct Progress {
     entries: AtomicU64,
     folder: Mutex<PathBuf>,
-    saving: AtomicBool,
-    saved: AtomicBool,
 }
 
 impl Progress {
@@ -168,28 +167,8 @@ impl Progress {
         self.folder.lock().unwrap().clone()
     }
 
-    /// Whether the scans are over and the snapshot is being saved.
-    pub fn saving(&self) -> bool {
-        self.saving.load(Ordering::Relaxed)
-    }
-
     pub fn add(&self, entries: u64) {
         self.entries.fetch_add(entries, Ordering::Relaxed);
-    }
-
-    pub fn set_saving(&self, saving: bool) {
-        self.saving.store(saving, Ordering::Relaxed);
-    }
-
-    /// Whether the save is over, well or not, so the database is free again and the
-    /// snapshot's result is a moment away: whoever waited for the database can wait for
-    /// the result too and report both at once (TASK-21).
-    pub fn saved(&self) -> bool {
-        self.saved.load(Ordering::Relaxed)
-    }
-
-    pub fn set_saved(&self, saved: bool) {
-        self.saved.store(saved, Ordering::Relaxed);
     }
 
     fn set_folder(&self, folder: &Path) {
@@ -217,14 +196,14 @@ impl fmt::Display for ScanError {
 
 impl std::error::Error for ScanError {}
 
-/// Scans the folder tree under `root`, reporting to `progress` as it goes. Setting
+/// Scans the folder tree under `root`, reporting to `progress` as it goes. Cancelling
 /// `cancel` stops the scan with [`ScanError::Cancelled`]. A root that is a junction or a
 /// symbolic link is read through its target; a root that rights keep closed is the one
 /// inaccessible entry of its tree, like any such folder deeper down.
 pub fn scan(
     root: &Path,
     options: &ScanOptions,
-    cancel: &AtomicBool,
+    cancel: &Cancel,
     progress: &Progress,
 ) -> Result<Scan, ScanError> {
     let root_path = verbatim(root).map_err(ScanError::Root)?;
@@ -300,7 +279,7 @@ pub fn scan(
         }
         walker.work();
     });
-    if cancel.load(Ordering::Relaxed) {
+    if cancel.is_cancelled() {
         return Err(ScanError::Cancelled);
     }
 
@@ -467,7 +446,7 @@ struct Walker<'a> {
     entries: Mutex<Vec<Entry>>,
     queue: Mutex<Queue>,
     wake: Condvar,
-    cancel: &'a AtomicBool,
+    cancel: &'a Cancel,
     progress: &'a Progress,
     exclusions: &'a Exclusions,
     read_versions: bool,
@@ -526,7 +505,7 @@ impl Walker<'_> {
     fn next_job(&self) -> Option<Job> {
         let mut queue = self.queue.lock().unwrap();
         loop {
-            if self.cancel.load(Ordering::Relaxed) {
+            if self.cancel.is_cancelled() {
                 return None;
             }
             if let Some(job) = queue.jobs.pop() {
@@ -590,7 +569,7 @@ impl Walker<'_> {
                         if entry.attributes & DATA_NOT_ON_DISK != 0 {
                             // Reading it would download it from the cloud.
                             self.versions_unread.fetch_add(1, Ordering::Relaxed);
-                        } else if !self.cancel.load(Ordering::Relaxed) {
+                        } else if !self.cancel.is_cancelled() {
                             let full = full();
                             self.read_version(&full, &mut entry);
                         }
