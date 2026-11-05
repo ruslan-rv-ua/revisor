@@ -2191,4 +2191,17 @@ mod tests {
         assert!(has(En.delete(), DELETE_ACCESS));
         assert!(has(&En.comment_of("x"), COMMENT_ACCESS));
     }
+
+    #[test]
+    fn the_cancel_button_keeps_its_label_from_a_snapshot_to_its_comparison() {
+        // «Знімок + порівняння» goes from its snapshot to its comparison under one Cancel
+        // button, whose label does not change under the focus (TASK-12 #9).
+        assert_eq!(cancel_snapshot_access(), cancel_comparison_access());
+        for s in [&En as &dyn Strings, &crate::i18n::Uk] {
+            assert_eq!(
+                button_label(s, s.cancel(), cancel_snapshot_access(), false),
+                button_label(s, s.cancel(), cancel_comparison_access(), false)
+            );
+        }
+    }
 }
