@@ -5,7 +5,7 @@ status: In Progress
 assignee:
   - '@claude'
 created_date: '2026-11-01 01:12'
-updated_date: '2026-11-05 18:29'
+updated_date: '2026-11-05 18:42'
 labels: []
 milestone: m-1
 dependencies:
@@ -99,3 +99,24 @@ ordinal: 12000
 
 Коміти англійською; `git flow feature finish` — за словом користувача.
 <!-- SECTION:PLAN:END -->
+
+## Implementation Notes
+
+<!-- SECTION:NOTES:BEGIN -->
+## Стан на 2026-11-05
+
+Гілка `feature/task-12-snapshot-and-compare` від develop 7138204; коміти: 73a7dc3 (план), 0f37983 (застосунок).
+
+Застосунок (`crates/revisor`), ядро не змінювалося:
+- `jobs.rs`: місце знімка несе `ThenCompare { with }` (з яким знімком порівняти новий; `None` — у профілі знімків не було), місце порівняння — звіт знімка (`after: Option<Report>`); події `Event::Snapshot(Ended, Option<ThenCompare>)` і `Event::Comparison(Ended, Option<Report>)`. `start_snapshot_and_compare` скасовує й забуває порівняння, що триває (команда — пізніше порівняння), `start_comparison` знімає позначку з місця знімка (#11), `start_comparison_after_snapshot` запускає порівняння команди. Порівняння, яке заміняє порівняння команди, повертає її звіт (`Superseded`, `#[must_use]`), щоб вікно його сказало. `shown()` показує порівняння команди одразу, без правила 1 с.
+- `snapshots::arrival_after_comparison(focus, to_difference)` (#6) і `difference::arrival_after_snapshot(setting, focus, of_open_profile)` з новим `Arrival::OpenProfileAndFocus` (#5, #7) — чисті функції з тестами.
+- `commands.rs`: `snapshot_possible` для «Зробити знімок» і «Знімок + порівняння» (профіль, знімок не триває, база не стискається); `snapshots_not_yet` прибрано.
+- `main_window.rs`: `snapshot_and_compare` (знімок, з яким порівнювати, — останній рядок переліку на запуску; фокус на запуску — у `comparison_focus`), `snapshot_to_compare` (у події «знімок збережено»: рядок — у кінець переліку, порівняння — до оновлення рядка прогресу; без знімка для порівняння — звіт і «Порівнювати знімок нема з чим…»), `snapshot_and_compare_ended` (різниця за `arrival_after_snapshot`, новий знімок поточний за `arrival_after_comparison`, звіт знімка з кінцем порівняння, пропозиція перезапуску), `report_superseded`. Звіт знімка винесено в `snapshot_report` / `snapshot_report_after`, пропозицію перезапуску — в `offer_restart` (заголовок — команда, що зробила знімок), `snapshot_failed` бере команду для заголовка. Рядок стану каже фазу порівняння лише після 1 с; мітку кнопки «Скасувати» вікно ставить, лише коли вона інша.
+- Рядки `snapshot_saved_comparison_cancelled`, `nothing_to_compare` — en і uk.
+
+Перевірка: `cargo fmt --all -- --check`, `cargo clippy --workspace --all-targets --locked -- -D warnings` — чисто; `cargo test --workspace --locked` — застосунок 79, ядро 164 (+1 ignored), versioninfo 3.
+
+Тест порівняння, скасованого під час чекання бази, тримає базу, доки робота не закінчиться: робота помічає скасування, лише поки база зайнята, а порівняння порожніх знімків інакше встигає закінчитися як готове (так і має бути: скасування, що спізнилося, нічого не ламає).
+
+Сценарій живої перевірки `tools/nvda/task12_snapshot_and_compare.py` (частини `small`, `big`) написано; прогін з NVDA — з дозволу користувача.
+<!-- SECTION:NOTES:END -->

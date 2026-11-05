@@ -9,9 +9,10 @@ revisor lists the files that program created, changed or deleted.
 It is a portable Windows application built for the keyboard and for screen readers first.
 
 > **Status: in development.** There is no release yet. The application takes snapshots of
-> a profile's folders and compares two of them, showing the changes as a plain list; the
-> rest of the difference view is still being built. This repository holds the work
-> towards version 0.1.
+> a profile's folders and compares two of them, or takes a new snapshot and compares it
+> with the one before in a single command, showing the changes as a plain list; the rest
+> of the difference view is still being built. This repository holds the work towards
+> version 0.1.
 
 ## Building from source
 
