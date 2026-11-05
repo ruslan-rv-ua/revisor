@@ -161,9 +161,15 @@ pub struct MainWindow {
     /// Cancels the job the progress row shows.
     cancel_button: Button,
     snapshots: ListCtrl,
-    /// The difference list: a virtual list over `difference_rows`, which it asks for the
-    /// text of the rows it shows (TASK-11 #5).
-    difference: ListCtrl,
+    /// The difference lists: two virtual lists over `difference_rows`, which they ask for
+    /// the text of the rows they show (TASK-11 #5), one of them shown at a time. A new
+    /// difference goes into the other list, which then takes the shown one's place: the
+    /// focus comes to it as to a new list, which screen readers name again even when the
+    /// focus was in the old one (#21); nothing says so when the rows under the focus are
+    /// merely replaced.
+    differences: [ListCtrl; 2],
+    /// Which of `differences` is shown.
+    shown_difference: Cell<usize>,
     difference_rows: Rc<RefCell<Rows>>,
     /// Polls the jobs.
     timer: Timer<Frame>,
@@ -257,36 +263,38 @@ impl MainWindow {
         );
         snapshots.insert_column(1, s.column_comment(), ListColumnFormat::Left, COMMENT_WIDTH);
         win32::full_row_select_no_sort(snapshots.get_handle());
-        // A virtual list: a difference may have a million rows (TASK-11 #6), and the
-        // list asks for the text of the ones it shows.
-        let difference = ListCtrl::builder(&panel)
-            .with_style(ListCtrlStyle::Report | ListCtrlStyle::Virtual | ListCtrlStyle::SingleSel)
-            .build();
-        difference.insert_column(0, s.column_change(), ListColumnFormat::Left, CHANGE_WIDTH);
-        difference.insert_column(1, s.column_path(), ListColumnFormat::Left, PATH_WIDTH);
-        win32::full_row_select_no_sort(difference.get_handle());
+        win32::set_accessible_name(snapshots.get_handle(), s.pane(Pane::Snapshots));
+        // Virtual lists: a difference may have a million rows (TASK-11 #6), and a list
+        // asks for the text of the ones it shows. Two of them, the second hidden at first.
         let difference_rows = Rc::new(RefCell::new(Rows::default()));
-        let rows_shown = Rc::clone(&difference_rows);
-        difference.set_virtual_text_callback(move |row, column| {
-            let rows = rows_shown.borrow();
-            let row = usize::try_from(row).unwrap_or(usize::MAX);
-            match column {
-                0 => rows
-                    .kind(row)
-                    .map(|kind| s.change_kind(kind).to_string())
-                    .unwrap_or_default(),
-                _ => rows
-                    .path(row)
-                    .map(|path| path.to_string_lossy().into_owned())
-                    .unwrap_or_default(),
-            }
+        let differences = [(); 2].map(|()| {
+            let list = ListCtrl::builder(&panel)
+                .with_style(
+                    ListCtrlStyle::Report | ListCtrlStyle::Virtual | ListCtrlStyle::SingleSel,
+                )
+                .build();
+            list.insert_column(0, s.column_change(), ListColumnFormat::Left, CHANGE_WIDTH);
+            list.insert_column(1, s.column_path(), ListColumnFormat::Left, PATH_WIDTH);
+            win32::full_row_select_no_sort(list.get_handle());
+            win32::set_accessible_name(list.get_handle(), s.pane(Pane::Difference));
+            let rows_shown = Rc::clone(&difference_rows);
+            list.set_virtual_text_callback(move |row, column| {
+                let rows = rows_shown.borrow();
+                let row = usize::try_from(row).unwrap_or(usize::MAX);
+                match column {
+                    0 => rows
+                        .kind(row)
+                        .map(|kind| s.change_kind(kind).to_string())
+                        .unwrap_or_default(),
+                    _ => rows
+                        .path(row)
+                        .map(|path| path.to_string_lossy().into_owned())
+                        .unwrap_or_default(),
+                }
+            });
+            list
         });
-        for (list, pane) in [
-            (&snapshots, Pane::Snapshots),
-            (&difference, Pane::Difference),
-        ] {
-            win32::set_accessible_name(list.get_handle(), s.pane(pane));
-        }
+        differences[1].show(false);
         // The panel answers for the lists' text while they are empty.
         win32::subclass_list_parent(panel.get_handle());
 
@@ -317,7 +325,9 @@ impl MainWindow {
         sizer.add_sizer(&profile_row, 0, SizerFlag::Expand, 0);
         sizer.add_sizer(&progress_row, 0, SizerFlag::Expand, 0);
         sizer.add(&snapshots, 1, SizerFlag::Expand | SizerFlag::All, 5);
-        sizer.add(&difference, 2, SizerFlag::Expand | SizerFlag::All, 5);
+        for list in &differences {
+            sizer.add(list, 2, SizerFlag::Expand | SizerFlag::All, 5);
+        }
         panel.set_sizer(sizer, true);
         let timer = Timer::new(&frame);
 
@@ -338,7 +348,8 @@ impl MainWindow {
             gauge,
             cancel_button,
             snapshots,
-            difference,
+            differences,
+            shown_difference: Cell::new(0),
             difference_rows,
             timer,
             jobs: RefCell::new(Jobs::default()),
@@ -506,7 +517,7 @@ impl MainWindow {
                 part: Some(Pane::Snapshots),
                 control: Control::MainList,
             }
-        } else if focused == self.difference.get_handle() {
+        } else if self.is_difference(focused) {
             Focus {
                 part: Some(Pane::Difference),
                 control: Control::MainList,
@@ -548,7 +559,7 @@ impl MainWindow {
     /// the comparison's progress, or elsewhere.
     fn comparison_focus_place(&self) -> difference::FocusPlace {
         let focused = win32::focused_window();
-        if focused == self.difference.get_handle() {
+        if self.is_difference(focused) {
             difference::FocusPlace::DifferenceList
         } else if focused == self.comparison_focus.get() {
             difference::FocusPlace::Unmoved
@@ -564,8 +575,20 @@ impl MainWindow {
     fn list(&self, pane: Pane) -> &ListCtrl {
         match pane {
             Pane::Snapshots => &self.snapshots,
-            Pane::Difference => &self.difference,
+            Pane::Difference => self.difference(),
         }
+    }
+
+    /// The difference list shown.
+    fn difference(&self) -> &ListCtrl {
+        &self.differences[self.shown_difference.get()]
+    }
+
+    /// Whether `hwnd` is a difference list, shown or not.
+    fn is_difference(&self, hwnd: *mut c_void) -> bool {
+        self.differences
+            .iter()
+            .any(|list| list.get_handle() == hwnd)
     }
 
     fn apply(&self, routed: Route) {
@@ -1293,7 +1316,9 @@ impl MainWindow {
         let Some(other) = chosen else {
             return;
         };
-        self.snapshots.set_focus();
+        if win32::focused_window() != self.snapshots.get_handle() {
+            self.snapshots.set_focus();
+        }
         self.start_comparison(open, rows[row].id, other.id);
     }
 
@@ -1341,9 +1366,9 @@ impl MainWindow {
         }
     }
 
-    /// Puts `difference` in the difference list in place of the one shown, with the
-    /// focus moving to its first row, or the end said without it, as its arrival says
-    /// (#12–#14, #21).
+    /// Puts `difference` in the difference list that is not shown, which then takes the
+    /// place of the shown one, with the focus moving to its first row, or the end said
+    /// without it, as its arrival says (#12–#14, #21).
     fn show_difference(&self, difference: Difference, focus: difference::FocusPlace) {
         let s = self.s;
         let count = {
@@ -1351,17 +1376,28 @@ impl MainWindow {
             rows.replace(difference);
             rows.len()
         };
-        let list = self.difference.get_handle();
-        self.difference.set_item_count(count as i64);
+        let old = self.difference();
+        let next = 1 - self.shown_difference.get();
+        let new = &self.differences[next];
+        new.set_item_count(count as i64);
         if !self.difference_rows.borrow().is_empty() {
-            win32::select_only(list, 0);
+            win32::select_only(new.get_handle(), 0);
         }
+        new.show(true);
+        self.shown_difference.set(next);
         self.state.borrow_mut().has_difference = true;
         match difference::arrival(self.focus_after_comparison(), focus) {
             difference::Arrival::Replace => self.say(s.comparison_finished()),
-            difference::Arrival::Focus => self.difference.set_focus(),
-            difference::Arrival::Refocus => win32::refocus(list),
+            // The focus says it: the status bar only stops showing the comparison's
+            // progress, without a word from the screen reader.
+            difference::Arrival::Focus => {
+                self.status.set_status_text(s.comparison_finished(), 0);
+                new.set_focus();
+            }
         }
+        old.show(false);
+        old.set_item_count(0);
+        self.panel.layout();
         self.refresh_menus();
     }
 
@@ -1425,11 +1461,11 @@ impl MainWindow {
         self.jobs.borrow().cancel(Kind::Snapshot);
     }
 
-    /// Shows the progress of the job the row shows and reports the jobs that have ended,
-    /// together when several have.
+    /// Reports the jobs that have ended, together when several have, and shows the
+    /// progress of the job the row shows. The ends come first: a job over by now says
+    /// nothing more of its progress.
     fn poll_jobs(&self) {
         self.speaking(|| {
-            self.show_job_progress();
             let ended = self.jobs.borrow_mut().poll();
             for event in ended {
                 match event {
@@ -1438,6 +1474,7 @@ impl MainWindow {
                     Event::Compaction(ended) => self.compaction_ended(ended),
                 }
             }
+            self.show_job_progress();
         });
     }
 

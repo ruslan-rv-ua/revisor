@@ -105,21 +105,20 @@ pub enum FocusPlace {
 /// What the window does with a difference that has just arrived.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Arrival {
-    /// The rows are replaced; the focus stays where it is, and the end is said without
-    /// it.
+    /// The difference takes the place of the one shown; the focus stays where it is, and
+    /// the end is said without it.
     Replace,
-    /// The rows are replaced, and the keyboard focus moves to the first of them.
+    /// The difference takes the place of the one shown, and the keyboard focus moves to
+    /// its first row: into a new list, which is announced as on coming to it from
+    /// elsewhere, also when the focus was in the old one (#21).
     Focus,
-    /// The focus is in the list already: it goes to the first row, and the list is
-    /// announced again, as on coming to it from elsewhere (#21).
-    Refocus,
 }
 
 /// What happens when a comparison ends under the setting «Фокус після порівняння», with
 /// the focus at `focus` (TASK-11 #12, #13, #21).
 pub fn arrival(setting: FocusAfterComparison, focus: FocusPlace) -> Arrival {
     match (setting, focus) {
-        (_, FocusPlace::DifferenceList) => Arrival::Refocus,
+        (_, FocusPlace::DifferenceList) => Arrival::Focus,
         (FocusAfterComparison::Always, _) => Arrival::Focus,
         (FocusAfterComparison::Never, _) => Arrival::Replace,
         (FocusAfterComparison::IfNotMoved, FocusPlace::Unmoved | FocusPlace::Progress) => {
@@ -220,9 +219,9 @@ mod tests {
             assert_eq!(arrival(Always, focus), Arrival::Focus);
             assert_eq!(arrival(Never, focus), Arrival::Replace);
         }
-        // In the list already: the first row, announced again, whatever the setting.
+        // In the list already: the first row of the new difference, whatever the setting.
         for setting in FocusAfterComparison::ALL {
-            assert_eq!(arrival(setting, DifferenceList), Arrival::Refocus);
+            assert_eq!(arrival(setting, DifferenceList), Arrival::Focus);
         }
     }
 }

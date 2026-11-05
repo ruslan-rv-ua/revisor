@@ -1,6 +1,8 @@
 """Live NVDA check of TASK-11: comparing the current snapshot with the previous or a chosen one.
 
-    python -X utf8 tools\\nvda\\task11_compare.py "<folder>;<folder>" "<exclusion>;<exclusion>"
+    python -X utf8 tools\\nvda\\task11_compare.py "<folder>;<folder>" "<exclusion>;<exclusion>" [parts]
+
+``parts`` is a comma-separated choice of ``commands``, ``busy`` and ``big`` (all by default).
 
 Two profiles: «Small» (a scratch folder with a few files, so comparisons are instant and the
 rows are known) and «Big» (the folders given: snapshots of about 800k entries, so a comparison
@@ -28,6 +30,7 @@ VK_SHIFT, VK_CONTROL, VK_F6, VK_F7, VK_F10 = 0x10, 0x11, 0x75, 0x76, 0x79
 LVM_GETITEMCOUNT = 0x1004
 
 folders, exclusions = args_folders()
+parts = set(sys.argv[3].split(",")) if len(sys.argv) > 3 else {"commands", "busy", "big"}
 tree = os.path.join(SCRATCH, "tree")
 paths = prepare({"Small": ([tree], []), "Big": (folders, exclusions)})
 
@@ -44,7 +47,8 @@ class Locked:
     a compaction by another revisor does: no other connection can read it meanwhile."""
 
     def __init__(self, db, seconds):
-        self.conn = sqlite3.connect(db, isolation_level=None)
+        # Released from the timer's thread.
+        self.conn = sqlite3.connect(db, isolation_level=None, check_same_thread=False)
         self.conn.execute("BEGIN EXCLUSIVE")
         self.timer = threading.Timer(seconds, self.release)
         self.timer.start()
@@ -88,10 +92,9 @@ write("a.txt", "a")
 write("b.txt", "b")
 write(r"sub\c.txt", "c")
 
-with App(paths, paths["Small"]) as app:
-    app.step("start", 2.5)
 
-    # 1. Two snapshots, with a file added and one changed between them.
+def two_small_snapshots(app):
+    """Two snapshots of «Small», with a file added and one changed between them."""
     key(VK_F5)
     assert wait_for(app.snapshot_done, 60, 0.05)
     app.step("F5: snapshot 1", 2)
@@ -101,6 +104,8 @@ with App(paths, paths["Small"]) as app:
     assert wait_for(app.snapshot_done, 60, 0.05)
     app.step("F5: snapshot 2", 2)
 
+
+def check_commands(app):
     # 2. Quick compare with the focus in the snapshot list: the focus moves to the
     # difference (#1, #12), whose list NVDA reads with its first row.
     key(VK_F7)
@@ -160,15 +165,18 @@ with App(paths, paths["Small"]) as app:
     app.step("F7 with Always from the profile box", 3)
     print("   focused:", focused_class())
 
-    # 9. Back to the default; the focus elsewhere stays there (#12).
+    # 9. Back to the default; the focus that stayed in the profile box has not moved, so
+    # it goes to the difference (#12).
     settings((VK_MENU, vk("M")), VK_HOME)
     app.step("settings: default", 2)
     key(VK_MENU, vk("R"))
     time.sleep(0.5)
     key(VK_F7)
-    app.step("F7 from the profile box with the default: the focus stays", 3)
+    app.step("F7 from the profile box with the default: unmoved, so to the difference", 3)
     print("   focused:", focused_class())
 
+
+def check_busy(app):
     # 10. A busy database: the comparison waits, says so after a second and gets its bar
     # after five (#7, #8, #16); then the database is freed and the comparison ends.
     key(VK_F6)
@@ -206,7 +214,8 @@ with App(paths, paths["Small"]) as app:
     print(f"   closed {time.time() - t0:.2f} s after Alt+F4, exit code {app.proc.poll()}")
     lock.wait()
 
-with App(paths, paths["Big"]) as app:
+
+def check_big(app):
     app.step("start on Big", 2.5)
     for n in (1, 2):
         key(VK_F5)
@@ -256,3 +265,17 @@ with App(paths, paths["Big"]) as app:
     app.step("the compaction ended", 3)
     settings((VK_MENU, vk("C")))
     app.step("settings: confirmation back", 2)
+
+
+if parts & {"commands", "busy"}:
+    with App(paths, paths["Small"]) as app:
+        app.step("start", 2.5)
+        two_small_snapshots(app)
+        if "commands" in parts:
+            check_commands(app)
+        if "busy" in parts:
+            check_busy(app)
+
+if "big" in parts:
+    with App(paths, paths["Big"]) as app:
+        check_big(app)
