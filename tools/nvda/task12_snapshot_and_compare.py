@@ -2,19 +2,21 @@
 
     python -X utf8 tools\\nvda\\task12_snapshot_and_compare.py "<folder>;<folder>" "<exclusion>;<exclusion>" [parts]
 
-``parts`` is a comma-separated choice of ``small`` and ``big`` (both by default).
+``parts`` is a comma-separated choice of ``small``, ``big`` and ``profiles`` (all by default).
 
 Two profiles, as in task11_compare.py: «Small» (a scratch folder with a few files, so snapshots
 and comparisons take a moment and the rows are known) and «Big» (the folders given and the
 scratch folder: about 800k entries, so a snapshot takes seconds and its comparison more than
-one; see README.md). On «Small»: the command on a profile without snapshots (#4), the usual run
-with the focus moving to the difference (#1, #5, #6, #8), the comparison with the newest snapshot
-rather than the current one (#1), «Ніколи» (#5, #6), a snapshot that fails on a busy database
-(#10), and the restart offer after the difference (#8). On «Big»: the refusal during a snapshot
-in the menu and by the key (#3), the progress row from the snapshot to its comparison without a
-gap (#5, #9), the cancels by the button and by the keys in both stages (#9, #13), the focus on
-the progress row (#5), a comparison started during the snapshot (#11), another profile opened
-meanwhile with «Завжди» and with the default (#7), and closing in both stages (#12).
+one; see README.md). In the profile box «Big» comes before «Small». On «Small»: the command on a
+profile without snapshots (#4), the usual run with the focus moving to the difference (#1, #5,
+#6, #8), the comparison with the newest snapshot rather than the current one (#1), «Ніколи» (#5,
+#6), a snapshot that fails on a busy database (#10), and the restart offer after the difference
+(#8). On «Big» (part ``big``): the refusal during a snapshot in the menu and by the key (#3), the
+progress row from the snapshot to its comparison without a gap (#5, #9), the cancels by the
+button and by the keys in both stages (#9, #13), the focus on the progress row (#5), and a
+comparison started during the snapshot (#11). Part ``profiles``: another profile opened during
+the command with «Завжди» and with the default (#7), and closing in both stages (#12). A warm
+snapshot of «Big» takes a second or two, so the keys of the snapshot stage follow Ctrl+F5 at once.
 """
 
 import os
@@ -36,7 +38,7 @@ LVM_GETITEMCOUNT, LVM_GETNEXTITEM, LVNI_FOCUSED = 0x1004, 0x100C, 0x0001
 COMMAND = "Знімок + порівняння"
 
 folders, exclusions = args_folders()
-parts = set(sys.argv[3].split(",")) if len(sys.argv) > 3 else {"small", "big"}
+parts = set(sys.argv[3].split(",")) if len(sys.argv) > 3 else {"small", "big", "profiles"}
 tree = os.path.join(SCRATCH, "tree")
 paths = prepare({"Small": ([tree], []), "Big": (folders + [tree], exclusions)})
 
@@ -259,11 +261,23 @@ def check_small(app):
         allow(locked)
 
 
-def check_big(app):
+def snapshot_before(app):
+    """Starts on Big with a snapshot to compare the command's with."""
     app.step("start on Big", 2.5)
-    key(VK_F5)
-    finished(app)
-    app.step("F5: the snapshot before", 2.5)
+    snapshot_list(app)
+    if rows(lists(app.main)[0]) == 0:
+        key(VK_F5)
+        finished(app)
+        app.step("F5: the snapshot before", 2.5)
+
+
+def stage(app):
+    """The stage of the command the progress row shows now, for the record."""
+    return phase(progress_text(app.main))
+
+
+def check_big(app):
+    snapshot_before(app)
 
     # 7. From the snapshot list: a second command is refused during the snapshot (#3), the
     # progress row goes from the snapshot to the comparison without a gap (#5, #9), and the
@@ -277,28 +291,35 @@ def check_big(app):
     app.step("the snapshot and its comparison ended", 3)
     report(app)
 
-    # 8. During a snapshot the menu item is unavailable (#3); the button cancels the snapshot,
-    # which leaves no row and no comparison (#9).
+    # 8. During a snapshot the menu item is unavailable (#3).
     snapshot_list(app)
-    count = rows(lists(app.main)[0])
     key(VK_CONTROL, VK_F5)
-    time.sleep(0.5)
+    time.sleep(0.2)
     key(VK_MENU, vk("S"))
-    time.sleep(0.8)
+    time.sleep(0.5)
     key(VK_DOWN)
-    app.step("Alt+S, Down: the item during the snapshot", 1.5)
+    app.step("Alt+S, Down: the item during the snapshot", 1)
     key(VK_ESCAPE)
     time.sleep(0.3)
     key(VK_ESCAPE)
-    time.sleep(0.5)
+    finished(app)
+    app.step("Esc, Esc: the command ended", 3)
+
+    # 9. The button during the snapshot cancels the whole command: no row, no comparison (#9).
+    snapshot_list(app)
+    count = rows(lists(app.main)[0])
+    key(VK_CONTROL, VK_F5)
+    time.sleep(0.1)
+    print("   stage at Alt+N:", stage(app))
     key(VK_MENU, vk("N"))
     finished(app)
-    app.step("Esc, Esc, Alt+N: the snapshot cancelled", 2)
+    app.step("Ctrl+F5, Alt+N during the snapshot", 2)
     print("   snapshots:", count, "->", rows(lists(app.main)[0]))
 
-    # 9. Shift+F5 during the snapshot cancels the whole command (#13).
+    # 9a. Shift+F5 during the snapshot likewise (#13).
     key(VK_CONTROL, VK_F5)
-    time.sleep(0.8)
+    time.sleep(0.1)
+    print("   stage at Shift+F5:", stage(app))
     key(VK_SHIFT, VK_F5)
     finished(app)
     app.step("Ctrl+F5, Shift+F5: the command cancelled", 2)
@@ -347,37 +368,47 @@ def check_big(app):
     app.step("Ctrl+F5, F7 during the snapshot", 4)
     report(app)
 
-    # 14. Another profile opened during the snapshot (#7): with «Завжди» revisor opens Big
+
+
+def check_profiles(app):
+    snapshot_before(app)
+
+    # 14. Another profile opened during the command (#7): with «Завжди» revisor opens Big
     # again with the focus on the difference; with the default the difference arrives, and
     # Small stays open.
     settings((VK_MENU, vk("M")), VK_HOME, VK_DOWN)
     app.step("settings: Always", 2)
     for name in ("Always", "default"):
         snapshot_list(app)
+        count = rows(lists(app.main)[0])
         write(f"big6-{name}.txt", name)
         key(VK_CONTROL, VK_F5)
-        time.sleep(0.5)
+        time.sleep(0.1)
         key(VK_MENU, vk("R"))
-        time.sleep(0.5)
-        key(VK_UP)
-        app.step(f"Ctrl+F5, Alt+R, Up: Small open during the snapshot ({name})", 1)
-        print("   title:", foreground_title())
+        time.sleep(0.3)
+        key(VK_DOWN)
+        time.sleep(0.2)
+        print("   title:", foreground_title(), "| stage:", stage(app))
+        app.step(f"Ctrl+F5, Alt+R, Down: Small open during the command ({name})", 0.2)
         print("   progress:", watch_progress(app))
         app.step(f"ended with {name}", 3)
         report(app)
         if name == "Always":
+            print("   Big's snapshots:", count, "->", rows(lists(app.main)[0]))
             settings((VK_MENU, vk("M")), VK_HOME)
             app.step("settings: default", 2)
     key(VK_MENU, vk("R"))
     time.sleep(0.5)
-    key(VK_DOWN)
-    app.step("Alt+R, Down: Big again", 1.5)
+    key(VK_UP)
+    app.step("Alt+R, Up: Big again", 1.5)
+    report(app)
 
     # 15. Closing during the snapshot asks first (TASK-8); kept, the command goes on (#12).
     snapshot_list(app)
     write("big7.txt", "7")
     key(VK_CONTROL, VK_F5)
-    time.sleep(0.5)
+    time.sleep(0.1)
+    print("   stage at Alt+F4:", stage(app))
     key(VK_MENU, VK_F4)
     assert wait_for(lambda: foreground_title() == "Вихід", 5, 0.05), foreground_title()
     app.step("Alt+F4 during the snapshot: the question", 1)
@@ -390,6 +421,7 @@ def check_big(app):
     write("big8.txt", "8")
     key(VK_CONTROL, VK_F5)
     assert wait_for(lambda: comparing(app), 600, 0.005), "no comparison"
+    print("   stage at Alt+F4:", stage(app))
     t0 = time.time()
     key(VK_MENU, VK_F4)
     assert wait_for(lambda: app.proc.poll() is not None, 10, 0.02), "revisor did not close"
@@ -403,3 +435,7 @@ if "small" in parts:
 if "big" in parts:
     with App(paths, paths["Big"]) as app:
         check_big(app)
+
+if "profiles" in parts:
+    with App(paths, paths["Big"]) as app:
+        check_profiles(app)
