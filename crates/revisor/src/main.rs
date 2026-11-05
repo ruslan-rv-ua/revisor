@@ -38,8 +38,8 @@ fn main() {
     // An administrator reads with the backup privilege (TASK-8); a standard user has no
     // such privilege, and nothing changes for them.
     let _ = elevation::enable_backup_privilege();
-    // REVISOR_DEMO=1 in a debug build stands in for the state TASK-11…14 will bring, so
-    // the keyboard and the status bar can be checked with NVDA.
+    // REVISOR_DEMO=1 in a debug build lets the commands TASK-14 will bring run, so the
+    // keyboard and the status bar can be checked with NVDA before it.
     let demo = cfg!(debug_assertions) && std::env::var_os("REVISOR_DEMO").is_some_and(|v| v == "1");
     let mut state = if demo {
         AppState::demo()

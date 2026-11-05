@@ -10,9 +10,9 @@ It is a portable Windows application built for the keyboard and for screen reade
 
 > **Status: in development.** There is no release yet. The application takes snapshots of
 > a profile's folders and compares two of them, or takes a new snapshot and compares it
-> with the one before in a single command, showing the changes as a plain list; the rest
-> of the difference view is still being built. This repository holds the work towards
-> version 0.1.
+> with the one before in a single command. The difference is a list with a summary above
+> it, which can be filtered by type and by text and sorted by any column; the details of a
+> change are still being built. This repository holds the work towards version 0.1.
 
 ## Building from source
 

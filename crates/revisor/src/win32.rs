@@ -3,7 +3,8 @@
 //! positions, a subclass of the main window that answers WM_MENUCHAR by key position and
 //! makes a context menu's first item its bold default, counts, dates and sizes in the
 //! regional format, the shield icon of a menu item, the restart as administrator (TASK-8),
-//! and the snapshot list's rows, styles and empty text (TASK-9).
+//! the snapshot list's rows, styles and empty text (TASK-9), and the sort arrow of the
+//! difference list's column headers (TASK-13).
 
 use std::cell::{Cell, RefCell};
 use std::ffi::{OsStr, c_void};
@@ -30,10 +31,11 @@ use windows_sys::Win32::UI::Accessibility::{
     CLSID_AccPropServices, LiveSetting_Property_GUID, NotifyWinEvent, PROPID_ACC_NAME, Polite,
 };
 use windows_sys::Win32::UI::Controls::{
-    EMF_CENTERED, LVIR_BOUNDS, LVIS_FOCUSED, LVIS_SELECTED, LVITEMW, LVM_ENSUREVISIBLE,
-    LVM_GETITEMRECT, LVM_GETNEXTITEM, LVM_GETSELECTEDCOUNT, LVM_SETEXTENDEDLISTVIEWSTYLE,
-    LVM_SETITEMSTATE, LVN_GETEMPTYMARKUP, LVNI_FOCUSED, LVNI_SELECTED, LVS_EX_FULLROWSELECT,
-    LVS_NOSORTHEADER, NMHDR, NMLVEMPTYMARKUP,
+    EMF_CENTERED, HDF_SORTDOWN, HDF_SORTUP, HDI_FORMAT, HDITEMW, HDM_GETITEMCOUNT, HDM_GETITEMW,
+    HDM_SETITEMW, LVIR_BOUNDS, LVIS_FOCUSED, LVIS_SELECTED, LVITEMW, LVM_ENSUREVISIBLE,
+    LVM_GETHEADER, LVM_GETITEMRECT, LVM_GETITEMSTATE, LVM_GETNEXTITEM, LVM_GETSELECTEDCOUNT,
+    LVM_SETEXTENDEDLISTVIEWSTYLE, LVM_SETITEMSTATE, LVN_GETEMPTYMARKUP, LVNI_FOCUSED,
+    LVNI_SELECTED, LVS_EX_FULLROWSELECT, LVS_NOSORTHEADER, NMHDR, NMLVEMPTYMARKUP,
 };
 use windows_sys::Win32::UI::Input::KeyboardAndMouse::{
     GetFocus, GetKeyState, GetKeyboardLayout, VK_MENU, VkKeyScanExW,
@@ -53,6 +55,7 @@ use windows_sys::Win32::UI::WindowsAndMessaging::{
 };
 use windows_sys::core::{GUID, HRESULT};
 
+use crate::difference::Regional;
 use crate::i18n::Lang;
 use crate::menus::find_access_key;
 
@@ -260,6 +263,13 @@ pub fn selected_rows(list: *mut c_void) -> Vec<usize> {
     }
 }
 
+/// Whether the row `row` of a list is selected.
+pub fn is_selected(list: *mut c_void, row: usize) -> bool {
+    // SAFETY: a plain list-view message to a live list-view window.
+    let state = unsafe { SendMessageW(list, LVM_GETITEMSTATE, row, LVIS_SELECTED as LPARAM) };
+    state as u32 & LVIS_SELECTED != 0
+}
+
 /// How many rows of a list are selected.
 pub fn selected_count(list: *mut c_void) -> usize {
     // SAFETY: a plain list-view message to a live list-view window.
@@ -319,7 +329,18 @@ pub fn focus_row(list: *mut c_void, row: usize) {
 /// Makes a report list select whole rows, not just the first column, and keeps its column
 /// headers from looking like sort buttons (TASK-9).
 pub fn full_row_select_no_sort(list: *mut c_void) {
-    // SAFETY: plain messages and style calls on a live list-view window.
+    full_row_select(list);
+    // SAFETY: style calls on a live list-view window.
+    unsafe {
+        let style = GetWindowLongPtrW(list, GWL_STYLE);
+        SetWindowLongPtrW(list, GWL_STYLE, style | LVS_NOSORTHEADER as isize);
+    }
+}
+
+/// Makes a report list select whole rows, not just the first column; its column headers
+/// stay buttons that sort it (TASK-13).
+pub fn full_row_select(list: *mut c_void) {
+    // SAFETY: a plain message to a live list-view window.
     unsafe {
         SendMessageW(
             list,
@@ -327,8 +348,36 @@ pub fn full_row_select_no_sort(list: *mut c_void) {
             LVS_EX_FULLROWSELECT as WPARAM,
             LVS_EX_FULLROWSELECT as LPARAM,
         );
-        let style = GetWindowLongPtrW(list, GWL_STYLE);
-        SetWindowLongPtrW(list, GWL_STYLE, style | LVS_NOSORTHEADER as isize);
+    }
+}
+
+/// Shows the sort arrow of a list's column headers on `column`, up for ascending and down
+/// for descending (TASK-13 #21), and on no column with `None`.
+pub fn set_sort_arrow(list: *mut c_void, column: Option<(usize, bool)>) {
+    // SAFETY: plain list-view and header messages to live windows; the HDITEMW asks for
+    // the format only, which the header fills in and takes back.
+    unsafe {
+        let header = SendMessageW(list, LVM_GETHEADER, 0, 0) as *mut c_void;
+        if header.is_null() {
+            return;
+        }
+        let count = SendMessageW(header, HDM_GETITEMCOUNT, 0, 0);
+        for i in 0..count.max(0) as usize {
+            let mut item = HDITEMW {
+                mask: HDI_FORMAT,
+                ..Default::default()
+            };
+            if SendMessageW(header, HDM_GETITEMW, i, &mut item as *mut HDITEMW as LPARAM) == 0 {
+                continue;
+            }
+            let arrow = match column {
+                Some((sorted, false)) if sorted == i => HDF_SORTUP,
+                Some((sorted, true)) if sorted == i => HDF_SORTDOWN,
+                _ => 0,
+            };
+            item.fmt = (item.fmt & !(HDF_SORTUP | HDF_SORTDOWN)) | arrow;
+            SendMessageW(header, HDM_SETITEMW, i, &mut item as *mut HDITEMW as LPARAM);
+        }
     }
 }
 
@@ -522,7 +571,14 @@ fn menu_item_by_key_position(ch: u16, menu: HMENU) -> Option<usize> {
 /// A count in the user's regional format, with its digit grouping: "12,345" or "12 345".
 /// Plain digits when the format cannot be read.
 pub fn format_count(count: u64) -> String {
-    let plain = count.to_string();
+    format_number(&count.to_string(), 0)
+}
+
+/// A number written in ASCII digits with a dot before its `decimals` decimals, in the
+/// user's regional format: grouped digits and the region's decimal separator, "1,17" for
+/// "1.17" (TASK-13). As written when the format cannot be read.
+pub fn format_number(digits: &str, decimals: u32) -> String {
+    let plain = digits.to_string();
     let locale_info = |kind: u32| -> Option<Vec<u16>> {
         let mut buf = [0u16; 32];
         // SAFETY: the user's default locale (a null name); the buffer length is passed.
@@ -538,7 +594,7 @@ pub fn format_count(count: u64) -> String {
         return plain;
     };
     let format = NUMBERFMTW {
-        NumDigits: 0,
+        NumDigits: decimals,
         LeadingZero: 1,
         Grouping: grouping_field(&String::from_utf16_lossy(&grouping)),
         lpDecimalSep: decimal.as_mut_ptr(),
@@ -569,16 +625,32 @@ pub fn format_count(count: u64) -> String {
 /// "10/31/2026 2:05:12 PM" (TASK-9). A moment Windows cannot convert, or a format it
 /// cannot give, falls back to the UTC time in ISO form, so a name is never empty.
 pub fn format_date_time(unix_millis: i64) -> String {
-    /// 100-ns intervals between 1601-01-01 and 1970-01-01.
-    const EPOCH_DIFFERENCE: i64 = 116_444_736_000_000_000;
-    let fallback = || iso_utc(unix_millis);
-    let Some(intervals) = unix_millis
+    let file_time = unix_millis
         .checked_mul(10_000)
         .and_then(|i| i.checked_add(EPOCH_DIFFERENCE))
-        .filter(|&i| i >= 0)
-    else {
-        return fallback();
+        .filter(|&i| i >= 0);
+    match file_time {
+        Some(file_time) => format_file_time(file_time),
+        None => iso_utc(unix_millis),
+    }
+}
+
+/// 100-ns intervals between 1601-01-01 and 1970-01-01.
+const EPOCH_DIFFERENCE: i64 = 116_444_736_000_000_000;
+
+/// A moment given as a FILETIME — 100-ns intervals since 1601-01-01 UTC, as entries keep
+/// their times — the way [`format_date_time`] writes it (TASK-13 #18).
+pub fn format_file_time(intervals: i64) -> String {
+    let fallback = || {
+        iso_utc(
+            intervals
+                .saturating_sub(EPOCH_DIFFERENCE)
+                .div_euclid(10_000),
+        )
     };
+    if intervals < 0 {
+        return fallback();
+    }
     let file_time = FILETIME {
         dwLowDateTime: intervals as u32,
         dwHighDateTime: (intervals >> 32) as u32,
@@ -651,6 +723,23 @@ fn iso_utc(unix_millis: i64) -> String {
         of_day % 3600 / 60,
         of_day % 60
     )
+}
+
+/// The user's regional formats, for the difference list (TASK-13 #18).
+pub struct RegionalFormat;
+
+impl Regional for RegionalFormat {
+    fn number(&self, digits: &str, decimals: u32) -> String {
+        format_number(digits, decimals)
+    }
+
+    fn file_time(&self, file_time: i64) -> String {
+        format_file_time(file_time)
+    }
+
+    fn date_time(&self, unix_millis: i64) -> String {
+        format_date_time(unix_millis)
+    }
 }
 
 /// A size in bytes as Explorer shows it: "1.5 MB" in the user's format; plain bytes when
@@ -856,6 +945,26 @@ mod tests {
             format_date_time(-20_000_000_000_000),
             "1336-03-23 12:26:40 UTC"
         );
+    }
+
+    #[test]
+    fn numbers_keep_their_digits_and_decimals_in_the_regional_format() {
+        let digits =
+            |text: String| -> String { text.chars().filter(char::is_ascii_digit).collect() };
+        let half = format_number("1.50", 2);
+        assert_eq!(digits(half.clone()), "150", "{half}");
+        assert!(!half.contains('.') || half.ends_with("50"), "{half}");
+        assert_eq!(digits(format_number("1234567", 0)), "1234567");
+        assert_eq!(format_number("0", 0), "0");
+    }
+
+    #[test]
+    fn a_file_time_is_written_as_a_snapshot_name() {
+        // The same moment as a FILETIME and as Unix time.
+        let unix_millis = 1_793_448_312_000;
+        let file_time = unix_millis * 10_000 + EPOCH_DIFFERENCE;
+        assert_eq!(format_file_time(file_time), format_date_time(unix_millis));
+        assert_eq!(format_file_time(-1), "1600-12-31 23:59:59 UTC");
     }
 
     #[test]

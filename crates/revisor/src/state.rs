@@ -1,30 +1,10 @@
 //! What the main window knows about the work in progress; commands decide from it whether
 //! they can run now.
 
+use revisor_core::settings::DifferenceSort;
+pub use revisor_core::settings::{ChangeType, SortColumn};
+
 use crate::jobs::Flags;
-
-/// A difference list column to sort by (TASK-13).
-#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
-pub enum SortColumn {
-    /// The tree order, which is the default.
-    #[default]
-    Path,
-    Name,
-    Change,
-    WhatChanged,
-    Size,
-    DateModified,
-    Folder,
-}
-
-/// A change type the difference filter can show (TASK-13), in the order of its check boxes.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub enum ChangeType {
-    Added,
-    Deleted,
-    Modified,
-    Inaccessible,
-}
 
 #[derive(Clone, Debug, Default)]
 pub struct AppState {
@@ -38,7 +18,8 @@ pub struct AppState {
     /// one (TASK-9); none while there are no snapshots. Quick compare needs a snapshot
     /// before it (TASK-11).
     pub current_snapshot: Option<usize>,
-    /// Whether a comparison has produced a difference to show.
+    /// Whether the difference list shows a difference: of any profile, which need not be
+    /// the open one (TASK-13 #6).
     pub has_difference: bool,
     // The flags of the background jobs: the window sets them all at once, with `set_jobs`.
     pub snapshot_running: bool,
@@ -52,13 +33,12 @@ pub struct AppState {
     pub compacting_open_profile: bool,
     /// Whether revisor runs as administrator (TASK-8).
     pub elevated: bool,
-    /// Which change types the filter shows, indexed by `ChangeType`.
+    /// Which types of rows the difference list shows, indexed by `ChangeType`, and in
+    /// which order (TASK-13): what the check marks of the menu «Різниця» say.
     pub shown_types: [bool; 4],
-    pub sort: SortColumn,
-    pub descending: bool,
+    pub sort: DifferenceSort,
     /// Debug-only stand-in state (REVISOR_DEMO=1) for checking the keyboard with NVDA
-    /// before TASK-11…14 exist: commands without a state of their own count as available.
-    /// The profiles and the snapshots are the real ones.
+    /// before TASK-14 exists: its commands count as available.
     pub demo: bool,
 }
 
@@ -70,16 +50,10 @@ impl AppState {
         }
     }
 
-    /// A profile with snapshots, one of them selected, and a difference, so most commands
-    /// can run; for tests, and for the demo state, whose window then puts the real
-    /// profile and snapshots in.
+    /// The demo state: TASK-14's commands run, on the real profiles, snapshots and
+    /// difference.
     pub fn demo() -> Self {
         Self {
-            profile: Some("Demo".into()),
-            snapshots: 3,
-            selected_snapshots: 1,
-            current_snapshot: Some(2),
-            has_difference: true,
             demo: true,
             ..Self::new()
         }
@@ -104,9 +78,5 @@ impl AppState {
 
     pub fn shows(&self, change: ChangeType) -> bool {
         self.shown_types[change as usize]
-    }
-
-    pub fn toggle_shown(&mut self, change: ChangeType) {
-        self.shown_types[change as usize] ^= true;
     }
 }

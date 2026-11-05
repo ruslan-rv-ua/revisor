@@ -343,6 +343,23 @@ impl Jobs {
             .then_some((&compacting.profile, compacting.snapshots.as_slice()))
     }
 
+    /// The profile whose database was at `old` is now `profile`: renamed, and its file
+    /// maybe with it (TASK-7). A job of it ends under the new name and path, so the
+    /// difference of a comparison that still runs names its profile as it is now
+    /// (TASK-13 #5).
+    pub fn profile_renamed(&mut self, old: &Path, profile: &ProfileFile) {
+        let places = [
+            self.snapshot.as_mut().map(|s| &mut s.profile),
+            self.comparison.as_mut().map(|c| &mut c.profile),
+            self.compaction.as_mut().map(|c| &mut c.profile),
+        ];
+        for place in places.into_iter().flatten() {
+            if place.path == old {
+                *place = profile.clone();
+            }
+        }
+    }
+
     /// Whether a comparison of the profile whose database is at `path` reads that
     /// database now: it runs and loads its trees. Deleting the profile's snapshots, or
     /// the profile, waits for that, which is a matter of seconds (TASK-11 #17); a
@@ -606,6 +623,28 @@ mod tests {
             .collect();
         assert_eq!(comparisons, [(first, second)]);
         assert_eq!(ended.len(), 1, "{ended:?}");
+    }
+
+    #[test]
+    fn a_comparison_of_a_renamed_profile_ends_under_its_new_name() {
+        let dir = Profiles::new("renamed");
+        let a = dir.profile("A");
+        let (first, second) = two_snapshots(&a);
+        let mut jobs = Jobs::default();
+        let held = lock(&a);
+        assert!(jobs.start_comparison(a.clone(), first, second).is_none());
+        let renamed = ProfileFile {
+            path: a.path.with_file_name("B.db"),
+            name: "B".into(),
+        };
+        // Another profile's name changes nothing.
+        jobs.profile_renamed(&renamed.path, &a);
+        jobs.profile_renamed(&a.path, &renamed);
+        drop(held);
+        match poll_until_idle(&mut jobs).pop() {
+            Some(Event::Comparison(Ended { profile, .. }, None)) => assert_eq!(profile, renamed),
+            other => panic!("{other:?}"),
+        }
     }
 
     #[test]

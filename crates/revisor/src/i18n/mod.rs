@@ -10,11 +10,13 @@ mod uk;
 pub use en::En;
 pub use uk::Uk;
 
+use revisor_core::compare::Warning;
 use revisor_core::exclude::PatternError;
-use revisor_core::settings::{FocusAfterComparison, FocusAfterSnapshot, Language};
+use revisor_core::scan::EntryKind;
+use revisor_core::settings::{FocusAfterComparison, FocusAfterSnapshot, Language, SizeFormat};
 
 use crate::commands::{CommandId, MenuId, Pane, Reason, SubmenuId};
-use crate::difference::Kind;
+use crate::difference::{Column, Field, InaccessibleIn, PairText, RowChange, SummaryText};
 
 /// An interface language.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -228,11 +230,42 @@ pub trait Strings {
     /// had no snapshot to compare it with.
     fn nothing_to_compare(&self) -> &'static str;
 
-    // The difference list (TASK-11).
-    fn column_change(&self) -> &'static str;
-    fn column_path(&self) -> &'static str;
-    /// What a row of the difference list is: added, deleted, modified or inaccessible.
-    fn change_kind(&self, kind: Kind) -> &'static str;
+    // The difference list (TASK-11, TASK-13).
+    /// The heading of a column of the difference list.
+    fn column(&self, column: Column) -> &'static str;
+    /// What the column «Зміна» says: what the row is and, for a folder or a link, which.
+    fn change(&self, change: RowChange, kind: EntryKind) -> &'static str;
+    /// A field that differs, as the column «Що змінилося» names it.
+    fn field(&self, field: Field) -> &'static str;
+    /// In which snapshot an inaccessible entry is so, as the column «Що змінилося» says.
+    fn inaccessible_in(&self, which: InaccessibleIn) -> &'static str;
+    /// A size in bytes; `text` is the count in the user's format: "5 байтів".
+    fn bytes(&self, bytes: u64, text: &str) -> String;
+    /// The unit of 1024 (or 1000) bytes to the power `power`, from 1 to 6: KB to EB.
+    fn size_unit(&self, power: u32) -> &'static str;
+    /// The line of the pair of snapshots in the field «Порівняння».
+    fn pair(&self, pair: &PairText) -> String;
+    /// The summary of a difference.
+    fn summary(&self, summary: &SummaryText) -> String;
+    /// How many rows the list shows of all the difference has: "Показано 12 із 22.".
+    fn showing(&self, shown_text: &str, total_text: &str) -> String;
+    /// A warning of the comparison, a line of the field «Порівняння»; `reason` says why
+    /// a folder could not be read, for the warning that says so.
+    fn warning(&self, warning: &Warning, reason: &str) -> String;
+    /// What the difference list is named before the first comparison.
+    fn no_difference_yet(&self) -> &'static str;
+    /// What the difference list is named while the filter hides every row.
+    fn no_match(&self) -> &'static str;
+    /// The field «Порівняння» before the first comparison; `quick` and `choose` are the
+    /// shortcuts of «Порівняти з попереднім» and «Порівняти з…».
+    fn nothing_compared_yet(&self, quick: &str, choose: &str) -> String;
+    /// The labels of the field «Порівняння» and of the field «Фільтр», without access key
+    /// or colon.
+    fn comparison_field(&self) -> &'static str;
+    fn filter_field(&self) -> &'static str;
+    /// The label of the setting «Розмір» (TASK-13), without access key or colon.
+    fn size_format(&self) -> &'static str;
+    fn size_option(&self, value: SizeFormat) -> &'static str;
 
     // The debug-only demo state (REVISOR_DEMO=1).
     fn demo_done(&self, command: &str) -> String;
@@ -396,16 +429,107 @@ mod tests {
             .map(|&v| En.comparison_focus_option(v))
             .collect();
         assert_eq!(en, ["If focus has not moved", "Always", "Never"]);
-        let kinds = [
-            Kind::Added,
-            Kind::Deleted,
-            Kind::Modified,
-            Kind::Inaccessible,
-        ];
-        let uk: Vec<&str> = kinds.iter().map(|&k| Uk.change_kind(k)).collect();
-        assert_eq!(uk, ["Додано", "Видалено", "Змінено", "Недоступно"]);
-        let en: Vec<&str> = kinds.iter().map(|&k| En.change_kind(k)).collect();
-        assert_eq!(en, ["Added", "Deleted", "Modified", "Inaccessible"]);
+    }
+
+    #[test]
+    fn the_difference_list_strings_come_in_both_languages() {
+        use crate::difference::{Column, RowChange};
+        use revisor_core::compare::Side;
+        let uk: Vec<&str> = Column::ALL.iter().map(|&c| Uk.column(c)).collect();
+        assert_eq!(
+            uk,
+            [
+                "Ім'я",
+                "Зміна",
+                "Що змінилося",
+                "Розмір",
+                "Дата зміни",
+                "Тека"
+            ]
+        );
+        let en: Vec<&str> = Column::ALL.iter().map(|&c| En.column(c)).collect();
+        assert_eq!(
+            en,
+            [
+                "Name",
+                "Change",
+                "What changed",
+                "Size",
+                "Date modified",
+                "Folder"
+            ]
+        );
+        // The examples of the task (#14, #15).
+        assert_eq!(Uk.change(RowChange::Added, EntryKind::Dir), "Додано теку");
+        assert_eq!(
+            Uk.change(RowChange::Deleted, EntryKind::Link),
+            "Видалено посилання"
+        );
+        assert_eq!(
+            Uk.change(RowChange::Inaccessible, EntryKind::Dir),
+            "Недоступна тека"
+        );
+        assert_eq!(
+            Uk.change(RowChange::Replaced, EntryKind::Link),
+            "Замінено посилання"
+        );
+        assert_eq!(Uk.change(RowChange::Added, EntryKind::File), "Додано");
+        assert_eq!(En.change(RowChange::Added, EntryKind::Dir), "Folder added");
+        assert_eq!(
+            En.change(RowChange::Deleted, EntryKind::Link),
+            "Link deleted"
+        );
+        assert_eq!(
+            En.change(RowChange::Inaccessible, EntryKind::Dir),
+            "Inaccessible folder"
+        );
+        assert_eq!(En.change(RowChange::Replaced, EntryKind::File), "Replaced");
+        assert_eq!(
+            Uk.nothing_compared_yet("F7", "Ctrl+F7"),
+            "Ще нічого не порівнювали. Натисніть клавішу F7, щоб порівняти поточний знімок із \
+             попереднім, або клавіші Ctrl+F7, щоб вибрати, з яким знімком його порівняти."
+        );
+        assert_eq!(
+            En.nothing_compared_yet("F7", "Ctrl+F7"),
+            "Nothing compared yet. Press F7 to compare the current snapshot with the previous \
+             one, or Ctrl+F7 to choose the snapshot to compare it with."
+        );
+        assert_eq!(Uk.no_difference_yet(), "Різниці ще немає");
+        assert_eq!(En.no_difference_yet(), "No difference yet");
+        assert_eq!(Uk.no_match(), "Жодна зміна не відповідає фільтру");
+        assert_eq!(En.no_match(), "No changes match the filter");
+        assert_eq!(Uk.showing("12", "22"), "Показано 12 із 22.");
+        assert_eq!(En.showing("12", "22"), "Showing 12 of 22.");
+        let missing = Warning::FolderMissing {
+            path: std::path::PathBuf::from(r"D:\Games"),
+            side: Side::Earlier,
+        };
+        assert_eq!(
+            En.warning(&missing, ""),
+            "The folder \u{201c}D:\\Games\u{201d} was missing in the earlier snapshot, so its \
+             contents show as added."
+        );
+        assert_eq!(
+            Uk.warning(&missing, ""),
+            "Теки «D:\\Games» не було в ранішому знімку, тож її вміст показано доданим."
+        );
+        for (power, unit) in [
+            (1, "КБ"),
+            (2, "МБ"),
+            (3, "ГБ"),
+            (4, "ТБ"),
+            (5, "ПБ"),
+            (6, "ЕБ"),
+        ] {
+            assert_eq!(Uk.size_unit(power), unit);
+        }
+        assert_eq!(En.size_unit(3), "GB");
+        assert_eq!(Uk.comparison_field(), "Порівняння");
+        assert_eq!(En.comparison_field(), "Comparison");
+        assert_eq!(Uk.filter_field(), "Фільтр");
+        assert_eq!(En.filter_field(), "Filter");
+        assert_eq!(Uk.size_format(), "Розмір");
+        assert_eq!(En.size_format(), "Size");
     }
 
     #[test]

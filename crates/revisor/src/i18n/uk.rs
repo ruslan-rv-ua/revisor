@@ -1,13 +1,18 @@
 //! Ukrainian interface strings. Key names follow the Microsoft Ukrainian Style Guide
 //! (document «Клавіатура й меню», section «Назви клавіш»).
 
+use revisor_core::compare::{Side, Warning};
 use revisor_core::exclude::PatternError;
-use revisor_core::settings::{FocusAfterComparison, FocusAfterSnapshot, Language};
+use revisor_core::scan::EntryKind;
+use revisor_core::settings::{FocusAfterComparison, FocusAfterSnapshot, Language, SizeFormat};
 
 use super::plural::{Category, category};
 use super::{Failure, Lang, Strings};
 use crate::commands::{CommandId, MenuId, Pane, Reason, SubmenuId};
-use crate::difference::Kind;
+use crate::difference::{
+    Column, Counted, Field, InaccessibleIn, PairText, RowChange, SizeChange, SnapshotText,
+    SummaryText,
+};
 
 pub struct Uk;
 
@@ -27,6 +32,25 @@ impl Uk {
             Category::One => format!("{count} знімок"),
             Category::Few => format!("{count} знімки"),
             _ => format!("{count} знімків"),
+        }
+    }
+
+    /// A count with the noun in its form: `one` for 1 and 21, `few` for 2–4 and 22–24,
+    /// `many` for the rest: "1 зміна", "3 зміни", "20 змін".
+    fn counted(&self, count: &Counted, one: &str, few: &str, many: &str) -> String {
+        let noun = match category(Lang::Uk, count.n.into()) {
+            Category::One => one,
+            Category::Few => few,
+            _ => many,
+        };
+        format!("{} {noun}", count.text)
+    }
+
+    /// The snapshot of `side`, in the locative: «у ранішому знімку».
+    fn side(&self, side: Side) -> &'static str {
+        match side {
+            Side::Earlier => "ранішому",
+            Side::Later => "пізнішому",
         }
     }
 }
@@ -640,20 +664,247 @@ impl Strings for Uk {
         "Порівнювати знімок нема з чим: іншого знімка в профілі немає."
     }
 
-    fn column_change(&self) -> &'static str {
-        "Зміна"
+    fn column(&self, column: Column) -> &'static str {
+        match column {
+            Column::Name => "Ім'я",
+            Column::Change => "Зміна",
+            Column::WhatChanged => "Що змінилося",
+            Column::Size => "Розмір",
+            Column::DateModified => "Дата зміни",
+            Column::Folder => "Тека",
+        }
     }
 
-    fn column_path(&self) -> &'static str {
-        "Шлях"
+    fn change(&self, change: RowChange, kind: EntryKind) -> &'static str {
+        match (kind, change) {
+            (EntryKind::File, RowChange::Added) => "Додано",
+            (EntryKind::File, RowChange::Deleted) => "Видалено",
+            (EntryKind::File, RowChange::Modified) => "Змінено",
+            (EntryKind::File, RowChange::Replaced) => "Замінено",
+            (EntryKind::File, RowChange::Inaccessible) => "Недоступно",
+            (EntryKind::Dir, RowChange::Added) => "Додано теку",
+            (EntryKind::Dir, RowChange::Deleted) => "Видалено теку",
+            (EntryKind::Dir, RowChange::Modified) => "Змінено теку",
+            (EntryKind::Dir, RowChange::Replaced) => "Замінено теку",
+            (EntryKind::Dir, RowChange::Inaccessible) => "Недоступна тека",
+            (EntryKind::Link, RowChange::Added) => "Додано посилання",
+            (EntryKind::Link, RowChange::Deleted) => "Видалено посилання",
+            (EntryKind::Link, RowChange::Modified) => "Змінено посилання",
+            (EntryKind::Link, RowChange::Replaced) => "Замінено посилання",
+            (EntryKind::Link, RowChange::Inaccessible) => "Недоступне посилання",
+        }
     }
 
-    fn change_kind(&self, kind: Kind) -> &'static str {
-        match kind {
-            Kind::Added => "Додано",
-            Kind::Deleted => "Видалено",
-            Kind::Modified => "Змінено",
-            Kind::Inaccessible => "Недоступно",
+    fn field(&self, field: Field) -> &'static str {
+        match field {
+            Field::FileVersion => "версія файлу",
+            Field::ProductVersion => "версія продукту",
+            Field::LinkTarget => "ціль посилання",
+            Field::Size => "розмір",
+            Field::DateModified => "дата зміни",
+            Field::DateCreated => "дата створення",
+            Field::Attributes => "атрибути",
+            Field::NameCase => "регістр імені",
+        }
+    }
+
+    fn inaccessible_in(&self, which: InaccessibleIn) -> &'static str {
+        match which {
+            InaccessibleIn::Earlier => "у ранішому знімку",
+            InaccessibleIn::Later => "у пізнішому знімку",
+            InaccessibleIn::Both => "в обох знімках",
+        }
+    }
+
+    fn bytes(&self, bytes: u64, text: &str) -> String {
+        match category(Lang::Uk, bytes.into()) {
+            Category::One => format!("{text} байт"),
+            Category::Few => format!("{text} байти"),
+            _ => format!("{text} байтів"),
+        }
+    }
+
+    fn size_unit(&self, power: u32) -> &'static str {
+        match power {
+            1 => "КБ",
+            2 => "МБ",
+            3 => "ГБ",
+            4 => "ТБ",
+            5 => "ПБ",
+            _ => "ЕБ",
+        }
+    }
+
+    fn pair(&self, pair: &PairText) -> String {
+        let snapshot = |snapshot: &SnapshotText, last: bool| {
+            let mut text = snapshot.name.clone();
+            if snapshot.deleted {
+                text.push_str(" (знімок видалено)");
+            }
+            if let Some(comment) = &snapshot.comment {
+                text.push_str(&format!(", «{comment}»"));
+                if !last {
+                    text.push(',');
+                }
+            }
+            text
+        };
+        let mut profile = pair.profile.clone();
+        if pair.profile_deleted {
+            profile.push_str(" (профіль видалено)");
+        }
+        format!(
+            "{profile}: з {} до {}",
+            snapshot(&pair.earlier, false),
+            snapshot(&pair.later, true)
+        )
+    }
+
+    fn summary(&self, summary: &SummaryText) -> String {
+        let t = summary;
+        let mut text = if t.changes.n == 0 {
+            "Змін немає.".to_string()
+        } else {
+            let mut parts = Vec::new();
+            if t.added.n > 0 {
+                parts.push(format!("додано {}", t.added.text));
+            }
+            if t.deleted.n > 0 {
+                parts.push(format!("видалено {}", t.deleted.text));
+            }
+            if t.modified.n > 0 {
+                let mut modified = format!("змінено {}", t.modified.text);
+                if t.replaced.n > 0 {
+                    modified.push_str(&format!(", з них замінено {}", t.replaced.text));
+                }
+                parts.push(modified);
+            }
+            format!(
+                "{}: {}.",
+                self.counted(&t.changes, "зміна", "зміни", "змін"),
+                parts.join(", ")
+            )
+        };
+        if t.inaccessible.n > 0 {
+            text.push_str(&format!(" Недоступно {}.", t.inaccessible.text));
+        }
+        if t.changes.n > 0 {
+            text.push_str(&match &t.size {
+                SizeChange::Increased(size) => format!(" Розмір збільшився на {size}."),
+                SizeChange::Decreased(size) => format!(" Розмір зменшився на {size}."),
+                SizeChange::Unchanged => " Розмір не змінився.".to_string(),
+            });
+        }
+        if t.warnings.n > 0 {
+            text.push_str(&format!(
+                " {}.",
+                self.counted(&t.warnings, "попередження", "попередження", "попереджень")
+            ));
+        }
+        text
+    }
+
+    fn showing(&self, shown_text: &str, total_text: &str) -> String {
+        format!("Показано {shown_text} із {total_text}.")
+    }
+
+    fn warning(&self, warning: &Warning, reason: &str) -> String {
+        match warning {
+            Warning::FolderOnlyIn { path, side } => format!(
+                "Тека «{}» є лише в {} знімку, тож її не порівнювали.",
+                path.display(),
+                self.side(*side)
+            ),
+            Warning::FolderNarrowed {
+                wider,
+                side,
+                compared,
+            } => format!(
+                "У {} знімку тека «{}» ширша, тож порівнювали лише її частину «{}», яка є \
+                 в обох знімках.",
+                self.side(*side),
+                wider.display(),
+                compared.display()
+            ),
+            Warning::FolderMissing {
+                path,
+                side: Side::Earlier,
+            } => format!(
+                "Теки «{}» не було в ранішому знімку, тож її вміст показано доданим.",
+                path.display()
+            ),
+            Warning::FolderMissing {
+                path,
+                side: Side::Later,
+            } => format!(
+                "Теки «{}» немає в пізнішому знімку, тож її вміст показано видаленим.",
+                path.display()
+            ),
+            Warning::FolderUnavailable { path, side, .. } => format!(
+                "Теку «{}» не вдалося прочитати в {} знімку ({reason}), тож її вміст не \
+                 порівнювали.",
+                path.display(),
+                self.side(*side)
+            ),
+            Warning::DifferentVolumes { path, .. } => format!(
+                "Тека «{}» у знімках лежить на різних томах, тож змін у ній може бути багато.",
+                path.display()
+            ),
+            Warning::ExclusionOnlyIn { pattern, side } => format!(
+                "Виняток «{pattern}» є лише в {} знімку, і його застосовано до обох.",
+                self.side(*side)
+            ),
+            Warning::ExclusionAppliedDifferently {
+                pattern,
+                earlier,
+                later,
+            } => {
+                let applied = |applied: &Option<String>| match applied {
+                    Some(applied) => format!("означав «{applied}»"),
+                    None => "не діяв".to_string(),
+                };
+                format!(
+                    "Виняток «{pattern}» у ранішому знімку {}, а в пізнішому {}; застосовано \
+                     обидва.",
+                    applied(earlier),
+                    applied(later)
+                )
+            }
+        }
+    }
+
+    fn no_difference_yet(&self) -> &'static str {
+        "Різниці ще немає"
+    }
+
+    fn no_match(&self) -> &'static str {
+        "Жодна зміна не відповідає фільтру"
+    }
+
+    fn nothing_compared_yet(&self, quick: &str, choose: &str) -> String {
+        format!(
+            "Ще нічого не порівнювали. Натисніть клавішу {quick}, щоб порівняти поточний знімок \
+             із попереднім, або клавіші {choose}, щоб вибрати, з яким знімком його порівняти."
+        )
+    }
+
+    fn comparison_field(&self) -> &'static str {
+        "Порівняння"
+    }
+
+    fn filter_field(&self) -> &'static str {
+        "Фільтр"
+    }
+
+    fn size_format(&self) -> &'static str {
+        "Розмір"
+    }
+
+    fn size_option(&self, value: SizeFormat) -> &'static str {
+        match value {
+            SizeFormat::Explorer => "Як у Провіднику",
+            SizeFormat::Decimal => "По 1000",
+            SizeFormat::Bytes => "У байтах",
         }
     }
 
