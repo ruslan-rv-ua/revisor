@@ -1,9 +1,11 @@
 use super::*;
+use crate::job::{GRACE, Job};
 use crate::scan::{EntryKind, VersionInfo};
 use crate::store::{ProfileSettings, Scope};
-use crate::testing::TempDir;
+use crate::testing::{TempDir, cancelled, poll_until_ended};
 use std::path::PathBuf;
 use std::process::Command;
+use std::thread;
 
 /// A profile database in `tmp` with these folders and exclusions.
 fn profile(tmp: &TempDir, folders: &[PathBuf], exclusions: &[&str]) -> Store {
@@ -33,7 +35,7 @@ fn missing_drive() -> PathBuf {
 
 fn take_it(tmp: &TempDir) -> (Report, Progress) {
     let progress = Progress::default();
-    let report = take(&tmp.db(), Some("test"), &progress, &AtomicBool::new(false)).unwrap();
+    let report = take(&tmp.db(), Some("test"), &progress, &Cancel::new()).unwrap();
     (report, progress)
 }
 
@@ -83,8 +85,6 @@ fn a_snapshot_covers_every_folder_of_the_profile_and_reports_each() {
     let not_found: Vec<&Path> = report.not_found().map(|f| f.path.as_path()).collect();
     assert_eq!(not_found, [gone.as_path(), nowhere.as_path()]);
     assert_eq!(progress.entries(), report.entries);
-    assert!(progress.saving());
-    assert!(progress.saved());
 
     let store = Store::open(&tmp.db()).unwrap();
     let saved = store.list().unwrap();
@@ -95,9 +95,7 @@ fn a_snapshot_covers_every_folder_of_the_profile_and_reports_each() {
     let folders = store.snapshot_folders(report.id).unwrap();
     assert_eq!(folders, report.folders);
     assert_eq!(folders[0].path, app);
-    let entries = store
-        .load_folder(report.id, 0, &AtomicBool::new(false))
-        .unwrap();
+    let entries = store.load_folder(report.id, 0, &Cancel::new()).unwrap();
     let mut names: Vec<String> = entries[1..]
         .iter()
         .map(|e| e.name.to_string_lossy().into_owned())
@@ -108,7 +106,7 @@ fn a_snapshot_covers_every_folder_of_the_profile_and_reports_each() {
     assert_eq!(entries[0].version, VersionInfo::NotRead);
     assert_eq!(
         store
-            .load_folder(report.id, 3, &AtomicBool::new(false))
+            .load_folder(report.id, 3, &Cancel::new())
             .unwrap()
             .len(),
         2
@@ -116,7 +114,7 @@ fn a_snapshot_covers_every_folder_of_the_profile_and_reports_each() {
     for position in [1, 2] {
         assert!(
             store
-                .load_folder(report.id, position, &AtomicBool::new(false))
+                .load_folder(report.id, position, &Cancel::new())
                 .unwrap()
                 .is_empty()
         );
@@ -139,12 +137,7 @@ fn a_cancelled_snapshot_is_not_saved() {
     tmp.write(r"app\a.txt", b"a");
     drop(profile(&tmp, &[tmp.path().join("app")], &[]));
 
-    let result = take(
-        &tmp.db(),
-        None,
-        &Progress::default(),
-        &AtomicBool::new(true),
-    );
+    let result = take(&tmp.db(), None, &Progress::default(), &cancelled());
 
     assert!(
         matches!(result, Err(SnapshotError::Cancelled)),
@@ -161,7 +154,7 @@ fn a_snapshot_that_cannot_be_saved_names_the_cause_and_spares_the_others() {
     let kept = store
         .save(
             &Snapshot::of_tree(crate::scan::synthetic(10)),
-            &AtomicBool::new(false),
+            &Cancel::new(),
         )
         .unwrap();
     drop(store);
@@ -169,12 +162,7 @@ fn a_snapshot_that_cannot_be_saved_names_the_cause_and_spares_the_others() {
     perms.set_readonly(true);
     fs::set_permissions(tmp.db(), perms).unwrap();
 
-    let result = take(
-        &tmp.db(),
-        None,
-        &Progress::default(),
-        &AtomicBool::new(false),
-    );
+    let result = take(&tmp.db(), None, &Progress::default(), &Cancel::new());
 
     let mut perms = fs::metadata(tmp.db()).unwrap().permissions();
     #[allow(clippy::permissions_set_readonly_false)]
@@ -185,10 +173,7 @@ fn a_snapshot_that_cannot_be_saved_names_the_cause_and_spares_the_others() {
     let ids: Vec<i64> = store.list().unwrap().iter().map(|s| s.id).collect();
     assert_eq!(ids, [kept]);
     assert_eq!(
-        store
-            .load_folder(kept, 0, &AtomicBool::new(false))
-            .unwrap()
-            .len(),
+        store.load_folder(kept, 0, &Cancel::new()).unwrap().len(),
         10
     );
 }
@@ -216,12 +201,7 @@ fn a_folder_closed_by_rights_counts_as_denied() {
     };
     icacls(&["/deny", "*S-1-1-0:(RD)"]);
 
-    let result = take(
-        &tmp.db(),
-        None,
-        &Progress::default(),
-        &AtomicBool::new(false),
-    );
+    let result = take(&tmp.db(), None, &Progress::default(), &Cancel::new());
     icacls(&["/remove:d", "*S-1-1-0"]);
 
     let report = result.unwrap();
@@ -238,9 +218,7 @@ fn a_folder_closed_by_rights_counts_as_denied() {
     ));
     assert_eq!(report.entries, 1 + 2);
     let store = Store::open(&tmp.db()).unwrap();
-    let tree = store
-        .load_folder(report.id, 0, &AtomicBool::new(false))
-        .unwrap();
+    let tree = store.load_folder(report.id, 0, &Cancel::new()).unwrap();
     assert_eq!(tree.len(), 1);
     assert!(tree[0].inaccessible);
     assert_eq!(report.not_found().count(), 0);
@@ -269,4 +247,99 @@ fn a_file_at_a_folders_path_is_not_a_folder() {
             .state,
         FolderState::Unavailable(Unavailable::NotAFolder)
     );
+}
+
+/// A write lock on the database of the profile in `tmp`, held until dropped: a snapshot
+/// being saved meanwhile waits for it in [`Phase::Saving`].
+struct WriteLock(rusqlite::Connection);
+
+impl WriteLock {
+    fn take(tmp: &TempDir) -> Self {
+        let conn = rusqlite::Connection::open(tmp.db()).unwrap();
+        conn.execute_batch("BEGIN IMMEDIATE").unwrap();
+        WriteLock(conn)
+    }
+}
+
+impl Drop for WriteLock {
+    fn drop(&mut self) {
+        self.0.execute_batch("ROLLBACK").unwrap();
+    }
+}
+
+/// Waits until the snapshot of `job` is in `phase`.
+fn wait_for_phase(job: &Job<SnapshotWork>, phase: Phase) {
+    let deadline = Instant::now() + Duration::from_secs(60);
+    while job.progress().phase() != phase {
+        assert!(
+            Instant::now() < deadline,
+            "the snapshot never got to {phase:?}"
+        );
+        thread::sleep(Duration::from_millis(1));
+    }
+}
+
+#[test]
+fn a_snapshot_job_saves_its_snapshot_and_reports_it_once_polled() {
+    let tmp = TempDir::new("snapshot");
+    tmp.write(r"app\a.txt", b"a");
+    tmp.write(r"app\sub\b.txt", b"b");
+    drop(profile(&tmp, &[tmp.path().join("app")], &[]));
+
+    let mut job = Job::start(SnapshotWork::new(&tmp.db(), Some("job")));
+    let outcome = poll_until_ended(&mut job);
+
+    let Ok(Outcome::Done(report)) = outcome else {
+        panic!("{outcome:?}");
+    };
+    assert_eq!(report.entries, 4);
+    assert_eq!(job.progress().entries(), report.entries);
+    assert_eq!(job.progress().phase(), Phase::Saved);
+    let saved = Store::open(&tmp.db()).unwrap().list().unwrap();
+    assert_eq!(saved.len(), 1);
+    assert_eq!(saved[0].id, report.id);
+    assert_eq!(saved[0].comment.as_deref(), Some("job"));
+}
+
+#[test]
+fn a_snapshot_scans_saves_and_ends_a_moment_after_its_save() {
+    let tmp = TempDir::new("snapshot");
+    tmp.write(r"app\a.txt", b"a");
+    drop(profile(&tmp, &[tmp.path().join("app")], &[]));
+    assert_eq!(Progress::default().phase(), Phase::Scanning);
+
+    let lock = WriteLock::take(&tmp);
+    let mut job = Job::start(SnapshotWork::new(&tmp.db(), None));
+    // The scan is over, and the save waits for the database.
+    wait_for_phase(&job, Phase::Saving);
+    assert_eq!(job.progress().entries(), 2);
+    assert!(!SnapshotWork::about_to_end(job.progress()));
+    assert!(job.poll().is_none());
+    drop(lock);
+
+    // Once the save is over, the result is a moment away, and the poll that finds the
+    // save over waits for it (TASK-21).
+    wait_for_phase(&job, Phase::Saved);
+    assert!(SnapshotWork::about_to_end(job.progress()));
+    let polling = Instant::now();
+    let polled = job.poll();
+    assert!(polling.elapsed() < GRACE);
+    assert!(matches!(polled, Some(Ok(Outcome::Done(_)))), "{polled:?}");
+}
+
+#[test]
+fn a_snapshot_job_cancelled_while_saving_saves_nothing() {
+    let tmp = TempDir::new("snapshot");
+    tmp.write(r"app\a.txt", b"a");
+    drop(profile(&tmp, &[tmp.path().join("app")], &[]));
+
+    let lock = WriteLock::take(&tmp);
+    let job = Job::start(SnapshotWork::new(&tmp.db(), None));
+    wait_for_phase(&job, Phase::Saving);
+    job.cancel();
+    drop(lock);
+    let outcome = job.wait();
+
+    assert!(matches!(outcome, Ok(Outcome::Cancelled)), "{outcome:?}");
+    assert!(Store::open(&tmp.db()).unwrap().list().unwrap().is_empty());
 }

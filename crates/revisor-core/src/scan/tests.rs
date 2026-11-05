@@ -1,6 +1,6 @@
 use super::*;
 use crate::exclude::SystemEnvironment;
-use crate::testing::{TempDir, junction};
+use crate::testing::{TempDir, cancelled, junction};
 use std::collections::BTreeSet;
 use std::fs::{self, OpenOptions};
 use std::os::windows::fs::{MetadataExt, OpenOptionsExt};
@@ -12,13 +12,7 @@ fn run_scan(root: &Path, threads: usize) -> Scan {
         read_versions: true,
         exclusions: Exclusions::default(),
     };
-    scan(
-        root,
-        &options,
-        &AtomicBool::new(false),
-        &Progress::default(),
-    )
-    .unwrap()
+    scan(root, &options, &Cancel::new(), &Progress::default()).unwrap()
 }
 
 /// Copies kernel32.dll, which has a version resource, to `to`.
@@ -162,7 +156,7 @@ fn progress_counts_the_entries_and_names_the_folder_being_read() {
     let scan = scan(
         tmp.path(),
         &ScanOptions::default(),
-        &AtomicBool::new(false),
+        &Cancel::new(),
         &progress,
     )
     .unwrap();
@@ -410,13 +404,7 @@ fn excluded_files_and_folders_stay_out_with_all_they_hold() {
         exclusions: Exclusions::new(&patterns, &SystemEnvironment),
     };
 
-    let scan = scan(
-        tmp.path(),
-        &options,
-        &AtomicBool::new(false),
-        &Progress::default(),
-    )
-    .unwrap();
+    let scan = scan(tmp.path(), &options, &Cancel::new(), &Progress::default()).unwrap();
 
     let paths: BTreeSet<String> = (1..scan.entries.len())
         .map(|i| rel_path(&scan, i))
@@ -433,7 +421,7 @@ fn cancelled_scan_returns_cancelled() {
     let result = scan(
         tmp.path(),
         &ScanOptions::default(),
-        &AtomicBool::new(true),
+        &cancelled(),
         &Progress::default(),
     );
     assert!(matches!(result, Err(ScanError::Cancelled)));
@@ -445,7 +433,7 @@ fn missing_root_is_an_error() {
     let result = scan(
         &tmp.path().join("missing"),
         &ScanOptions::default(),
-        &AtomicBool::new(false),
+        &Cancel::new(),
         &Progress::default(),
     );
     assert!(matches!(result, Err(ScanError::Root(_))));

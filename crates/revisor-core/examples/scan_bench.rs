@@ -5,9 +5,9 @@
 use std::mem::size_of;
 use std::path::PathBuf;
 use std::process::ExitCode;
-use std::sync::atomic::AtomicBool;
 use std::time::Instant;
 
+use revisor_core::job::Cancel;
 use revisor_core::scan::{Entry, Progress, ScanOptions, scan};
 use windows_sys::Win32::System::ProcessStatus::{GetProcessMemoryInfo, PROCESS_MEMORY_COUNTERS};
 use windows_sys::Win32::System::Threading::GetCurrentProcess;
@@ -36,12 +36,7 @@ fn main() -> ExitCode {
     };
 
     let started = Instant::now();
-    let result = scan(
-        &root,
-        &options,
-        &AtomicBool::new(false),
-        &Progress::default(),
-    );
+    let result = scan(&root, &options, &Cancel::new(), &Progress::default());
     let elapsed = started.elapsed();
     let scan = match result {
         Ok(scan) => scan,

@@ -6,8 +6,11 @@ use std::fs;
 use std::path::{Path, PathBuf};
 use std::process::Command;
 use std::sync::atomic::{AtomicUsize, Ordering};
+use std::thread;
+use std::time::{Duration, Instant};
 
 use crate::diff::{self, Fields};
+use crate::job::{Cancel, Job, Lost, Work};
 use crate::scan::{Entry, EntryKind, FileId, VersionInfo, verbatim};
 
 const FILE_ATTRIBUTE_ARCHIVE: u32 = 0x20;
@@ -63,6 +66,25 @@ impl TempDir {
 impl Drop for TempDir {
     fn drop(&mut self) {
         let _ = fs::remove_dir_all(verbatim(&self.0).unwrap());
+    }
+}
+
+/// A token cancelled already: what an action finds when it was cancelled before it began.
+pub fn cancelled() -> Cancel {
+    let cancel = Cancel::new();
+    cancel.cancel();
+    cancel
+}
+
+/// Polls `job` until it ends, as a front end does on its timer, and gives its result.
+pub fn poll_until_ended<W: Work>(job: &mut Job<W>) -> Result<W::Output, Lost> {
+    let deadline = Instant::now() + Duration::from_secs(60);
+    loop {
+        if let Some(result) = job.poll() {
+            return result;
+        }
+        assert!(Instant::now() < deadline, "the job never ended");
+        thread::sleep(Duration::from_millis(5));
     }
 }
 

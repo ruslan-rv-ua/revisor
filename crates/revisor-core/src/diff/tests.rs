@@ -2,7 +2,7 @@ use super::*;
 use crate::exclude::RecordedEnvironment;
 use crate::scan::{FileId, Progress, ScanOptions, Version, VersionInfo, scan, synthetic};
 use crate::store::{ProfileSettings, Scope, Snapshot, Store};
-use crate::testing::{TempDir, Tree, entry, field_names, junction, rel_path, renumber};
+use crate::testing::{TempDir, Tree, cancelled, entry, field_names, junction, rel_path, renumber};
 use std::collections::HashSet;
 use std::ffi::{OsStr, OsString};
 use std::fs;
@@ -38,7 +38,7 @@ fn lines_with(old: &[Entry], new: &[Entry], rules: &Rules<'_>) -> Vec<String> {
         Subtree::whole(old),
         Subtree::whole(new),
         rules,
-        &AtomicBool::new(false),
+        &Cancel::new(),
     )
     .unwrap();
     let mut out: Vec<String> = diff
@@ -161,7 +161,7 @@ fn a_folder_of_one_tree_is_compared_with_the_whole_of_another() {
     let mut wide = sample();
     wide.add(r"app\new.txt", EntryKind::File);
     wide.get(r"app\readme.txt").size = 7;
-    let no_cancel = AtomicBool::new(false);
+    let no_cancel = Cancel::new();
     let changes = |old: Subtree<'_>, new: Subtree<'_>, rules: &Rules<'_>| -> Vec<String> {
         diff(old, new, rules, &no_cancel)
             .unwrap()
@@ -205,7 +205,7 @@ fn a_folder_of_one_tree_is_compared_with_the_whole_of_another() {
 }
 
 /// The diff of two whole trees by [`Rules::plain`].
-fn diff_whole(old: &[Entry], new: &[Entry], cancel: &AtomicBool) -> Result<Diff, Cancelled> {
+fn diff_whole(old: &[Entry], new: &[Entry], cancel: &Cancel) -> Result<Diff, Cancelled> {
     diff(
         Subtree::whole(old),
         Subtree::whole(new),
@@ -220,7 +220,7 @@ fn same_snapshot_has_no_changes() {
     assert_eq!(lines(&t.0, &t.0), Vec::<String>::new());
     let big = synthetic(10_000);
     assert!(
-        diff_whole(&big, &big, &AtomicBool::new(false))
+        diff_whole(&big, &big, &Cancel::new())
             .unwrap()
             .changes
             .is_empty()
@@ -541,7 +541,7 @@ fn empty_snapshots() {
 #[test]
 fn cancelled_diff_returns_cancelled() {
     let t = synthetic(1000);
-    assert!(diff_whole(&t, &t, &AtomicBool::new(true)).is_err());
+    assert!(diff_whole(&t, &t, &cancelled()).is_err());
 }
 
 /// Two snapshots with known changes, made from a generated tree; returns them with the
@@ -744,7 +744,7 @@ fn unchanged_folder_scanned_twice_has_no_changes() {
     .unwrap();
     junction(&root.join("link"), &root.join("d0"));
 
-    let no_cancel = AtomicBool::new(false);
+    let no_cancel = Cancel::new();
     let settings = ProfileSettings {
         name: "Diff".into(),
         scope: Scope {
@@ -763,8 +763,8 @@ fn unchanged_folder_scanned_twice_has_no_changes() {
         .save(&Snapshot::of_tree(second.entries), &no_cancel)
         .unwrap();
     let (old, new) = (
-        store.load_folder(a, 0, &AtomicBool::new(false)).unwrap(),
-        store.load_folder(b, 0, &AtomicBool::new(false)).unwrap(),
+        store.load_folder(a, 0, &Cancel::new()).unwrap(),
+        store.load_folder(b, 0, &Cancel::new()).unwrap(),
     );
     assert_eq!(old.len(), 1 + 10 * 4 + 2);
 

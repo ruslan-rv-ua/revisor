@@ -13,13 +13,13 @@ use std::fs::File;
 use std::io;
 use std::os::windows::ffi::{OsStrExt, OsStringExt};
 use std::path::{Path, PathBuf};
-use std::sync::atomic::{AtomicBool, Ordering};
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
 use rusqlite::types::{FromSqlError, ToSqlOutput, Value, ValueRef};
 use rusqlite::{Connection, ErrorCode, OpenFlags, OptionalExtension, Transaction, params};
 
 use crate::exclude::DEFAULT_EXCLUSIONS;
+use crate::job::{Cancel, Outcome, Work};
 use crate::scan::{Entry, EntryKind, FileId, Version, VersionInfo};
 
 /// Version of the database schema, kept in `PRAGMA user_version`. Until 0.1.0 is released
@@ -345,16 +345,6 @@ pub struct Store {
     path: PathBuf,
 }
 
-/// Interrupts what a [`Store`] is doing on another thread, such as a compaction; the
-/// interrupted call ends with [`StoreError::Cancelled`] and leaves the database as it was.
-pub struct Interrupt(rusqlite::InterruptHandle);
-
-impl Interrupt {
-    pub fn interrupt(&self) {
-        self.0.interrupt();
-    }
-}
-
 /// What a compaction did: the size of the database file before and after it.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct Compacted {
@@ -556,9 +546,9 @@ impl Store {
         Ok(rows.collect::<Result<_, _>>()?)
     }
 
-    /// Saves a snapshot in one transaction and returns its id. Setting `cancel` stops
+    /// Saves a snapshot in one transaction and returns its id. Cancelling `cancel` stops
     /// with [`StoreError::Cancelled`] and leaves nothing of the snapshot behind.
-    pub fn save(&mut self, snapshot: &Snapshot, cancel: &AtomicBool) -> Result<i64, StoreError> {
+    pub fn save(&mut self, snapshot: &Snapshot, cancel: &Cancel) -> Result<i64, StoreError> {
         let tx = self.conn.transaction()?;
         tx.execute(
             "INSERT INTO snapshot (taken_at, comment) VALUES (?1, ?2)",
@@ -627,7 +617,7 @@ impl Store {
                     continue;
                 }
                 for (i, e) in folder.entries.iter().enumerate() {
-                    if written.is_multiple_of(CANCEL_CHECK) && cancel.load(Ordering::Relaxed) {
+                    if written.is_multiple_of(CANCEL_CHECK) && cancel.is_cancelled() {
                         return Err(StoreError::Cancelled);
                     }
                     written += 1;
@@ -675,13 +665,13 @@ impl Store {
     /// Loads the tree of the folder at `position` of a snapshot, laid out like
     /// [`crate::scan::Scan::entries`]: the root first, with parents as indices into the
     /// result. Empty for a folder that was not scanned, or a snapshot that does not exist.
-    /// Setting `cancel` stops with [`StoreError::Cancelled`]: loading is the longer part
-    /// of a comparison.
+    /// Cancelling `cancel` stops with [`StoreError::Cancelled`]: loading is the longer
+    /// part of a comparison.
     pub fn load_folder(
         &self,
         id: i64,
         position: usize,
-        cancel: &AtomicBool,
+        cancel: &Cancel,
     ) -> Result<Vec<Entry>, StoreError> {
         let range: Option<(i64, i64)> = self
             .conn
@@ -739,7 +729,7 @@ impl Store {
         })?;
         let mut entries = Vec::with_capacity(count as usize);
         for row in rows {
-            if entries.len().is_multiple_of(CANCEL_CHECK) && cancel.load(Ordering::Relaxed) {
+            if entries.len().is_multiple_of(CANCEL_CHECK) && cancel.is_cancelled() {
                 return Err(StoreError::Cancelled);
             }
             entries.push(row?);
@@ -781,24 +771,24 @@ impl Store {
         Ok(())
     }
 
-    /// A handle that interrupts a [`Store::compact`] running on another thread.
-    pub fn interrupt(&self) -> Interrupt {
-        Interrupt(self.conn.get_interrupt_handle())
-    }
-
     /// Rebuilds the database file (VACUUM), returning the space of deleted snapshots to
-    /// the disk; the file is closed to every other connection meanwhile. Interrupted
-    /// through [`Store::interrupt`], it ends with [`StoreError::Cancelled`] and leaves the
-    /// file as it was.
-    pub fn compact(&self) -> Result<Compacted, StoreError> {
+    /// the disk; the file is closed to every other connection meanwhile. Cancelling
+    /// `cancel` interrupts the rebuild, which then ends with [`StoreError::Cancelled`] and
+    /// leaves the file as it was.
+    pub fn compact(&self, cancel: &Cancel) -> Result<Compacted, StoreError> {
         let size = || std::fs::metadata(&self.path).map_or(0, |m| m.len());
         let before = size();
-        self.conn
-            .execute_batch("VACUUM")
-            .map_err(|e| match e.sqlite_error_code() {
-                Some(ErrorCode::OperationInterrupted) => StoreError::Cancelled,
-                _ => StoreError::Sqlite(e),
-            })?;
+        let vacuum = cancel.interrupting(self.conn.get_interrupt_handle(), || {
+            self.conn.execute_batch("VACUUM")
+        });
+        match vacuum {
+            Some(Ok(())) => {}
+            None => return Err(StoreError::Cancelled),
+            Some(Err(e)) if e.sqlite_error_code() == Some(ErrorCode::OperationInterrupted) => {
+                return Err(StoreError::Cancelled);
+            }
+            Some(Err(e)) => return Err(StoreError::Sqlite(e)),
+        }
         Ok(Compacted {
             before,
             after: size(),
@@ -820,6 +810,29 @@ impl Store {
             .conn
             .query_row("SELECT COUNT(*) FROM snapshot", [], |r| r.get(0))?;
         Ok(count as usize)
+    }
+}
+
+/// Compacting a profile's database as a background job (ADR-0011): [`Store::compact`] on
+/// the job's thread, on the connection the snapshots were deleted on (TASK-9).
+pub struct Compaction {
+    store: Store,
+}
+
+impl Compaction {
+    pub fn new(store: Store) -> Self {
+        Self { store }
+    }
+}
+
+impl Work for Compaction {
+    /// VACUUM tells nothing until it is over, so neither does a compaction.
+    type Progress = ();
+    type Output = Outcome<Compacted, StoreError>;
+
+    fn run(self, _: &(), cancel: &Cancel) -> Self::Output {
+        let result = self.store.compact(cancel);
+        Outcome::of(result, |e| matches!(e, StoreError::Cancelled))
     }
 }
 

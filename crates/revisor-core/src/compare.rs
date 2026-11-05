@@ -13,11 +13,11 @@ use std::ffi::OsString;
 use std::fmt;
 use std::os::windows::ffi::OsStringExt;
 use std::path::{Path, PathBuf};
-use std::sync::atomic::{AtomicBool, Ordering};
 
 use crate::diff::{self, Diff, Filter, Inaccessible, Rules, Subtree};
 use crate::exclude::{Exclusions, RecordedEnvironment};
 use crate::folders;
+use crate::job::Cancel;
 use crate::names::{eq_ignore_case, eq_ignore_case_os};
 use crate::scan::{Entry, EntryKind};
 use crate::store::{
@@ -151,14 +151,9 @@ impl From<diff::Cancelled> for CompareError {
 }
 
 /// Compares the snapshots `a` and `b` of the profile in `store`, the earlier with the
-/// later, loading their trees from the database. Setting `cancel` stops with
+/// later, loading their trees from the database. Cancelling `cancel` stops with
 /// [`CompareError::Cancelled`], while the trees are being loaded too.
-pub fn compare(
-    store: &Store,
-    a: i64,
-    b: i64,
-    cancel: &AtomicBool,
-) -> Result<Difference, CompareError> {
+pub fn compare(store: &Store, a: i64, b: i64, cancel: &Cancel) -> Result<Difference, CompareError> {
     let info = |id: i64| -> Result<SnapshotInfo, CompareError> {
         store.snapshot(id)?.ok_or(CompareError::NoSuchSnapshot(id))
     };
@@ -185,7 +180,7 @@ pub fn compare(
     let mut warnings = Vec::new();
     let mut compared = Vec::new();
     for pairing in pair_folders(&folders[0], &folders[1]) {
-        if cancel.load(Ordering::Relaxed) {
+        if cancel.is_cancelled() {
             return Err(CompareError::Cancelled);
         }
         match pairing {
@@ -330,7 +325,7 @@ struct FolderComparison<'a> {
     union: &'a Exclusions,
     /// The exclusions of the earlier and of the later snapshot, as they applied.
     own: [&'a Exclusions; 2],
-    cancel: &'a AtomicBool,
+    cancel: &'a Cancel,
 }
 
 impl FolderComparison<'_> {

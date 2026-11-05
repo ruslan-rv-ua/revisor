@@ -6,9 +6,9 @@
 use std::fs;
 use std::path::{Path, PathBuf};
 use std::process::ExitCode;
-use std::sync::atomic::AtomicBool;
 use std::time::Instant;
 
+use revisor_core::job::Cancel;
 use revisor_core::scan::{Progress, ScanOptions, scan, synthetic};
 use revisor_core::store::{ProfileSettings, Scope, Snapshot, Store};
 
@@ -55,7 +55,7 @@ fn main() -> ExitCode {
 }
 
 fn run(input: &Input, wal: bool, db: &Path) -> Result<(), Box<dyn std::error::Error>> {
-    let no_cancel = AtomicBool::new(false);
+    let no_cancel = Cancel::new();
     let started = Instant::now();
     let entries = match input {
         Input::Scan(root) => {
@@ -111,7 +111,7 @@ fn run(input: &Input, wal: bool, db: &Path) -> Result<(), Box<dyn std::error::Er
     );
 
     let started = Instant::now();
-    let loaded = store.load_folder(first, 0, &AtomicBool::new(false))?;
+    let loaded = store.load_folder(first, 0, &no_cancel)?;
     println!(
         "load:          {:.2} s, {} entries",
         started.elapsed().as_secs_f64(),
@@ -137,7 +137,7 @@ fn run(input: &Input, wal: bool, db: &Path) -> Result<(), Box<dyn std::error::Er
     );
 
     let started = Instant::now();
-    let compacted = store.compact()?;
+    let compacted = store.compact(&no_cancel)?;
     println!(
         "vacuum:        {:.2} s, database {:.1} MiB, {:.1} MiB returned",
         started.elapsed().as_secs_f64(),

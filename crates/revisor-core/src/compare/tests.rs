@@ -1,9 +1,9 @@
 use super::*;
 use crate::diff::ChangeKind;
-use crate::scan::{FileId, Progress, synthetic};
+use crate::scan::{FileId, synthetic};
 use crate::snapshot;
 use crate::store::{FolderSnapshot, ProfileSettings, Scope, Snapshot};
-use crate::testing::{TempDir, Tree, field_names, junction};
+use crate::testing::{TempDir, Tree, cancelled, field_names, junction};
 use std::ffi::OsStr;
 use std::fs;
 
@@ -68,13 +68,13 @@ fn save(
                 folders,
                 exclusions,
             },
-            &AtomicBool::new(false),
+            &Cancel::new(),
         )
         .unwrap()
 }
 
 fn compare_them(store: &Store, a: i64, b: i64) -> Difference {
-    compare(store, a, b, &AtomicBool::new(false)).unwrap()
+    compare(store, a, b, &Cancel::new()).unwrap()
 }
 
 fn side_name(side: Side) -> &'static str {
@@ -584,7 +584,7 @@ fn a_deleted_snapshot_cannot_be_compared() {
     let a = save(&mut store, 1, vec![scanned(r"C:\Data", 1, &tree)], vec![]);
     let b = save(&mut store, 2, vec![scanned(r"C:\Data", 1, &tree)], vec![]);
     store.delete(a).unwrap();
-    let result = compare(&store, b, a, &AtomicBool::new(false));
+    let result = compare(&store, b, a, &Cancel::new());
     assert!(
         matches!(result, Err(CompareError::NoSuchSnapshot(id)) if id == a),
         "{result:?}"
@@ -596,14 +596,14 @@ fn a_cancelled_comparison_stops_at_once() {
     // Loading honours the same flag: `store::tests::a_cancelled_load_stops_at_once`.
     let tmp = TempDir::new("compare");
     let mut store = create(&tmp);
-    let no_cancel = AtomicBool::new(false);
+    let no_cancel = Cancel::new();
     let a = store
         .save(&Snapshot::of_tree(synthetic(10_000)), &no_cancel)
         .unwrap();
     let b = store
         .save(&Snapshot::of_tree(synthetic(10_000)), &no_cancel)
         .unwrap();
-    let result = compare(&store, a, b, &AtomicBool::new(true));
+    let result = compare(&store, a, b, &cancelled());
     assert!(matches!(result, Err(CompareError::Cancelled)), "{result:?}");
 }
 
@@ -639,9 +639,9 @@ fn two_snapshots_of_an_unchanged_folder_give_an_empty_difference() {
         )
         .unwrap(),
     );
-    let no_cancel = AtomicBool::new(false);
+    let no_cancel = Cancel::new();
     let take = || {
-        snapshot::take(&tmp.db(), None, &Progress::default(), &no_cancel)
+        snapshot::take(&tmp.db(), None, &snapshot::Progress::default(), &no_cancel)
             .unwrap()
             .id
     };

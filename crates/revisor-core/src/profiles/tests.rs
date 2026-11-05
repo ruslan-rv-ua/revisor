@@ -1,7 +1,7 @@
 use super::*;
+use crate::job::Cancel;
 use crate::store::{Scope, Snapshot, Store};
 use crate::testing::TempDir;
-use std::sync::atomic::AtomicBool;
 
 /// The `profiles` subfolder of `tmp`, which does not exist at first.
 fn profiles(tmp: &TempDir) -> PathBuf {
@@ -138,7 +138,7 @@ fn each_profile_has_its_own_snapshots() {
     store
         .save(
             &Snapshot::of_tree(crate::scan::synthetic(10)),
-            &AtomicBool::new(false),
+            &Cancel::new(),
         )
         .unwrap();
     drop(store);
@@ -185,8 +185,8 @@ fn a_profiles_snapshots_are_listed_oldest_first() {
     assert!(snapshots_of(&home.path).unwrap().is_empty());
     let mut store = Store::open(&home.path).unwrap();
     let snapshot = Snapshot::of_tree(crate::scan::synthetic(10));
-    let first = store.save(&snapshot, &AtomicBool::new(false)).unwrap();
-    let second = store.save(&snapshot, &AtomicBool::new(false)).unwrap();
+    let first = store.save(&snapshot, &Cancel::new()).unwrap();
+    let second = store.save(&snapshot, &Cancel::new()).unwrap();
     drop(store);
     let ids: Vec<i64> = snapshots_of(&home.path)
         .unwrap()

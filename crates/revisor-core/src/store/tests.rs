@@ -1,8 +1,10 @@
 use super::*;
+use crate::job::Job;
 use crate::scan::synthetic;
-use crate::testing::TempDir;
+use crate::testing::{TempDir, cancelled, poll_until_ended};
 use std::fs;
 use std::process::{Command, Stdio};
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::thread;
 use std::time::{Duration, Instant};
 
@@ -34,18 +36,13 @@ fn create(path: &Path) -> Store {
 /// Saves one tree without cancellation.
 fn save(store: &mut Store, entries: &[Entry]) -> i64 {
     store
-        .save(
-            &Snapshot::of_tree(entries.to_vec()),
-            &AtomicBool::new(false),
-        )
+        .save(&Snapshot::of_tree(entries.to_vec()), &Cancel::new())
         .unwrap()
 }
 
 /// Loads one tree without cancellation.
 fn load(store: &Store, id: i64, position: usize) -> Vec<Entry> {
-    store
-        .load_folder(id, position, &AtomicBool::new(false))
-        .unwrap()
+    store.load_folder(id, position, &Cancel::new()).unwrap()
 }
 
 fn ids(store: &Store) -> Vec<i64> {
@@ -147,7 +144,7 @@ fn a_snapshot_keeps_the_folders_and_exclusions_it_was_taken_with() {
     let tmp = TempDir::new("store");
     let mut store = create(&tmp.db());
     let before = store
-        .save(&snapshot_of_settings(None), &AtomicBool::new(false))
+        .save(&snapshot_of_settings(None), &Cancel::new())
         .unwrap();
     let mut changed = settings();
     changed.scope.folders.remove(0);
@@ -194,7 +191,7 @@ fn each_folder_of_a_snapshot_keeps_its_state_and_its_tree() {
         },
         entries: synthetic(100),
     });
-    let id = store.save(&snapshot, &AtomicBool::new(false)).unwrap();
+    let id = store.save(&snapshot, &Cancel::new()).unwrap();
     drop(store);
 
     let store = Store::open(&tmp.db()).unwrap();
@@ -221,7 +218,7 @@ fn exclusions_keep_how_they_applied() {
         pattern: r"%NoSuchVariable%\x".into(),
         applied: None,
     });
-    let id = store.save(&snapshot, &AtomicBool::new(false)).unwrap();
+    let id = store.save(&snapshot, &Cancel::new()).unwrap();
     assert_eq!(store.snapshot_exclusions(id).unwrap(), snapshot.exclusions);
     assert_eq!(
         store.snapshot_scope(id).unwrap().exclusions,
@@ -352,7 +349,7 @@ fn saved_snapshot_loads_back_unchanged() {
     let id = store
         .save(
             &snapshot_of_settings(Some("before install")),
-            &AtomicBool::new(false),
+            &Cancel::new(),
         )
         .unwrap();
     drop(store);
@@ -384,7 +381,7 @@ fn a_cancelled_load_stops_at_once() {
     let tmp = TempDir::new("store");
     let mut store = create(&tmp.db());
     let id = save(&mut store, &synthetic(10_000));
-    let cancelled = store.load_folder(id, 0, &AtomicBool::new(true));
+    let cancelled = store.load_folder(id, 0, &cancelled());
     assert!(
         matches!(cancelled, Err(StoreError::Cancelled)),
         "{cancelled:?}"
@@ -399,14 +396,14 @@ fn cancelled_save_leaves_nothing_behind() {
     let kept = save(&mut store, &sample());
 
     let snapshot = Snapshot::of_tree(synthetic(1_000_000));
-    let cancel = AtomicBool::new(false);
+    let cancel = Cancel::new();
     let saving = AtomicBool::new(true);
     let result = thread::scope(|s| {
         s.spawn(|| {
             // Let the save write a good part of its entries before cancelling.
             wait_for_journal(&tmp, || saving.load(Ordering::Relaxed));
             thread::sleep(Duration::from_millis(50));
-            cancel.store(true, Ordering::Relaxed);
+            cancel.cancel();
         });
         let result = store.save(&snapshot, &cancel);
         saving.store(false, Ordering::Relaxed);
@@ -430,7 +427,7 @@ fn a_reader_waits_while_a_snapshot_is_being_saved() {
     let saving = AtomicBool::new(true);
     thread::scope(|s| {
         s.spawn(|| {
-            writer.save(&snapshot, &AtomicBool::new(false)).unwrap();
+            writer.save(&snapshot, &Cancel::new()).unwrap();
             saving.store(false, Ordering::Relaxed);
         });
         wait_for_journal(&tmp, || saving.load(Ordering::Relaxed));
@@ -517,7 +514,7 @@ fn compaction_returns_the_space_of_deleted_snapshots() {
     let full = fs::metadata(tmp.db()).unwrap().len();
     store.delete(old).unwrap();
 
-    let compacted = store.compact().unwrap();
+    let compacted = store.compact(&Cancel::new()).unwrap();
     assert_eq!(compacted.before, full);
     assert_eq!(compacted.after, fs::metadata(tmp.db()).unwrap().len());
     assert!(
@@ -539,17 +536,20 @@ fn an_interrupted_compaction_leaves_the_database_whole() {
     store.delete(small).unwrap();
     let full = fs::metadata(tmp.db()).unwrap().len();
 
-    let interrupt = store.interrupt();
-    // The store goes to the compacting thread, as it does in the window, and comes back.
+    let probe = Store::open_with_timeout(&tmp.db(), Duration::ZERO).unwrap();
+    let cancel = Cancel::new();
+    // The store goes to the compacting thread, as it does in a job, and comes back.
     let (store, result) = thread::scope(|s| {
+        let cancel = &cancel;
         let compaction = s.spawn(move || {
-            let result = store.compact();
+            let result = store.compact(cancel);
             (store, result)
         });
-        // An interrupt before the rebuild starts is lost, so it is repeated until the
-        // rebuild has answered it.
+        // Cancelled once the rebuild runs, so that it is the rebuild that is interrupted:
+        // a token cancelled before would keep it from starting at all.
+        wait_for_rebuild(&probe, || !compaction.is_finished());
         while !compaction.is_finished() {
-            interrupt.interrupt();
+            cancel.cancel();
             thread::sleep(Duration::from_millis(10));
         }
         compaction.join().unwrap()
@@ -561,14 +561,94 @@ fn an_interrupted_compaction_leaves_the_database_whole() {
     let store = Store::open(&tmp.db()).unwrap();
     assert_eq!(ids(&store), [kept]);
     assert_eq!(load(&store, kept, 0).len(), 1_000_000);
-    assert_eq!(fs::metadata(tmp.db()).unwrap().len(), full);
+    assert_whole(&tmp, full);
+    // The interrupt is spent: the next compaction goes through.
+    assert!(store.compact(&Cancel::new()).unwrap().after < full);
+}
+
+/// Waits until the database `probe` is open on is closed to it, as it is while a
+/// compaction rebuilds it; `still_running` says whether the compaction may yet do so.
+fn wait_for_rebuild(probe: &Store, mut still_running: impl FnMut() -> bool) {
+    let deadline = Instant::now() + Duration::from_secs(60);
+    while !probe.snapshot_count().is_err_and(|e| e.is_busy()) {
+        assert!(Instant::now() < deadline, "the rebuild never started");
+        assert!(
+            still_running(),
+            "the compaction ended before it was cancelled"
+        );
+        thread::sleep(Duration::from_millis(1));
+    }
+}
+
+/// Checks that the database in `tmp` is whole and as large as `size`: a compaction left
+/// nothing of its rebuild behind.
+fn assert_whole(tmp: &TempDir, size: u64) {
+    assert_eq!(fs::metadata(tmp.db()).unwrap().len(), size);
     let check: String = rusqlite::Connection::open(tmp.db())
         .unwrap()
         .query_row("PRAGMA integrity_check", [], |r| r.get(0))
         .unwrap();
     assert_eq!(check, "ok");
-    // The interrupt is spent: the next compaction goes through.
-    assert!(store.compact().unwrap().after < full);
+}
+
+#[test]
+fn a_compaction_cancelled_before_it_starts_leaves_the_database_as_it_was() {
+    let tmp = TempDir::new("store");
+    let mut store = create(&tmp.db());
+    let old = save(&mut store, &synthetic(20_000));
+    let new = save(&mut store, &sample());
+    store.delete(old).unwrap();
+    let full = fs::metadata(tmp.db()).unwrap().len();
+
+    let result = store.compact(&cancelled());
+
+    assert!(matches!(result, Err(StoreError::Cancelled)), "{result:?}");
+    assert_whole(&tmp, full);
+    assert_same(&load(&store, new, 0), &sample());
+}
+
+#[test]
+fn a_compaction_job_gives_the_space_back_once_polled() {
+    let tmp = TempDir::new("store");
+    let mut store = create(&tmp.db());
+    let old = save(&mut store, &synthetic(20_000));
+    let new = save(&mut store, &sample());
+    store.delete(old).unwrap();
+    let full = fs::metadata(tmp.db()).unwrap().len();
+
+    let mut job = Job::start(Compaction::new(store));
+    let outcome = poll_until_ended(&mut job);
+
+    let Ok(Outcome::Done(compacted)) = outcome else {
+        panic!("{outcome:?}");
+    };
+    assert_eq!(compacted.before, full);
+    assert!(compacted.after * 10 < compacted.before, "{compacted:?}");
+    let store = Store::open(&tmp.db()).unwrap();
+    assert_eq!(ids(&store), [new]);
+    assert_same(&load(&store, new, 0), &sample());
+}
+
+#[test]
+fn a_compaction_job_cancelled_while_it_rebuilds_leaves_the_database_whole() {
+    let tmp = TempDir::new("store");
+    let mut store = create(&tmp.db());
+    let small = save(&mut store, &sample());
+    let kept = save(&mut store, &synthetic(200_000));
+    store.delete(small).unwrap();
+    let full = fs::metadata(tmp.db()).unwrap().len();
+    let probe = Store::open_with_timeout(&tmp.db(), Duration::ZERO).unwrap();
+
+    let job = Job::start(Compaction::new(store));
+    wait_for_rebuild(&probe, || true);
+    job.cancel();
+    let outcome = job.wait();
+
+    assert!(matches!(outcome, Ok(Outcome::Cancelled)), "{outcome:?}");
+    assert_whole(&tmp, full);
+    let store = Store::open(&tmp.db()).unwrap();
+    assert_eq!(ids(&store), [kept]);
+    assert_eq!(load(&store, kept, 0).len(), 200_000);
 }
 
 #[test]
@@ -593,7 +673,7 @@ fn killed_save_child() {
     };
     let snapshot = Snapshot::of_tree(synthetic(2_000_000));
     let mut store = Store::open(Path::new(&db)).unwrap();
-    store.save(&snapshot, &AtomicBool::new(false)).unwrap();
+    store.save(&snapshot, &Cancel::new()).unwrap();
 }
 
 #[test]

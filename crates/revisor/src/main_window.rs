@@ -9,19 +9,15 @@ use std::cell::{Cell, RefCell};
 use std::io;
 use std::path::{Path, PathBuf};
 use std::rc::Rc;
-use std::sync::Arc;
-use std::sync::atomic::{AtomicBool, Ordering};
-use std::sync::mpsc::{self, Receiver, RecvTimeoutError, TryRecvError};
-use std::thread::{self, JoinHandle};
+use std::thread;
 use std::time::Duration;
 
+use revisor_core::job::{Lost, Outcome};
 use revisor_core::profiles::{self, ProfileError, ProfileFile, Unreadable};
-use revisor_core::scan::Progress;
 use revisor_core::settings::{FocusAfterSnapshot, Language, Settings};
-use revisor_core::snapshot::{self, Report, SnapshotError};
+use revisor_core::snapshot::{Phase, Report, SnapshotError};
 use revisor_core::store::{
-    Compacted, FolderState, Interrupt, ProfileSettings, SnapshotInfo, Store, StoreError,
-    Unavailable,
+    Compacted, FolderState, ProfileSettings, SnapshotInfo, Store, StoreError, Unavailable,
 };
 use wxdragon::prelude::*;
 
@@ -29,6 +25,7 @@ use crate::commands::{COMMANDS, CommandId, CommandKind, MenuId, Pane, command};
 use crate::failure;
 use crate::help;
 use crate::i18n::Strings;
+use crate::jobs::{Ended, Event, Jobs, Kind, Shown};
 use crate::keyboard::{Control, Focus, Route, route};
 use crate::keys::Shortcut;
 use crate::menus::{
@@ -52,12 +49,6 @@ const PROGRESS_INTERVAL: i32 = 100;
 /// How long a comment waits for the snapshot that is writing the profile's database
 /// (TASK-9 #29): the save's commit is a matter of seconds.
 const COMMENT_TIMEOUT: Duration = Duration::from_secs(60);
-
-/// How long the window waits for the result of a snapshot whose save is already over:
-/// its thread only closes the database and reports, a matter of milliseconds. A command
-/// that waited for that save then reports the snapshot's end together with its own
-/// outcome instead of leaving it to the next tick (TASK-21).
-const SAVED_GRACE: Duration = Duration::from_secs(2);
 
 /// How long a revisor started while another compacts a profile waits between its looks
 /// at the profile (TASK-9 #30).
@@ -89,6 +80,14 @@ fn cancel_compaction_access() -> u8 {
     command(CommandId::CancelCompaction).access
 }
 
+/// The command that cancels a job of `kind`: what the progress row's button presses.
+fn cancel_command(kind: Kind) -> CommandId {
+    match kind {
+        Kind::Snapshot => CommandId::CancelSnapshot,
+        Kind::Compaction => CommandId::CancelCompaction,
+    }
+}
+
 /// The positions of the labels and buttons in [`MainWindow::labels`], which
 /// `Route::FocusLabel` names them by.
 const LABEL_PROFILE: usize = 0;
@@ -117,107 +116,6 @@ fn command_of(wx_id: i32) -> Option<CommandId> {
     COMMANDS.get(index).map(|c| c.id)
 }
 
-/// A snapshot being taken on its own thread. The window polls its progress on a timer and
-/// takes its result from the channel.
-struct SnapshotJob {
-    /// The profile being snapshotted, which cannot change meanwhile.
-    profile: ProfileFile,
-    progress: Arc<Progress>,
-    cancel: Arc<AtomicBool>,
-    done: Receiver<Result<Report, SnapshotError>>,
-    thread: Option<JoinHandle<()>>,
-}
-
-impl SnapshotJob {
-    fn start(profile: ProfileFile) -> Self {
-        let progress = Arc::new(Progress::default());
-        let cancel = Arc::new(AtomicBool::new(false));
-        let (sender, done) = mpsc::channel();
-        let thread = {
-            let path = profile.path.clone();
-            let (progress, cancel) = (Arc::clone(&progress), Arc::clone(&cancel));
-            thread::spawn(move || {
-                let _ = sender.send(snapshot::take(&path, None, &progress, &cancel));
-            })
-        };
-        Self {
-            profile,
-            progress,
-            cancel,
-            done,
-            thread: Some(thread),
-        }
-    }
-
-    /// Stops the snapshot and waits for its thread, which is quick: the scan notices
-    /// between folders and files, the save every few thousand entries.
-    fn stop(&mut self) {
-        self.cancel.store(true, Ordering::Relaxed);
-        self.wait();
-    }
-
-    fn wait(&mut self) {
-        if let Some(thread) = self.thread.take() {
-            let _ = thread.join();
-        }
-    }
-}
-
-/// A profile's database being compacted on its own thread after snapshots were deleted
-/// (TASK-9). The database is closed even to reading meanwhile, so the job keeps what its
-/// list shows.
-struct CompactionJob {
-    profile: ProfileFile,
-    /// The profile's snapshots after the deletion.
-    rows: Vec<SnapshotInfo>,
-    interrupt: Interrupt,
-    done: Receiver<Result<Compacted, StoreError>>,
-    thread: Option<JoinHandle<()>>,
-}
-
-impl CompactionJob {
-    /// Starts compacting on `store`, the connection the deletion was made on.
-    fn start(profile: ProfileFile, rows: Vec<SnapshotInfo>, store: Store) -> Self {
-        let interrupt = store.interrupt();
-        let (sender, done) = mpsc::channel();
-        let thread = thread::spawn(move || {
-            let _ = sender.send(store.compact());
-        });
-        Self {
-            profile,
-            rows,
-            interrupt,
-            done,
-            thread: Some(thread),
-        }
-    }
-
-    fn wait(&mut self) {
-        if let Some(thread) = self.thread.take() {
-            let _ = thread.join();
-        }
-    }
-}
-
-/// Which background job the progress row shows: a snapshot first, else a compaction.
-#[derive(Clone, Copy, PartialEq, Eq)]
-enum ShownJob {
-    Snapshot,
-    Compaction,
-    None,
-}
-
-impl ShownJob {
-    /// The command that cancels the job shown: what the row's button presses.
-    fn cancel_command(self) -> Option<CommandId> {
-        match self {
-            Self::Snapshot => Some(CommandId::CancelSnapshot),
-            Self::Compaction => Some(CommandId::CancelCompaction),
-            Self::None => None,
-        }
-    }
-}
-
 pub struct MainWindow {
     frame: Frame,
     s: &'static dyn Strings,
@@ -238,8 +136,9 @@ pub struct MainWindow {
     difference: ListCtrl,
     /// Polls the jobs.
     timer: Timer<Frame>,
-    job: RefCell<Option<SnapshotJob>>,
-    compaction: RefCell<Option<CompactionJob>>,
+    /// The background jobs: a snapshot being taken and a database being compacted
+    /// (ADR-0011).
+    jobs: RefCell<Jobs>,
     /// The folder of profiles, `data\profiles` next to the exe.
     profiles_dir: PathBuf,
     /// The application's settings (ADR-0007), or the reason their file could not be used,
@@ -375,8 +274,7 @@ impl MainWindow {
             snapshots,
             difference,
             timer,
-            job: RefCell::new(None),
-            compaction: RefCell::new(None),
+            jobs: RefCell::new(Jobs::default()),
             profiles_dir: data_dir.join("profiles"),
             settings,
             profiles: RefCell::new(Vec::new()),
@@ -472,8 +370,8 @@ impl MainWindow {
 
         let w = Rc::clone(self);
         self.cancel_button.on_click(move |_| {
-            if let Some(id) = w.shown_job().cancel_command() {
-                w.run(id);
+            if let Some(kind) = w.shown_kind() {
+                w.run(cancel_command(kind));
             }
         });
 
@@ -510,20 +408,19 @@ impl MainWindow {
     /// those of the progress row only while it is shown, with the Cancel button's letter
     /// being that of the command of the job shown.
     fn labels(&self) -> Vec<u8> {
-        match self.shown_job().cancel_command() {
-            Some(cancel) => vec![PROFILE_ACCESS, PROGRESS_ACCESS, command(cancel).access],
+        match self.shown_kind() {
+            Some(kind) => vec![
+                PROFILE_ACCESS,
+                PROGRESS_ACCESS,
+                command(cancel_command(kind)).access,
+            ],
             None => vec![PROFILE_ACCESS],
         }
     }
 
-    fn shown_job(&self) -> ShownJob {
-        if self.job.borrow().is_some() {
-            ShownJob::Snapshot
-        } else if self.compaction.borrow().is_some() {
-            ShownJob::Compaction
-        } else {
-            ShownJob::None
-        }
+    /// The kind of the job the progress row shows, if it shows one.
+    fn shown_kind(&self) -> Option<Kind> {
+        self.jobs.borrow().shown().map(|shown| shown.kind())
     }
 
     /// Where the keyboard focus is, in the terms of `keyboard::route`.
@@ -588,8 +485,8 @@ impl MainWindow {
             Route::FocusLabel(LABEL_PROFILE) => self.profile.set_focus(),
             Route::FocusLabel(LABEL_PROGRESS) => self.progress_text.set_focus(),
             Route::FocusLabel(LABEL_CANCEL) => {
-                if let Some(id) = self.shown_job().cancel_command() {
-                    self.run(id);
+                if let Some(kind) = self.shown_kind() {
+                    self.run(cancel_command(kind));
                 }
             }
             Route::FocusLabel(_) => {}
@@ -762,9 +659,9 @@ impl MainWindow {
                     others.push(u);
                     continue;
                 }
-                let compacting = self.compaction.borrow();
-                match compacting.as_ref().filter(|job| job.profile.path == u.path) {
-                    Some(job) => found.push(job.profile.clone()),
+                let jobs = self.jobs.borrow();
+                match jobs.closed_profile(&u.path) {
+                    Some((profile, _)) => found.push(profile.clone()),
                     None => busy_elsewhere.push(u),
                 }
             }
@@ -791,13 +688,14 @@ impl MainWindow {
         let rows = match &open {
             None => Vec::new(),
             Some(open) => {
-                let compacting = self.compaction.borrow();
-                match compacting
-                    .as_ref()
-                    .filter(|job| job.profile.path == open.path)
-                {
-                    // Its database is closed meanwhile; the job knows its snapshots.
-                    Some(job) => job.rows.clone(),
+                let closed = self
+                    .jobs
+                    .borrow()
+                    .closed_profile(&open.path)
+                    .map(|(_, rows)| rows.to_vec());
+                match closed {
+                    // Its database is closed meanwhile; the compaction knows its snapshots.
+                    Some(rows) => rows,
                     None => match profiles::snapshots_of(&open.path) {
                         Ok(rows) => rows,
                         Err(e) => {
@@ -820,15 +718,8 @@ impl MainWindow {
             let mut state = self.state.borrow_mut();
             state.profile = open.as_ref().map(|p| p.name.clone());
             state.snapshots = rows.len();
-            state.snapshotting_open_profile = match (&open, self.job.borrow().as_ref()) {
-                (Some(open), Some(job)) => open.path == job.profile.path,
-                _ => false,
-            };
-            state.compacting_open_profile = match (&open, self.compaction.borrow().as_ref()) {
-                (Some(open), Some(job)) => open.path == job.profile.path,
-                _ => false,
-            };
         }
+        self.sync_job_flags();
         *self.rows.borrow_mut() = rows;
         self.sync_selection();
         self.update_empty_text();
@@ -1096,7 +987,7 @@ impl MainWindow {
     fn with_jobs_paused<T>(&self, dialog: impl FnOnce() -> T) -> T {
         self.timer.stop();
         let answer = dialog();
-        if self.shown_job() != ShownJob::None {
+        if self.jobs.borrow().any() {
             self.timer.start(PROGRESS_INTERVAL, false);
         }
         answer
@@ -1223,86 +1114,50 @@ impl MainWindow {
             win32::select_only(list, next);
         }
         let rows = self.rows.borrow().clone();
-        {
-            let mut state = self.state.borrow_mut();
-            state.snapshots = rows.len();
-            state.compaction_running = true;
-            state.compacting_open_profile = true;
-        }
+        self.state.borrow_mut().snapshots = rows.len();
         self.sync_selection();
         self.update_empty_text();
-        *self.compaction.borrow_mut() = Some(CompactionJob::start(open.clone(), rows, store));
-        self.refresh_progress_row();
+        self.jobs
+            .borrow_mut()
+            .start_compaction(open.clone(), rows, store);
+        self.sync_jobs();
         self.say(&s.snapshots_deleted(chosen.len(), &open.name));
     }
 
     /// Asks the compaction to stop; its end comes through the timer, like any other.
     fn cancel_compaction(&self) {
-        if let Some(job) = self.compaction.borrow().as_ref() {
-            job.interrupt.interrupt();
-        }
+        self.jobs.borrow().cancel(Kind::Compaction);
     }
 
-    /// Reports the compaction once it is over.
-    fn poll_compaction(&self) {
+    /// Reports the end of the compaction.
+    fn compaction_ended(&self, ended: Ended<Outcome<Compacted, StoreError>>) {
         let s = self.s;
-        let result = {
-            let job = self.compaction.borrow();
-            let Some(job) = job.as_ref() else {
-                return;
-            };
-            match job.done.try_recv() {
-                Ok(result) => Some(result),
-                Err(TryRecvError::Empty) => return,
-                Err(TryRecvError::Disconnected) => None,
-            }
-        };
-        let mut job = self
-            .compaction
-            .borrow_mut()
-            .take()
-            .expect("the job was there a moment ago");
-        job.wait();
-        self.end_compaction();
-        let name = &job.profile.name;
-        match result {
-            Some(Ok(compacted)) => {
+        self.sync_jobs();
+        let name = &ended.profile.name;
+        match ended.outcome {
+            Ok(Outcome::Done(compacted)) => {
                 let freed = win32::format_size(compacted.before.saturating_sub(compacted.after));
                 self.say(&s.compaction_done(name, &freed));
             }
-            Some(Err(StoreError::Cancelled)) => self.say(&s.compaction_cancelled(name)),
-            Some(Err(e)) => {
+            Ok(Outcome::Cancelled) => self.say(&s.compaction_cancelled(name)),
+            Ok(Outcome::Failed(e)) => {
                 let reason = s.failure(&failure::of_store(&e));
                 self.say(&s.compaction_failed(name, &reason));
             }
-            None => self.say(&s.compaction_failed(name, s.compaction_stopped())),
+            Err(Lost) => self.say(&s.compaction_failed(name, s.compaction_stopped())),
         }
-    }
-
-    /// Takes the window back to its state without a compaction.
-    fn end_compaction(&self) {
-        {
-            let mut state = self.state.borrow_mut();
-            state.compaction_running = false;
-            state.compacting_open_profile = false;
-        }
-        self.refresh_progress_row();
-        self.refresh_menus();
     }
 
     /// On closing: a compaction that is running goes on behind the hidden window, and the
     /// process ends only when it has (TASK-9 #30); with `interrupt`, as at a shutdown,
     /// the compaction is interrupted instead, which leaves the database as it was.
     fn finish_compaction_hidden(&self, interrupt: bool) {
-        let Some(mut job) = self.compaction.borrow_mut().take() else {
+        if !self.jobs.borrow().runs(Kind::Compaction) {
             return;
-        };
+        }
         self.timer.stop();
         self.frame.show(false);
-        if interrupt {
-            job.interrupt.interrupt();
-        }
-        job.wait();
+        self.jobs.borrow_mut().finish_compaction(interrupt);
     }
 
     // --- The snapshot being taken (TASK-8) ---------------------------------------------
@@ -1313,93 +1168,90 @@ impl MainWindow {
         let Some(open) = self.open_profile() else {
             return;
         };
-        *self.job.borrow_mut() = Some(SnapshotJob::start(open));
-        {
-            let mut state = self.state.borrow_mut();
-            state.snapshot_running = true;
-            state.snapshotting_open_profile = true;
-        }
-        self.refresh_progress_row();
+        self.jobs.borrow_mut().start_snapshot(open);
+        self.sync_jobs();
         self.say(s.snapshot_started());
     }
 
     /// Asks the snapshot to stop; its end comes through the timer, like any other.
     fn cancel_snapshot(&self) {
-        if let Some(job) = self.job.borrow().as_ref() {
-            job.cancel.store(true, Ordering::Relaxed);
-        }
+        self.jobs.borrow().cancel(Kind::Snapshot);
     }
 
-    /// Reports the jobs that have ended, together when both have.
+    /// Shows the progress of the snapshot and reports the jobs that have ended, together
+    /// when both have.
     fn poll_jobs(&self) {
         self.speaking(|| {
-            self.poll_snapshot();
-            self.poll_compaction();
+            self.show_snapshot_progress();
+            let ended = self.jobs.borrow_mut().poll();
+            for event in ended {
+                match event {
+                    Event::Snapshot(ended) => self.snapshot_ended(ended, false),
+                    Event::Compaction(ended) => self.compaction_ended(ended),
+                }
+            }
         });
     }
 
-    /// Shows the progress of the snapshot and, once it is over, its outcome.
-    fn poll_snapshot(&self) {
+    /// Shows what the snapshot being taken has done so far, when the progress row shows
+    /// it.
+    fn show_snapshot_progress(&self) {
         let s = self.s;
-        let result = {
-            let job = self.job.borrow();
-            let Some(job) = job.as_ref() else {
-                return;
-            };
-            let entries = job.progress.entries();
-            let entries_text = win32::format_count(entries);
-            let text = if job.progress.saving() {
-                s.snapshot_saving(entries, &entries_text)
-            } else {
-                let folder = job.progress.folder();
-                s.snapshot_progress(entries, &entries_text, &folder.to_string_lossy())
-            };
-            self.progress_text.change_value(&text);
-            match job.done.try_recv() {
-                Ok(result) => Some(result),
-                // The save is over: the result is a moment away, so it is waited for
-                // rather than left to the next tick, which would say it apart from
-                // the message of this moment (TASK-21).
-                Err(TryRecvError::Empty) if job.progress.saved() => {
-                    match job.done.recv_timeout(SAVED_GRACE) {
-                        Ok(result) => Some(result),
-                        Err(RecvTimeoutError::Timeout) => return,
-                        Err(RecvTimeoutError::Disconnected) => None,
+        let text = match self.jobs.borrow().shown() {
+            Some(Shown::Snapshot(progress)) => {
+                let entries = progress.entries();
+                let entries_text = win32::format_count(entries);
+                match progress.phase() {
+                    Phase::Scanning => {
+                        let folder = progress.folder();
+                        s.snapshot_progress(entries, &entries_text, &folder.to_string_lossy())
                     }
+                    Phase::Saving | Phase::Saved => s.snapshot_saving(entries, &entries_text),
                 }
-                Err(TryRecvError::Empty) => return,
-                Err(TryRecvError::Disconnected) => None,
             }
+            _ => return,
         };
-        let mut job = self
-            .job
-            .borrow_mut()
-            .take()
-            .expect("the job was there a moment ago");
-        job.wait();
-        // Where the focus was while the snapshot ran decides where it goes (TASK-9 #19).
+        self.progress_text.change_value(&text);
+    }
+
+    /// Ends the snapshot in the window, whichever way it ended: on the timer, or stopped
+    /// on closing and restarting, `stopped`, which reports it without questions. Where
+    /// the focus was while the snapshot ran decides where it goes (TASK-9 #19), so it is
+    /// read before the progress row goes and takes the focus with it.
+    fn snapshot_ended(&self, ended: Ended<Outcome<Report, SnapshotError>>, stopped: bool) {
+        let s = self.s;
         let focus = self.focus_place();
-        self.end_snapshot();
-        match result {
-            Some(Ok(report)) => self.report_snapshot(&job.profile, &report, true, focus),
-            Some(Err(SnapshotError::Cancelled)) => self.say(s.snapshot_cancelled()),
-            Some(Err(SnapshotError::Store(e))) => {
+        self.sync_jobs();
+        match ended.outcome {
+            Ok(Outcome::Done(report)) => {
+                self.report_snapshot(&ended.profile, &report, !stopped, focus);
+            }
+            Ok(Outcome::Failed(SnapshotError::Store(e))) if !stopped => {
                 self.snapshot_failed(&s.failure(&failure::of_store(&e)));
             }
-            None => self.snapshot_failed(s.snapshot_stopped()),
+            Err(Lost) if !stopped => self.snapshot_failed(s.snapshot_stopped()),
+            // A snapshot stopped on closing or restarting is lost however it ended.
+            _ => self.say(s.snapshot_cancelled()),
         }
     }
 
-    /// Takes the window back to its state without a snapshot: the progress row goes,
-    /// unless a compaction keeps it, and the focus with it moves to the snapshot list.
-    fn end_snapshot(&self) {
-        {
-            let mut state = self.state.borrow_mut();
-            state.snapshot_running = false;
-            state.snapshotting_open_profile = false;
-        }
+    /// Brings the window in line with the jobs once one has started or ended: the flags
+    /// of the state, the progress row and the menus.
+    fn sync_jobs(&self) {
+        self.sync_job_flags();
         self.refresh_progress_row();
         self.refresh_menus();
+    }
+
+    /// The one place the jobs' flags of the state are set: as the jobs give them for the
+    /// open profile (ADR-0011).
+    fn sync_job_flags(&self) {
+        let open = self.open_profile();
+        let flags = self
+            .jobs
+            .borrow()
+            .flags(open.as_ref().map(|p| p.path.as_path()));
+        self.state.borrow_mut().set_jobs(flags);
     }
 
     /// Shows the progress row for the job it shows, with the Cancel button named after
@@ -1407,48 +1259,48 @@ impl MainWindow {
     /// for the snapshot list. The timer runs while any job does.
     fn refresh_progress_row(&self) {
         let s = self.s;
-        let shown = self.shown_job();
         // The button is «Скасувати (N)» for a snapshot and, so that its letter is in its
         // English name as everywhere, the command's own name for a compaction.
-        let (text, button) = match shown {
-            ShownJob::Snapshot => (
+        let shown = match self.jobs.borrow().shown() {
+            Some(Shown::Snapshot(_)) => Some((
+                Kind::Snapshot,
                 s.snapshot_progress(0, &win32::format_count(0), ""),
                 button_label(s, s.cancel(), cancel_snapshot_access(), false),
-            ),
-            ShownJob::Compaction => {
-                let profile = self.compaction.borrow();
-                let name = profile.as_ref().map(|job| job.profile.name.clone());
-                (
-                    s.compacting(&name.unwrap_or_default()),
-                    button_label(
-                        s,
-                        s.command(CommandId::CancelCompaction),
-                        cancel_compaction_access(),
-                        false,
-                    ),
-                )
-            }
-            ShownJob::None => (String::new(), String::new()),
+            )),
+            Some(Shown::Compaction(profile)) => Some((
+                Kind::Compaction,
+                s.compacting(&profile.name),
+                button_label(
+                    s,
+                    s.command(CommandId::CancelCompaction),
+                    cancel_compaction_access(),
+                    false,
+                ),
+            )),
+            None => None,
         };
-        if shown == ShownJob::None {
-            let focused = win32::focused_window();
-            if focused == self.progress_text.get_handle()
-                || focused == self.cancel_button.get_handle()
-            {
-                self.snapshots.set_focus();
+        match &shown {
+            None => {
+                let focused = win32::focused_window();
+                if focused == self.progress_text.get_handle()
+                    || focused == self.cancel_button.get_handle()
+                {
+                    self.snapshots.set_focus();
+                }
+                self.timer.stop();
             }
-            self.timer.stop();
-        } else {
-            // A snapshot's text is replaced by its progress on the next tick.
-            if shown == ShownJob::Compaction || self.progress_text.get_value().is_empty() {
-                self.progress_text.change_value(&text);
-            }
-            self.cancel_button.set_label(&button);
-            if !self.timer.is_running() {
-                self.timer.start(PROGRESS_INTERVAL, false);
+            Some((kind, text, button)) => {
+                // A snapshot's text is replaced by its progress on the next tick.
+                if *kind == Kind::Compaction || self.progress_text.get_value().is_empty() {
+                    self.progress_text.change_value(text);
+                }
+                self.cancel_button.set_label(button);
+                if !self.timer.is_running() {
+                    self.timer.start(PROGRESS_INTERVAL, false);
+                }
             }
         }
-        let visible = shown != ShownJob::None;
+        let visible = shown.is_some();
         self.progress_label.show(visible);
         self.progress_text.show(visible);
         self.cancel_button.show(visible);
@@ -1554,7 +1406,7 @@ impl MainWindow {
     /// `question`; returns whether there is nothing in the way any more. The timer rests
     /// while the question is up, so the snapshot's end does not answer it.
     fn stop_snapshot_if_agreed(&self, title: &str, question: &str, action: (&str, u8)) -> bool {
-        if self.job.borrow().is_none() {
+        if !self.jobs.borrow().runs(Kind::Snapshot) {
             return true;
         }
         let agreed =
@@ -1569,16 +1421,10 @@ impl MainWindow {
     /// Stops the snapshot being taken, if there is one, without asking. A snapshot that
     /// ended meanwhile, while a question was up, is reported as it ended.
     fn stop_snapshot(&self) {
-        let Some(mut job) = self.job.borrow_mut().take() else {
-            return;
-        };
-        self.timer.stop();
-        job.stop();
-        let focus = self.focus_place();
-        self.end_snapshot();
-        match job.done.try_recv() {
-            Ok(Ok(report)) => self.report_snapshot(&job.profile, &report, false, focus),
-            _ => self.say(self.s.snapshot_cancelled()),
+        let stopped = self.jobs.borrow_mut().stop_snapshot();
+        if let Some(ended) = stopped {
+            self.timer.stop();
+            self.snapshot_ended(ended, true);
         }
     }
 
