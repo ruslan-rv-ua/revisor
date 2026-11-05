@@ -199,12 +199,18 @@ pub struct MainWindow {
     /// summary and the warnings, or, before the first comparison, how to compare
     /// (TASK-13 #1, #11).
     comparison_field: TextCtrl,
+    /// The panel the difference lists take turns in: the one shown fills it, the other is
+    /// disabled and has no size (TASK-13).
+    difference_holder: Panel,
     /// The difference lists: two virtual lists over `difference_list`, which they ask for
     /// the text of the rows they show (TASK-11 #5), one of them shown at a time. A new
     /// difference goes into the other list, which then takes the shown one's place: the
     /// focus comes to it as to a new list, which screen readers name again even when the
     /// focus was in the old one (#21); nothing says so when the rows under the focus are
-    /// merely replaced.
+    /// merely replaced. Neither list is ever hidden: UI Automation goes through every row
+    /// of a list that is shown after it was hidden, which keeps the window busy for
+    /// seconds with a large difference (TASK-13 #29), so the other list is disabled — no
+    /// stop for Tab — and has no size instead.
     differences: [ListCtrl; 2],
     /// Which of `differences` is shown.
     shown_difference: Cell<usize>,
@@ -346,9 +352,11 @@ impl MainWindow {
             .build();
         comparison_field.set_min_size(Size::new(-1, COMPARISON_HEIGHT));
         // Virtual lists: a difference may have a million rows (TASK-11 #6), and a list
-        // asks for the text of the ones it shows. Two of them, the second hidden at first.
+        // asks for the text of the ones it shows. Two of them in a panel of their own, the
+        // second disabled and without a size at first.
+        let difference_holder = Panel::builder(&panel).build();
         let differences = [(); 2].map(|()| {
-            let list = ListCtrl::builder(&panel)
+            let list = ListCtrl::builder(&difference_holder)
                 .with_style(
                     ListCtrlStyle::Report | ListCtrlStyle::Virtual | ListCtrlStyle::SingleSel,
                 )
@@ -372,7 +380,9 @@ impl MainWindow {
             });
             list
         });
-        differences[1].show(false);
+        differences[1].enable(false);
+        // The holder answers for the difference lists' text while they are empty.
+        win32::subclass_list_parent(difference_holder.get_handle());
         let filter_label = StaticText::builder(&panel)
             .with_label(&field_label(s, s.filter_field(), FILTER_ACCESS))
             .build();
@@ -383,7 +393,7 @@ impl MainWindow {
                 .with_label(&button_label(s, name, TYPE_ACCESS[kind as usize], false))
                 .build()
         });
-        // The panel answers for the lists' text while they are empty.
+        // The panel answers for the snapshot list's text while it is empty.
         win32::subclass_list_parent(panel.get_handle());
 
         let profile_row = BoxSizer::builder(Orientation::Horizontal).build();
@@ -436,9 +446,7 @@ impl MainWindow {
             5,
         );
         sizer.add(&comparison_field, 0, SizerFlag::Expand | SizerFlag::All, 5);
-        for list in &differences {
-            sizer.add(list, 2, SizerFlag::Expand | SizerFlag::All, 5);
-        }
+        sizer.add(&difference_holder, 2, SizerFlag::Expand | SizerFlag::All, 5);
         sizer.add_sizer(&filter_row, 0, SizerFlag::Expand, 0);
         panel.set_sizer(sizer, true);
         let timer = Timer::new(&frame);
@@ -459,6 +467,7 @@ impl MainWindow {
             cancel_button,
             snapshots,
             comparison_field,
+            difference_holder,
             differences,
             shown_difference: Cell::new(0),
             difference_list,
@@ -587,6 +596,15 @@ impl MainWindow {
             .on_item_deselected(move |_| w.sync_selection());
         let w = Rc::clone(self);
         self.snapshots.on_item_focused(move |_| w.sync_selection());
+
+        // The list shown fills the panel of the difference lists.
+        let w = Rc::clone(self);
+        self.difference_holder.on_size(move |data| {
+            w.place_difference_lists();
+            if let WindowEventData::Size(event) = data {
+                event.event.skip(true);
+            }
+        });
 
         // The difference list (TASK-13): its headers sort it, the focus picks the one row
         // selected, and its filter's field and check boxes change what it shows.
@@ -1622,15 +1640,29 @@ impl MainWindow {
         if let Some(row) = current {
             win32::select_only(new.get_handle(), row);
         }
+        new.enable(true);
         self.shown_difference.set(next);
+        self.place_difference_lists();
         self.describe_difference();
-        new.show(true);
         if focus {
             new.set_focus();
         }
-        old.show(false);
+        // Disabled once the focus has left it, so that the focus does not go elsewhere.
+        old.enable(false);
         old.set_item_count(0);
-        self.panel.layout();
+    }
+
+    /// The list shown fills the panel of the difference lists; the other has no size.
+    fn place_difference_lists(&self) {
+        let size = self.difference_holder.get_client_size();
+        let shown = self.shown_difference.get();
+        for (i, list) in self.differences.iter().enumerate() {
+            if i == shown {
+                list.set_size_with_pos(0, 0, size.width, size.height);
+            } else {
+                list.set_size_with_pos(0, 0, 0, 0);
+            }
+        }
     }
 
     // --- The difference list (TASK-13) --------------------------------------------------
