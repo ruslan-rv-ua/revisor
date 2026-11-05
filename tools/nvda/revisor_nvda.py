@@ -169,14 +169,31 @@ def visible_controls(main, cls):
     return [c for c in children(main) if class_name(c) == cls and u32.IsWindowVisible(c)]
 
 
+GWL_STYLE, ES_MULTILINE, ES_READONLY = -16, 0x0004, 0x0800
+
+
+def edit_style(h):
+    return u32.GetWindowLongW(h, GWL_STYLE)
+
+
+def progress_field(main):
+    """The progress field of the main window, if shown: its one single-line read-only field
+    (the field «Порівняння» is read-only too but has many lines, TASK-13)."""
+    for h in visible_controls(main, "Edit"):
+        style = edit_style(h)
+        if style & ES_READONLY and not style & ES_MULTILINE:
+            return h
+    return None
+
+
 def progress_text(main):
     """The text of the progress field of the main window, or None when it is hidden.
 
     Under a modal dialog the jobs' timer sleeps and the field stays, so waiting for None there
     stalls forever: wait by time instead.
     """
-    edits = visible_controls(main, "Edit")
-    return control_text(edits[0]) if edits else None
+    h = progress_field(main)
+    return control_text(h) if h else None
 
 
 class GUITHREADINFO(ctypes.Structure):
