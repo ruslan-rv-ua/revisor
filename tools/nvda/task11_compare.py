@@ -5,8 +5,9 @@
 ``parts`` is a comma-separated choice of ``commands``, ``busy`` and ``big`` (all by default).
 
 Two profiles: «Small» (a scratch folder with a few files, so comparisons are instant and the
-rows are known) and «Big» (the folders given: snapshots of about 800k entries, so a comparison
-runs for more than a second and a save holds the database for a while; see README.md). The
+rows are known) and «Big» (the folders given and the scratch folder: snapshots of about 800k
+entries, so a comparison runs for more than a second and a save holds the database for a while;
+see README.md). The
 checks on «Small» cover the commands, the refusals, the window «Порівняти з», the three
 values of «Фокус після порівняння», the re-announced list, a busy database (held from here),
 the cancel and the close during a comparison; the checks on «Big» cover the progress row, a
@@ -32,7 +33,7 @@ LVM_GETITEMCOUNT = 0x1004
 folders, exclusions = args_folders()
 parts = set(sys.argv[3].split(",")) if len(sys.argv) > 3 else {"commands", "busy", "big"}
 tree = os.path.join(SCRATCH, "tree")
-paths = prepare({"Small": ([tree], []), "Big": (folders, exclusions)})
+paths = prepare({"Small": ([tree], []), "Big": (folders + [tree], exclusions)})
 
 
 def write(rel, text):
@@ -235,6 +236,8 @@ def check_big(app):
     print("   focused:", focused_class(), "| rows:", difference_rows(app.main))
 
     # 14. A comparison started while a snapshot is being saved waits for the database (#16).
+    # The third snapshot differs from the second for sure, for the deletion check below.
+    write("big.txt", "big")
     key(VK_F6)
     time.sleep(0.5)
     key(VK_F5)
