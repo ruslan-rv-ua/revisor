@@ -1,10 +1,11 @@
 ---
 id: TASK-19
 title: Релізи збираються й публікуються автоматично
-status: To Do
-assignee: []
+status: In Progress
+assignee:
+  - '@claude'
 created_date: '2026-10-30 17:04'
-updated_date: '2026-11-06 21:14'
+updated_date: '2026-11-06 23:13'
 labels: []
 milestone: m-1
 dependencies:
@@ -94,7 +95,7 @@ revisor встановлюється через scoop із bucket ruslan-rv-ua/s
 
 ## Acceptance Criteria
 <!-- AC:BEGIN -->
-- [ ] #1 Тег vX.Y.Z запускає релізний воркфлоу на windows-2025. Він бере текст релізу з розділу версії в CHANGELOG.md, проганяє на тегу форматування, тести й clippy і звіряє версію тегу з Cargo.toml і VERSIONINFO. Без розділу, з порожнім розділом чи з розбіжністю версій реліз не публікується.
+- [ ] #1 Тег vX.Y.Z запускає релізний воркфлоу на windows-2025. Він бере текст релізу з розділу версії в CHANGELOG.md, проганяє на тегу ті самі перевірки, що й CI в develop (форматування, тести, clippy і актуальність файлу ліцензій), і звіряє версію тегу з Cargo.toml і VERSIONINFO. Без розділу, з порожнім розділом чи з розбіжністю версій реліз не публікується.
 - [ ] #2 Воркфлоу перевіряє готовий exe: у таблиці імпорту немає VCRUNTIME, MSVCP і api-ms-win-crt, розмір — до 10 МіБ, а VERSIONINFO, прочитана з exe, має версію тегу, CompanyName «Ruslan Iskov» і ProductName «revisor».
 - [ ] #3 Лише після всіх перевірок воркфлоу публікує в GitHub Releases рівно два файли: revisor-vX.Y.Z-x64.exe і revisor-vX.Y.Z-x64.exe.sha256 у форматі «<hex64> *<ім'я>»; PDB лишається артефактом запуску на 90 днів.
 - [ ] #4 Тег із дефісом (v0.1.0-rc.1) публікується як pre-release, і checkver scoop його не бачить.
@@ -115,3 +116,41 @@ revisor встановлюється через scoop із bucket ruslan-rv-ua/s
 - [ ] #5 Бриф і ADR чи README оновлено (якщо задача змінила поведінку чи рішення)
 - [ ] #6 Нові вікна й контроли мають клавіші доступу за документом «Клавіатура й меню» (якщо задача їх додає)
 <!-- DOD:END -->
+
+## Implementation Plan
+
+<!-- SECTION:PLAN:BEGIN -->
+## Рішення автора (2026-11-07)
+
+1. **Версія пробного релізу — без суфікса**, як у tapir. Cargo.toml, app.rc і CHANGELOG лишаються 0.1.0; воркфлоу відкидає «v» і суфікс тегу після дефіса (v0.1.0-rc.1 → 0.1.0) і звіряє з ними 0.1.0: числова версія VERSIONINFO має чотири числа, і місця для rc у ній немає. Ім'я файлу й сторінка мають повний тег (revisor-v0.1.0-rc.1-x64.exe), а тег із дефісом стає pre-release. Тож «(версія 0.1.0-rc.1)» в описі означає лише тег.
+2. **CHANGELOG:** розділ «## [0.1.0] - дата» з можливостями MVP пишемо одразу в цій гілці, над ним — порожній [Unreleased]; справжню дату випуску ставимо на гілці release/0.1.0. Тести — як у pathmaster, без винятків.
+3. **persist:** під час rc ставимо rc.1 з локального маніфесту й робимо профіль і знімок; коли 0.1.0 опубліковано, міняємо в локальному маніфесті адресу й хеш на 0.1.0 і запускаємо scoop update. Bucket засіваємо лише після цього.
+4. **NVDA перед релізом:** новий скрипт tools/nvda/release_pass.py (мова uk чи en) проходить головний сценарій на exe, який випускаємо, а документ «Випуск релізу» має таблицю тих самих кроків, щоб пройти їх і вручну. Скрипт запускаю лише зі згоди автора.
+5. **На тегу — усі чотири перевірки CI develop:** fmt, test, clippy і файл ліцензій (критерій #1 доповнено).
+6. **Англійські README й CHANGELOG — американським правописом**, як інтерфейс (License).
+
+## План
+
+**A. Гілка feature/task-19-releases (від develop 2cef881)**
+1. `.github/workflows/release.yml` за зразком pathmaster і tapir: `on: push: tags: ["v*"]`, `windows-2025`, `permissions: contents: write`, дії повним SHA (checkout із `persist-credentials: false`, upload-artifact), env `LIBCLANG_PATH` і `CARGO_TARGET_DIR=C:\t`, без кешу. Кроки від дешевих: версія тегу (без «v» і суфікса) = `[workspace.package] version` = FileVersion/ProductVersion з app.rc; PRERELEASE, якщо тег має дефіс; текст релізу з розділу CHANGELOG (немає чи порожній → червоний запуск); середовище (LIBCLANG_PATH, llvm-rc); Ninja 1.13.2 і Rust із rust-toolchain.toml, як у ci.yml; fmt; test і clippy з `--release --target x86_64-pc-windows-msvc` (wxWidgets збирається один раз); cargo-about 0.9.3 (SHA-256) і файл ліцензій; build `--release --locked --target`; staging `dist\revisor-<тег>-x64.exe`; dumpbin /DEPENDENTS (KERNEL32 є, VCRUNTIME, MSVCP, api-ms-win-crt немає); розмір ≤ 10 МіБ; VersionInfo з exe (CompanyName, ProductName, FileVersion, ProductVersion); `.sha256` «<hex64> *<ім'я>»; PDB — артефакт запуску на 90 днів; `gh release create --verify-tag --notes-file` (+ `--prerelease` для тегу з дефісом).
+2. CHANGELOG.md: вступ, порожній [Unreleased], [0.1.0] з Added (можливості MVP), посилання внизу ([Unreleased] → compare/v0.1.0...HEAD, [0.1.0] → releases/tag/v0.1.0).
+3. Тест `crates/revisor-core/tests/changelog.rs` за зразком pathmaster: граматика заголовків «## [», [Unreleased] зверху, найновіший розділ = версія крейта, кожен заголовок має посилання.
+4. `packaging/scoop/revisor.json` за зразком pathmaster.json: «##», version 0.1.0, url …/v0.1.0/revisor-v0.1.0-x64.exe#/revisor.exe із хешем-заглушкою з нулів (засів підставляє справжній), bin, ярлик «revisor», persist data, checkver github, autoupdate з hash.url $url.sha256.
+5. README.md і README.uk.md повні (розділи pathmaster): можливості; встановлення (scoop; пряме завантаження з Get-FileHash і SmartScreen); клавіатура (гарячі клавіші з doc-11); де лежать дані (data\settings.db, data\profiles, persist у scoop, uninstall без --purge і з ним); чого revisor свідомо не робить; збірка із сирців; ліцензія.
+6. `tools/nvda/release_pass.py` (uk|en, exe) на revisor_nvda.py + рядок у tools/nvda/README.md.
+7. Документ Backlog «Випуск релізу» (guide, поруч із брифом): передумови, кроки за F1–F10 pathmaster з пастками, таблиця проходу NVDA обома мовами, пробний реліз, засів bucket і Excavator, що робити, коли щось пішло не так. Непройдений крок зупиняє реліз; заповнену копію не публікуємо.
+8. Бриф і ADR-0010 — правило версії rc і посилання на документ (за згодою автора).
+9. Локально: fmt, test (і `--release --target`), clippy -D warnings; кроки воркфлоу на PowerShell — на локальній release-збірці.
+10. За словом автора: `git flow feature finish` і push develop; CI на develop зелений.
+
+**B. Пробний реліз**
+11. `git flow release start 0.1.0`; дата в [0.1.0]; коміт.
+12. Анотований тег v0.1.0-rc.1 на release/0.1.0; за словом автора push тегу → pre-release.
+13. Перевірки: сторінка (два файли, текст розділу [0.1.0], pre-release), checkver його не бачить, завантаження (за словом) і Get-FileHash, SmartScreen на чистій машині (руками автора), scoop install з локального маніфесту, ярлик, профіль і знімок, прохід NVDA uk і en (зі згоди).
+
+**C. Реліз 0.1.0**
+14. За словом автора `git flow release finish 0.1.0` (тег v0.1.0 у main; ім'я тегу перевірити до push), за словом — push main, develop і тегу → реліз.
+15. scoop update з rc.1 на 0.1.0 з локального маніфесту → профілі й знімки на місці.
+16. Засів bucket (де клон — питання автору; push за словом) → CI bucket зелений; scoop install revisor → 0.1.0 з ярликом; перевстановлення без --purge лишає дані; Excavator (за словом) бачить revisor; checkver.ps1 revisor -f відтворює маніфест.
+17. Нотатки, підсумок, Done; коміт Backlog — у короткій feature-гілці (finish і push за словом).
+<!-- SECTION:PLAN:END -->
