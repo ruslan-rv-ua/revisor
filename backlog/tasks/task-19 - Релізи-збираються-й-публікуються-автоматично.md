@@ -5,7 +5,7 @@ status: In Progress
 assignee:
   - '@claude'
 created_date: '2026-10-30 17:04'
-updated_date: '2026-11-06 23:13'
+updated_date: '2026-11-06 23:57'
 labels: []
 milestone: m-1
 dependencies:
@@ -154,3 +154,19 @@ revisor встановлюється через scoop із bucket ruslan-rv-ua/s
 16. Засів bucket (де клон — питання автору; push за словом) → CI bucket зелений; scoop install revisor → 0.1.0 з ярликом; перевстановлення без --purge лишає дані; Excavator (за словом) бачить revisor; checkver.ps1 revisor -f відтворює маніфест.
 17. Нотатки, підсумок, Done; коміт Backlog — у короткій feature-гілці (finish і push за словом).
 <!-- SECTION:PLAN:END -->
+
+## Implementation Notes
+
+<!-- SECTION:NOTES:BEGIN -->
+2026-11-07, гілка feature/task-19-releases (від develop 2cef881): коміти b8b884c (план), ee626c2 (`.github/workflows/release.yml`), a3a7883 (CHANGELOG.md і `crates/revisor-core/tests/changelog.rs`), 78187cf (`packaging/scoop/revisor.json`), be73c82 (повні README.md і README.uk.md), b8e290c (`tools/nvda/release_pass.py` і рядок у tools/nvda/README.md), d0ece44 (документ «Випуск релізу», doc-18), 3d79dab (бриф і ADR-0010: правило версії rc, посилання на doc-18 — за згодою автора).
+
+Воркфлоу: усі кроки на PowerShell перевірено локально (скрипт-обгортка в скретчпаді сесії читає `run:` з release.yml і запускає їх, як раннер: `$ErrorActionPreference = 'stop'`, файл GITHUB_ENV). На локальній release-збірці тег v0.1.0 і v0.1.0-rc.1 проходять усі ворота (rc: VERSION=0.1.0, PRERELEASE=True, файл revisor-v0.1.0-rc.1-x64.exe); `.sha256` — 88 байтів «<hex64> *<ім'я>» без нового рядка, `sha256sum -c` каже OK; текст релізу без BOM, з тире, без рядків-посилань із низу файлу. Відмовляють як слід: тег v0.1.1 (версія), v0.1 (форма тегу), порожній і відсутній розділ [0.1.0], не-PE файл (таблиця імпорту не прочитана), python.exe (VCRUNTIME140 → «+crt-static was lost»), проксі cargo.exe (14 МБ → розмір), sha256sum.exe з Git (CompanyName '' → VERSIONINFO).
+
+Тести в release-профілі (`cargo test --workspace --locked --release`) проходять за 36 с і wxWidgets не перезбирають: тести й збірка ділять один вивід wxdragon-sys, як і міряв pathmaster. PDB: попри `strip = true` у `[profile.release]`, лінкер MSVC і далі пише revisor.pdb (41 МБ), тож артефакт PDB профілю змін не потребує. Дії: actions/checkout v7.0.1 = 3d3c42e5…, як у ci.yml; actions/upload-artifact v7.0.2 = cf430e030ddbb5b0abf93d22962f4752f3646cd9 (звірено з тегом через gh api; v7.0.2 від 2026-10-07). Регулярний вираз checkver для github-API — `(?:v|V)?([\d.-]+)` (локальний scoop 0.6.0): непозначений pre-release `v0.1.0-rc.1` він прочитав би як «0.1.0-», як і каже опис.
+
+Тест changelog.rs (6 тестів): граматика заголовків «## [» і самоперевірка на зразку, заголовок без «]» панікує, [Unreleased] зверху й під ним версія крейта, розділ версії має текст (той самий витяг, що й воркфлоу: без рядків-посилань унизу), у кожного випущеного заголовка є дата YYYY-MM-DD, посилання внизу — як у Keep a Changelog (compare між версіями, найстаріша — releases/tag). Перевірено, що падає: версія розділу 0.1.1 → 3 тести червоні; порожній розділ 0.1.0 → 1. Локально: fmt, clippy -D warnings чисто; тести 147 (+1 ignored) застосунку, 178 (+1 ignored) ядра, 6 changelog, 3 versioninfo.
+
+Пробний прогін `tools/nvda/release_pass.py` за згодою автора на локальній release-збірці (SHA-256 789ce4bf2da1fa1c94d690fc10bb02c459e35743b47f6f9c0d890879a1713f51), NVDA 2026.2: `uk` і `en` — `all heard`, код 0. Профіль через вікно й вибір теки (шлях і Enter: тека закривається першим Enter), підсумок «5 змін: додано 3, видалено 1, змінено 1. Розмір збільшився на 37 байтів.» / «5 changes: 3 added, 1 deleted, 1 modified. …», подробиці, «Показано 4 із 5.», «Показано 1 із 5.», F6, F1. Клавіатура вільна, тимчасову теку прибрано.
+
+Відкладене дрібне: у doc-18 пастка 2 каже «перший термінове виправлення» — виправити на «перше термінове виправлення» з наступним оновленням документа.
+<!-- SECTION:NOTES:END -->
