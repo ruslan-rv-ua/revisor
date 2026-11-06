@@ -9,7 +9,7 @@ use revisor_core::settings::{
 };
 
 use super::plural::{Category, category};
-use super::{Failure, Lang, Strings};
+use super::{Failure, Lang, Strings, in_sentence};
 use crate::commands::{CommandId, MenuId, Pane, Reason, SubmenuId};
 use crate::details::{Attribute, Inaccessibility, Property, Unreadable};
 use crate::difference::{
@@ -288,7 +288,7 @@ impl Strings for Uk {
     }
 
     fn folder_not_examined(&self, folder: &str, reason: &str) -> String {
-        format!("Теку «{folder}» не можна додати: revisor не може її перевірити: {reason}.")
+        format!("Теку «{folder}» не можна додати, бо revisor не може її перевірити: {reason}.")
     }
 
     fn replace_folders(&self, folder: &str, inside: &[String]) -> String {
@@ -349,27 +349,27 @@ impl Strings for Uk {
 
     fn failure(&self, failure: &Failure) -> String {
         match failure {
-            Failure::AccessDenied => "немає доступу: перевірте права на цей файл чи теку".into(),
+            Failure::AccessDenied => "немає доступу — перевірте права на цей файл чи теку".into(),
             Failure::InUse => "файл відкрито в іншій програмі, можливо, в іншій копії \
-                revisor: закрийте її й спробуйте ще раз"
+                revisor — закрийте її й спробуйте ще раз"
                 .into(),
-            Failure::DiskFull => "на диску немає місця: звільніть місце й спробуйте ще раз".into(),
+            Failure::DiskFull => "на диску немає місця — звільніть місце й спробуйте ще раз".into(),
             Failure::NewerVersion => {
-                "профіль створила новіша версія revisor: оновіть revisor".into()
+                "профіль створила новіша версія revisor — оновіть revisor".into()
             }
             Failure::NotAProfile => {
-                "це не файл профілю revisor: перенесіть його з теки профілів".into()
+                "це не файл профілю revisor — перенесіть його з теки профілів".into()
             }
             Failure::NotSettings => {
-                "це не файл налаштувань revisor: перенесіть його з теки data".into()
+                "це не файл налаштувань revisor — перенесіть його з теки data".into()
             }
             Failure::Cancelled => "дію скасовано".into(),
             Failure::SnapshotDeleted => "знімок тим часом видалено".into(),
             Failure::Other {
                 text,
                 code: Some(code),
-            } => format!("{text} (код {code})"),
-            Failure::Other { text, code: None } => text.clone(),
+            } => format!("{} (код {code})", in_sentence(text)),
+            Failure::Other { text, code: None } => in_sentence(text),
         }
     }
 
@@ -426,7 +426,7 @@ impl Strings for Uk {
     }
 
     fn folder_is_a_file(&self) -> &'static str {
-        "за цією адресою файл, а не тека"
+        "за цим шляхом файл, а не тека"
     }
 
     fn folder_unreachable(&self, reason: &str) -> String {
@@ -627,7 +627,7 @@ impl Strings for Uk {
     }
 
     fn waiting_for_database(&self) -> &'static str {
-        "Чекаю, доки звільниться база профілю…"
+        "Очікування бази профілю…"
     }
 
     fn comparison_finished(&self) -> &'static str {
@@ -675,7 +675,7 @@ impl Strings for Uk {
     }
 
     fn nothing_to_compare(&self) -> &'static str {
-        "Порівнювати знімок нема з чим: іншого знімка в профілі немає."
+        "Знімок не порівняно: іншого знімка в профілі немає."
     }
 
     fn column(&self, column: Column) -> &'static str {

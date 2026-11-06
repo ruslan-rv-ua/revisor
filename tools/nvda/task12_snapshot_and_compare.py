@@ -121,7 +121,7 @@ def phase(text):
         return None
     if text.startswith("Порівняння"):
         return "comparison"
-    if text.startswith("Чекаю"):
+    if text.startswith("Очікування"):
         return "waiting"
     if text.startswith("Збереження"):
         return "saving"

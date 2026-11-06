@@ -788,7 +788,9 @@ impl MainWindow {
         let s = self.s;
         match routed {
             Route::Run(id) => self.run(id),
-            Route::Refuse(id, reason) => self.say(&s.unavailable(s.command(id), s.reason(reason))),
+            Route::Refuse(id, reason) => {
+                self.say(&s.unavailable(&command(id).spoken_name(s), s.reason(reason)))
+            }
             Route::OnlyIn(key, pane) => self.say(&s.key_only_in(&key.name(s), pane)),
             Route::FocusPane(pane) => self.list(pane).set_focus(),
             Route::FocusLabel(LABEL_PROFILE) => self.profile.set_focus(),
@@ -858,7 +860,7 @@ impl MainWindow {
         let s = self.s;
         let available = (command(id).available)(&self.state.borrow());
         if let Err(reason) = available {
-            self.say(&s.unavailable(s.command(id), s.reason(reason)));
+            self.say(&s.unavailable(&command(id).spoken_name(s), s.reason(reason)));
             return true;
         }
         match id {

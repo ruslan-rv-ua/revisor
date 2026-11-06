@@ -327,7 +327,7 @@ mod tests {
             Shortcut::new(Key::ContextMenu).name(&Uk),
             "Клавіша контекстного меню"
         );
-        assert_eq!(Shortcut::new(Key::Space).ctrl().name(&En), "Ctrl+Space");
+        assert_eq!(Shortcut::new(Key::Space).ctrl().name(&En), "Ctrl+Spacebar");
         assert_eq!(Shortcut::new(Key::ContextMenu).name(&En), "Menu key");
     }
 }

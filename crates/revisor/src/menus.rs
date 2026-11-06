@@ -143,7 +143,7 @@ pub fn shortcuts_text(s: &dyn Strings) -> String {
                 if let Some((pane, key)) = c.list_key {
                     keys = format!("{keys}, {}", s.in_list(&key.name(s), pane));
                 }
-                Some(format!("{} — {keys}", c.name(s)))
+                Some(format!("{} — {keys}", c.spoken_name(s)))
             });
         if let Some(first) = lines.next() {
             text.push_str(s.menu(menu));
@@ -238,7 +238,9 @@ mod tests {
         let lines: Vec<&str> = uk.lines().collect();
         for expected in [
             "Файл",
-            "Новий профіль — Ctrl+N",
+            "Новий профіль… — Ctrl+N",
+            "Коментар… — F2",
+            "Порівняти з… — Ctrl+F7",
             "Вихід — Alt+F4",
             "Зробити знімок — F5",
             "Видалити знімки — Delete (лише в переліку знімків)",
