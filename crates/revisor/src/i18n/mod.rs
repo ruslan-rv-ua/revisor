@@ -3,6 +3,7 @@
 //! Every string is a method, and strings chosen by an id are an exhaustive `match`, so a
 //! language that lacks a string, or takes other parameters for it, does not compile.
 
+pub mod catalog;
 mod en;
 pub mod plural;
 mod uk;
