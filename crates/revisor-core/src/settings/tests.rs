@@ -32,6 +32,9 @@ fn a_new_settings_file_is_made_with_the_defaults() {
             descending: false
         }
     );
+    // The details of a change (TASK-14 #7, #13): attributes in words, and no warning.
+    assert_eq!(settings.attribute_format().unwrap(), AttributeFormat::Words);
+    assert!(!settings.warn_missing_entry().unwrap());
     let conn = rusqlite::Connection::open(db(&tmp)).unwrap();
     let version: i64 = conn
         .pragma_query_value(None, "user_version", |r| r.get(0))
@@ -114,10 +117,39 @@ fn the_view_of_the_difference_list_survives_a_restart() {
 }
 
 #[test]
+fn the_settings_of_the_details_survive_a_restart() {
+    let tmp = TempDir::new("settings");
+    {
+        let settings = Settings::open(&db(&tmp)).unwrap();
+        settings
+            .set_attribute_format(AttributeFormat::Letters)
+            .unwrap();
+        settings.set_warn_missing_entry(true).unwrap();
+    }
+    let settings = Settings::open(&db(&tmp)).unwrap();
+    assert_eq!(
+        settings.attribute_format().unwrap(),
+        AttributeFormat::Letters
+    );
+    assert!(settings.warn_missing_entry().unwrap());
+    settings
+        .set_attribute_format(AttributeFormat::Words)
+        .unwrap();
+    settings.set_warn_missing_entry(false).unwrap();
+    assert_eq!(settings.attribute_format().unwrap(), AttributeFormat::Words);
+    assert!(!settings.warn_missing_entry().unwrap());
+}
+
+#[test]
 fn values_are_stored_by_name() {
     for value in SizeFormat::ALL {
         assert_eq!(SizeFormat::parse(value.as_str()), Some(value));
     }
+    for value in AttributeFormat::ALL {
+        assert_eq!(AttributeFormat::parse(value.as_str()), Some(value));
+    }
+    assert_eq!(AttributeFormat::ALL[0], AttributeFormat::default());
+    assert_eq!(AttributeFormat::parse("hex"), None);
     for value in ChangeType::ALL {
         assert_eq!(ChangeType::parse(value.as_str()), Some(value));
     }
