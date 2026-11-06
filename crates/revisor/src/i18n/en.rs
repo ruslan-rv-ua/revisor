@@ -8,7 +8,7 @@ use revisor_core::settings::{
 };
 
 use super::plural::{Category, category};
-use super::{Failure, Lang, Strings};
+use super::{Failure, Lang, Strings, in_sentence};
 use crate::commands::{CommandId, MenuId, Pane, Reason, SubmenuId};
 use crate::details::{Attribute, Inaccessibility, Property, Unreadable};
 use crate::difference::{
@@ -122,8 +122,8 @@ impl Strings for En {
             Reason::SnapshotNotRunning => "no snapshot is being taken",
             Reason::ComparisonNotRunning => "no comparison is running",
             Reason::CompactionNotRunning => "no compaction is running",
-            Reason::CommentWaiting => "a comment is still waiting for the profile's database",
-            Reason::CommentNotWaiting => "no comment is waiting for the profile's database",
+            Reason::CommentWaiting => "a comment is still waiting for the profile database",
+            Reason::CommentNotWaiting => "no comment is waiting for the profile database",
             Reason::CompactionRunning => {
                 "a database is being compacted, and only one goes at a time"
             }
@@ -195,8 +195,8 @@ impl Strings for En {
 
     fn about(&self, version: &str) -> String {
         format!(
-            "revisor {version}\nLicence: MIT\nhttps://github.com/ruslan-rv-ua/revisor\n\n\
-             Third-party components and their licences:\n"
+            "revisor {version}\nLicense: MIT\nhttps://github.com/ruslan-rv-ua/revisor\n\n\
+             Third-party components and their licenses:\n"
         )
     }
 
@@ -288,7 +288,9 @@ impl Strings for En {
     }
 
     fn folder_not_examined(&self, folder: &str, reason: &str) -> String {
-        format!("The folder “{folder}” cannot be added: revisor cannot examine it: {reason}.")
+        format!(
+            "The folder “{folder}” cannot be added because revisor cannot examine it: {reason}."
+        )
     }
 
     fn replace_folders(&self, folder: &str, inside: &[String]) -> String {
@@ -350,28 +352,28 @@ impl Strings for En {
     fn failure(&self, failure: &Failure) -> String {
         match failure {
             Failure::AccessDenied => {
-                "access is denied: check the permissions of this file or folder".into()
+                "access is denied — check the permissions of this file or folder".into()
             }
             Failure::InUse => "the file is open in another program, maybe another copy of \
-                revisor: close it and try again"
+                revisor — close it and try again"
                 .into(),
-            Failure::DiskFull => "the disk is full: free some space and try again".into(),
+            Failure::DiskFull => "the disk is full — free some space and try again".into(),
             Failure::NewerVersion => {
-                "a newer version of revisor made this profile: update revisor".into()
+                "a newer version of revisor made this profile — update revisor".into()
             }
             Failure::NotAProfile => {
-                "this is not a revisor profile file: move it out of the folder of profiles".into()
+                "this is not a revisor profile file — move it out of the folder of profiles".into()
             }
             Failure::NotSettings => {
-                "this is not a revisor settings file: move it out of the data folder".into()
+                "this is not a revisor settings file — move it out of the data folder".into()
             }
-            Failure::Cancelled => "the action was cancelled".into(),
+            Failure::Cancelled => "the action was canceled".into(),
             Failure::SnapshotDeleted => "the snapshot has been deleted meanwhile".into(),
             Failure::Other {
                 text,
                 code: Some(code),
-            } => format!("{text} (code {code})"),
-            Failure::Other { text, code: None } => text.clone(),
+            } => format!("{} (code {code})", in_sentence(text)),
+            Failure::Other { text, code: None } => in_sentence(text),
         }
     }
 
@@ -436,7 +438,7 @@ impl Strings for En {
     }
 
     fn snapshot_cancelled(&self) -> &'static str {
-        "Snapshot cancelled."
+        "Snapshot canceled."
     }
 
     fn snapshot_failed(&self, reason: &str) -> String {
@@ -505,7 +507,7 @@ impl Strings for En {
     }
 
     fn comment_cancelled(&self) -> &'static str {
-        "Comment cancelled."
+        "Comment canceled."
     }
 
     fn comment_not_saved(&self, reason: &str) -> String {
@@ -546,7 +548,7 @@ impl Strings for En {
 
     fn compaction_cancelled(&self, profile: &str) -> String {
         format!(
-            "Compaction of the database of the profile “{profile}” cancelled. The snapshots \
+            "Compaction of the database of the profile “{profile}” canceled. The snapshots \
              are deleted, and the next snapshots will take their space."
         )
     }
@@ -634,7 +636,7 @@ impl Strings for En {
     }
 
     fn comparison_cancelled(&self) -> &'static str {
-        "Comparison cancelled."
+        "Comparison canceled."
     }
 
     fn comparison_failed(&self, reason: &str) -> String {
@@ -670,11 +672,11 @@ impl Strings for En {
     }
 
     fn snapshot_saved_comparison_cancelled(&self) -> &'static str {
-        "Snapshot saved, comparison cancelled."
+        "Snapshot saved, comparison canceled."
     }
 
     fn nothing_to_compare(&self) -> &'static str {
-        "There is nothing to compare the snapshot with: the profile has no other snapshot."
+        "The snapshot was not compared: the profile has no other snapshot."
     }
 
     fn column(&self, column: Column) -> &'static str {
@@ -978,15 +980,15 @@ impl Strings for En {
             Attribute::SparseFile => "sparse",
             Attribute::ReparsePoint => "reparse point",
             Attribute::Compressed => "compressed",
-            Attribute::Offline => "offline",
-            Attribute::NotContentIndexed => "not content indexed",
+            Attribute::Offline => "data not on the device",
+            Attribute::NotContentIndexed => "content not indexed",
             Attribute::Encrypted => "encrypted",
-            Attribute::IntegrityStream => "integrity stream",
-            Attribute::NoScrubData => "no scrub data",
-            Attribute::RecallOnOpen => "recall on open",
-            Attribute::Pinned => "pinned",
+            Attribute::IntegrityStream => "with integrity checking",
+            Attribute::NoScrubData => "no background integrity scan",
+            Attribute::RecallOnOpen => "downloaded when opened",
+            Attribute::Pinned => "always on this device",
             Attribute::Unpinned => "unpinned",
-            Attribute::RecallOnDataAccess => "recall on data access",
+            Attribute::RecallOnDataAccess => "online-only",
             Attribute::StrictlySequential => "strictly sequential",
         }
     }
@@ -1060,7 +1062,7 @@ impl Strings for En {
     }
 
     fn key_space(&self) -> &'static str {
-        "Space"
+        "Spacebar"
     }
     fn key_up(&self) -> &'static str {
         "Up Arrow"

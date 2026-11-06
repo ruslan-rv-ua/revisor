@@ -186,6 +186,16 @@ impl Command {
     pub fn name(&self, s: &dyn Strings) -> &'static str {
         s.command(self.id)
     }
+
+    /// The name as messages and the «Keyboard shortcuts» window say it: with the menu's
+    /// ellipsis, so that «Порівняти з…» does not end on its preposition (TASK-17).
+    pub fn spoken_name(&self, s: &dyn Strings) -> String {
+        let mut name = self.name(s).to_string();
+        if self.ellipsis {
+            name.push('…');
+        }
+        name
+    }
 }
 
 pub fn command(id: CommandId) -> &'static Command {

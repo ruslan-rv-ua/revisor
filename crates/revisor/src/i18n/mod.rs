@@ -52,6 +52,19 @@ pub enum Failure {
     },
 }
 
+/// The text of Windows or SQLite as the second half of a sentence (TASK-17): its first
+/// letter small, unless the word is all capitals, as "SQLite" or "NTFS" are not.
+fn in_sentence(text: &str) -> String {
+    let mut chars = text.chars();
+    match (chars.next(), chars.next()) {
+        (Some(first), second) if !second.is_some_and(char::is_uppercase) => first
+            .to_lowercase()
+            .chain(text[first.len_utf8()..].chars())
+            .collect(),
+        _ => text.to_string(),
+    }
+}
+
 /// All interface strings of one language.
 pub trait Strings {
     fn lang(&self) -> Lang;
@@ -584,16 +597,45 @@ mod tests {
         );
         assert_eq!(
             En.snapshot_saved_comparison_cancelled(),
-            "Snapshot saved, comparison cancelled."
+            "Snapshot saved, comparison canceled."
         );
         assert_eq!(
             Uk.nothing_to_compare(),
-            "Порівнювати знімок нема з чим: іншого знімка в профілі немає."
+            "Знімок не порівняно: іншого знімка в профілі немає."
         );
         assert_eq!(
             En.nothing_to_compare(),
-            "There is nothing to compare the snapshot with: the profile has no other snapshot."
+            "The snapshot was not compared: the profile has no other snapshot."
         );
+    }
+
+    #[test]
+    fn a_known_failure_gives_its_advice_after_a_dash() {
+        // The failure comes after a colon, so its advice takes a dash (TASK-17).
+        assert_eq!(
+            Uk.profile_not_saved(&Uk.failure(&Failure::AccessDenied)),
+            "Профіль не збережено: немає доступу — перевірте права на цей файл чи теку."
+        );
+        assert_eq!(
+            En.profile_not_saved(&En.failure(&Failure::DiskFull)),
+            "The profile was not saved: the disk is full — free some space and try again."
+        );
+        let other = Failure::Other {
+            text: "Не вдається знайти вказаний шлях".into(),
+            code: Some(3),
+        };
+        assert_eq!(
+            Uk.snapshot_failed(&Uk.failure(&other)),
+            "Знімок не збережено: не вдається знайти вказаний шлях (код 3)."
+        );
+    }
+
+    #[test]
+    fn the_text_of_windows_starts_small_unless_it_is_a_capitalized_word() {
+        assert_eq!(in_sentence("The system cannot"), "the system cannot");
+        assert_eq!(in_sentence("SQLite failed"), "SQLite failed");
+        assert_eq!(in_sentence("A"), "a");
+        assert_eq!(in_sentence(""), "");
     }
 
     #[test]
