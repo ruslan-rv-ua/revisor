@@ -22,6 +22,7 @@ import time
 REPO = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 EXE_SRC = os.path.join(REPO, "target", "release", "revisor.exe")
 STORE_RS = os.path.join(REPO, "crates", "revisor-core", "src", "store.rs")
+SETTINGS_RS = os.path.join(REPO, "crates", "revisor-core", "src", "settings.rs")
 LOG = r"C:\Temp\nvda.log"
 # The scratch folder: never the folder of the real exe, whose data\profiles holds real profiles.
 SCRATCH = os.path.join(tempfile.gettempdir(), "revisor-nvda")
@@ -34,11 +35,34 @@ k32 = ctypes.windll.kernel32
 
 
 # --- preparation ------------------------------------------------------------------------
+def rust_const(path, name):
+    """The value of ``const NAME`` in a Rust source of revisor, read so it never drifts from
+    the app: the text of a ``&str``, or an integer, such as ``0x5256_5354``."""
+    with open(path, encoding="utf-8") as f:
+        src = f.read()
+    value = re.search(rf'const {name}: [^=]+= ("(?:.*?)"|[0-9A-Fa-fx_]+);', src, re.S).group(1)
+    return value[1:-1] if value.startswith('"') else int(value.replace("_", ""), 0)
+
+
 def schema():
     """The profile database schema, taken from store.rs so it never drifts from the app."""
-    with open(STORE_RS, encoding="utf-8") as f:
-        src = f.read()
-    return re.search(r'const SCHEMA: &str = "(.*?)";', src, re.S).group(1)
+    return rust_const(STORE_RS, "SCHEMA")
+
+
+def make_settings(scratch, **values):
+    """Create ``data\\settings.db`` in the scratch folder holding ``values``, such as
+    ``language="en"``; its schema and marks come from settings.rs, as a profile's come from
+    store.rs. Returns its path."""
+    db = os.path.join(scratch, "data", "settings.db")
+    conn = sqlite3.connect(db)
+    conn.executescript(rust_const(SETTINGS_RS, "SCHEMA"))
+    conn.execute(f"PRAGMA application_id = {rust_const(SETTINGS_RS, 'APPLICATION_ID')}")
+    conn.execute(f"PRAGMA user_version = {rust_const(SETTINGS_RS, 'SCHEMA_VERSION')}")
+    for key_name, value in values.items():
+        conn.execute("INSERT INTO setting VALUES (?, ?)", (key_name, value))
+    conn.commit()
+    conn.close()
+    return db
 
 
 def make_profile(scratch, name, folders, exclusions=()):
@@ -178,6 +202,20 @@ def visible_controls(main, cls):
             if class_name(c) == cls and u32.IsWindowVisible(c) and has_size(c)]
 
 
+LVM_GETITEMCOUNT = 0x1004
+
+
+def item_count(h):
+    """How many rows the list view `h` has."""
+    return u32.SendMessageW(h, LVM_GETITEMCOUNT, 0, 0)
+
+
+def snapshot_list(main):
+    """The snapshot list of the main window: the first list view on screen."""
+    lists = visible_controls(main, "SysListView32")
+    return lists[0] if lists else None
+
+
 GWL_STYLE, ES_MULTILINE, ES_READONLY = -16, 0x0004, 0x0800
 
 
@@ -238,9 +276,11 @@ def foreground_title():
 # --- keys ---------------------------------------------------------------------------------
 KEYEVENTF_EXTENDEDKEY, KEYEVENTF_KEYUP, KEYEVENTF_UNICODE = 1, 2, 4
 VK_TAB, VK_RETURN, VK_ESCAPE, VK_MENU, VK_SPACE = 0x09, 0x0D, 0x1B, 0x12, 0x20
+VK_SHIFT, VK_CONTROL = 0x10, 0x11
 VK_END, VK_HOME, VK_LEFT, VK_UP, VK_RIGHT, VK_DOWN = 0x23, 0x24, 0x25, 0x26, 0x27, 0x28
 VK_INSERT, VK_DELETE, VK_APPS = 0x2D, 0x2E, 0x5D
-VK_F1, VK_F2, VK_F3, VK_F4, VK_F5 = 0x70, 0x71, 0x72, 0x73, 0x74
+VK_F1, VK_F2, VK_F3, VK_F4, VK_F5, VK_F6 = 0x70, 0x71, 0x72, 0x73, 0x74, 0x75
+VK_F7, VK_F8, VK_F9, VK_F10, VK_F11, VK_F12 = 0x76, 0x77, 0x78, 0x79, 0x7A, 0x7B
 # Keys that need the extended flag: without it wx sees the numpad keys, and NVDA takes numpad
 # arrows as its review keys.
 EXT = {VK_END, VK_HOME, VK_INSERT, VK_DELETE, VK_LEFT, VK_UP, VK_RIGHT, VK_DOWN, VK_APPS}
