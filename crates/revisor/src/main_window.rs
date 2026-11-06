@@ -19,7 +19,7 @@ use std::thread;
 use std::time::Duration;
 
 use revisor_core::compare::{self, CompareError, Difference};
-use revisor_core::job::{Lost, Outcome};
+use revisor_core::job::{Cancel, Lost, Outcome};
 use revisor_core::profiles::{self, ProfileError, ProfileFile, Unreadable};
 use revisor_core::settings::{
     DifferenceSort, FocusAfterComparison, FocusAfterSnapshot, Language, Settings,
@@ -38,7 +38,7 @@ use crate::failure;
 use crate::help;
 use crate::i18n::Strings;
 use crate::jobs::{
-    COMPARISON_SHOWN_AFTER, Ended, Event, Jobs, Kind, Shown, Superseded, ThenCompare,
+    COMPARISON_SHOWN_AFTER, Comment, Ended, Event, Jobs, Kind, Shown, Superseded, ThenCompare,
 };
 use crate::keyboard::{Control, Focus, Route, route};
 use crate::keys::Shortcut;
@@ -71,14 +71,6 @@ const FIRST_COMMAND_ID: i32 = 1000;
 
 /// How often the progress of a snapshot is shown, in milliseconds.
 const PROGRESS_INTERVAL: i32 = 100;
-
-/// How long a comment waits for the snapshot that is writing the profile's database
-/// (TASK-9 #29): the save's commit is a matter of seconds.
-const COMMENT_TIMEOUT: Duration = Duration::from_secs(60);
-
-/// How long a revisor started while another compacts a profile waits between its looks
-/// at the profile (TASK-9 #30).
-const BUSY_RETRY: Duration = Duration::from_secs(1);
 
 /// How long a comparison runs before its progress gets a bar with the percent done
 /// (TASK-11 #8); the progress row itself shows it after [`crate::jobs::COMPARISON_SHOWN_AFTER`].
@@ -144,6 +136,18 @@ fn cancel_command(kind: Kind) -> CommandId {
         Kind::Snapshot => CommandId::CancelSnapshot,
         Kind::Comparison => CommandId::CancelComparison,
         Kind::Compaction => CommandId::CancelCompaction,
+        Kind::Comment => CommandId::CancelComment,
+    }
+}
+
+/// The access key of the progress row's button while it shows a job of `kind`: the
+/// letter of the command it presses, but for a comment waiting for the database
+/// (TASK-24), whose button is «Скасувати (N)» like that of a snapshot: no letter of
+/// «Cancel comment» is free in the main window, where M is the field «Порівняння».
+fn cancel_access(kind: Kind) -> u8 {
+    match kind {
+        Kind::Comment => cancel_snapshot_access(),
+        kind => command(cancel_command(kind)).access,
     }
 }
 
@@ -553,7 +557,8 @@ impl MainWindow {
 
         // Closing during a snapshot cancels it, so it asks first (TASK-8 #26); a close
         // that cannot be refused, as at a shutdown, stops the snapshot without asking. A
-        // comparison is cancelled without a question and not waited for (TASK-11 #18).
+        // comparison is cancelled without a question and not waited for (TASK-11 #18),
+        // and so is a comment waiting for the database (TASK-24 #4).
         // A compaction goes on behind the hidden window, and the process ends with it
         // (TASK-9 #30); a close that cannot be refused interrupts it instead.
         let w = Rc::clone(self);
@@ -573,6 +578,7 @@ impl MainWindow {
                 };
                 if may_close {
                     w.jobs.borrow().cancel(Kind::Comparison);
+                    w.jobs.borrow().cancel(Kind::Comment);
                     w.finish_compaction_hidden(!can_veto);
                     event.skip(true);
                 } else {
@@ -662,7 +668,7 @@ impl MainWindow {
     /// left empty holds 0, which is no letter.
     fn labels(&self) -> Vec<u8> {
         let (progress, cancel) = match self.shown_kind() {
-            Some(kind) => (PROGRESS_ACCESS, command(cancel_command(kind)).access),
+            Some(kind) => (PROGRESS_ACCESS, cancel_access(kind)),
             None => (0, 0),
         };
         let mut labels = vec![
@@ -874,6 +880,7 @@ impl MainWindow {
             CommandId::CompareWithPrevious => self.compare_with_previous(),
             CommandId::CompareWith => self.compare_with(),
             CommandId::CancelComparison => self.cancel_comparison(),
+            CommandId::CancelComment => self.jobs.borrow().cancel(Kind::Comment),
             CommandId::FilterByText => self.filter_by_text(),
             CommandId::ShowAdded => self.toggle_type(ChangeType::Added),
             CommandId::ShowDeleted => self.toggle_type(ChangeType::Deleted),
@@ -952,37 +959,36 @@ impl MainWindow {
     /// The profiles in the folder of profiles and the files there that could not be
     /// opened. A profile whose database this revisor is compacting is known already; one
     /// another revisor is compacting is waited for before the window shows (TASK-9 #30),
-    /// and reported as in use once it is shown.
+    /// by the rule of the core for a busy database (ADR-0012), and reported as in use
+    /// once it is shown.
     fn list_profiles(&self) -> (Vec<ProfileFile>, Vec<Unreadable>) {
         let s = self.s;
-        loop {
-            let (mut found, unreadable) = match profiles::list(&self.profiles_dir) {
-                Ok(listed) => listed,
-                Err(e) => {
-                    let folder = self.profiles_dir.to_string_lossy();
-                    self.say(&s.profiles_not_listed(&folder, &s.failure(&failure::of_io(&e))));
-                    return (Vec::new(), Vec::new());
-                }
-            };
-            let mut others = Vec::new();
-            let mut busy_elsewhere = Vec::new();
-            for u in unreadable {
-                if !u.error.is_busy() {
-                    others.push(u);
-                    continue;
-                }
-                let jobs = self.jobs.borrow();
-                match jobs.closed_profile(&u.path) {
-                    Some((profile, _)) => found.push(profile.clone()),
-                    None => busy_elsewhere.push(u),
-                }
+        let listed = if self.frame.is_shown() {
+            profiles::list(&self.profiles_dir)
+        } else {
+            // Nothing cancels the wait at the start: the window is not there yet.
+            let jobs = self.jobs.borrow();
+            profiles::list_when_free(&self.profiles_dir, &Cancel::new(), |path| {
+                jobs.closed_profile(path).is_some()
+            })
+        };
+        let (mut found, unreadable) = match listed {
+            Ok(listed) => listed,
+            Err(e) => {
+                let folder = self.profiles_dir.to_string_lossy();
+                self.say(&s.profiles_not_listed(&folder, &s.failure(&failure::of_io(&e))));
+                return (Vec::new(), Vec::new());
             }
-            if busy_elsewhere.is_empty() || self.frame.is_shown() {
-                others.extend(busy_elsewhere);
-                return (found, others);
+        };
+        let mut others = Vec::new();
+        for u in unreadable {
+            let jobs = self.jobs.borrow();
+            match jobs.closed_profile(&u.path).filter(|_| u.error.is_busy()) {
+                Some((profile, _)) => found.push(profile.clone()),
+                None => others.push(u),
             }
-            thread::sleep(BUSY_RETRY);
         }
+        (found, others)
     }
 
     /// Opens the profile at position `index` of the profile box, or none: the title, the
@@ -1375,8 +1381,10 @@ impl MainWindow {
         answer
     }
 
-    /// Asks for the current snapshot's comment and keeps it (TASK-9 #7). While a snapshot
-    /// is being saved, the write waits for it (#29).
+    /// Asks for the current snapshot's comment and keeps it (TASK-9 #7). A database
+    /// another connection holds — a snapshot being saved (#29), another revisor
+    /// compacting it — is waited for in the background, which the progress row shows and
+    /// «Скасувати коментар» cancels (TASK-24).
     fn comment(&self) {
         let s = self.s;
         let title = s.command(CommandId::Comment);
@@ -1401,30 +1409,72 @@ impl MainWindow {
         let Some(text) = asked else {
             return;
         };
-        let comment = (!text.is_empty()).then_some(text);
-        let written = Store::open_with_timeout(&open.path, COMMENT_TIMEOUT)
-            .and_then(|mut store| store.set_comment(info.id, comment.as_deref()));
+        let comment = Comment {
+            id: info.id,
+            comment: (!text.is_empty()).then_some(text),
+        };
+        let written = self
+            .jobs
+            .borrow_mut()
+            .comment(open.clone(), comment.clone());
         match written {
-            Ok(()) => {
+            // It waits for the database; the wait is said once the command is over.
+            None => self.sync_jobs(),
+            Some(Ok(())) => self.comment_saved(&open, comment),
+            Some(Err(e)) => self.comment_failed(&s.failure(&failure::of_store(&e))),
+        }
+    }
+
+    /// Shows the comment saved in the snapshot list, if its profile is open, and says so.
+    fn comment_saved(&self, profile: &ProfileFile, comment: Comment) {
+        let s = self.s;
+        let removed = comment.comment.is_none();
+        if self.is_open(profile) {
+            let row = self.rows.borrow().iter().position(|r| r.id == comment.id);
+            if let Some(row) = row {
                 self.snapshots.set_item_text_by_column(
                     row as i64,
                     1,
-                    comment.as_deref().unwrap_or_default(),
+                    comment.comment.as_deref().unwrap_or_default(),
                 );
-                let removed = comment.is_none();
-                self.rows.borrow_mut()[row].comment = comment;
+                self.rows.borrow_mut()[row].comment = comment.comment;
                 self.refresh_pair();
                 self.describe_difference();
-                self.say(if removed {
-                    s.comment_removed()
-                } else {
-                    s.comment_saved()
-                });
             }
-            Err(e) => {
-                let reason = s.failure(&failure::of_store(&e));
-                tell(&self.frame, s, title, &s.comment_not_saved(&reason));
-            }
+        }
+        self.say(if removed {
+            s.comment_removed()
+        } else {
+            s.comment_saved()
+        });
+    }
+
+    fn comment_failed(&self, reason: &str) {
+        let s = self.s;
+        let title = s.command(CommandId::Comment);
+        tell(&self.frame, s, title, &s.comment_not_saved(reason));
+    }
+
+    /// Ends a comment that waited for the database (TASK-24): saved, cancelled — the
+    /// earlier comment stays — or failed.
+    fn comment_ended(&self, ended: Ended<Outcome<(), StoreError>>, comment: Comment) {
+        let s = self.s;
+        self.sync_jobs();
+        match ended.outcome {
+            Ok(Outcome::Done(())) => self.comment_saved(&ended.profile, comment),
+            Ok(Outcome::Cancelled) => self.say(s.comment_cancelled()),
+            Ok(Outcome::Failed(e)) => self.comment_failed(&s.failure(&failure::of_store(&e))),
+            Err(Lost) => self.comment_failed(s.comment_stopped()),
+        }
+    }
+
+    /// Says that a comment waits for the database, once, at the end of the event that
+    /// found it waiting: a comment that waited only for the save that ended in the same
+    /// event says no more than its result (TASK-24 #1, #2).
+    fn say_comment_waiting(&self) {
+        let started = self.jobs.borrow_mut().comment_started_waiting();
+        if started {
+            self.say(self.s.waiting_for_database());
         }
     }
 
@@ -2209,8 +2259,10 @@ impl MainWindow {
                     Event::Snapshot(ended, then) => self.snapshot_ended(ended, then, false),
                     Event::Comparison(ended, after) => self.comparison_ended(ended, after),
                     Event::Compaction(ended) => self.compaction_ended(ended),
+                    Event::Comment(ended, comment) => self.comment_ended(ended, comment),
                 }
             }
+            self.say_comment_waiting();
             self.show_job_progress();
         });
     }
@@ -2322,6 +2374,11 @@ impl MainWindow {
                 Kind::Comparison,
                 self.comparison_progress_text(progress, elapsed),
                 button_label(s, s.cancel(), cancel_comparison_access(), false),
+            )),
+            Some(Shown::Comment) => Some((
+                Kind::Comment,
+                s.waiting_for_database().to_string(),
+                button_label(s, s.cancel(), cancel_access(Kind::Comment), false),
             )),
             Some(Shown::Compaction(profile)) => Some((
                 Kind::Compaction,
@@ -2497,9 +2554,13 @@ impl MainWindow {
         true
     }
 
-    /// Stops the snapshot being taken, if there is one, without asking. A snapshot that
-    /// ended meanwhile, while a question was up, is reported as it ended.
+    /// Stops the snapshot being taken, if there is one, without asking, as revisor is
+    /// about to close or restart. A snapshot that ended meanwhile, while a question was
+    /// up, is reported as it ended. A comment waiting for the database is cancelled
+    /// first, so that the database the stopped snapshot leaves free does not take it
+    /// (TASK-24 #4).
     fn stop_snapshot(&self) {
+        self.jobs.borrow().cancel(Kind::Comment);
         let stopped = self.jobs.borrow_mut().stop_snapshot();
         if let Some(ended) = stopped {
             self.timer.stop();

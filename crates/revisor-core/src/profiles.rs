@@ -6,9 +6,11 @@ use std::fmt;
 use std::fs;
 use std::io;
 use std::path::{Path, PathBuf};
+use std::time::Duration;
 
+use crate::job::Cancel;
 use crate::names::eq_ignore_case;
-use crate::store::{ProfileSettings, SnapshotInfo, Store, StoreError};
+use crate::store::{self, ProfileSettings, SnapshotInfo, Store, StoreError};
 
 /// Names Windows keeps for devices, with or without an extension.
 const DEVICE_NAMES: [&str; 28] = [
@@ -62,6 +64,37 @@ impl From<StoreError> for ProfileError {
 /// The profiles in `dir`, in no particular order, and the database files there that are
 /// not profiles revisor can open. A folder that does not exist holds no profiles.
 pub fn list(dir: &Path) -> io::Result<(Vec<ProfileFile>, Vec<Unreadable>)> {
+    list_reading(dir, settings_of)
+}
+
+/// The profiles in `dir`, as [`list`] gives them, once the files another connection
+/// holds are free (TASK-9 #30, TASK-24): a database file that is busy — another revisor
+/// compacting it — is waited for by the one rule of the store,
+/// [`store::retry_while_busy`], until it can be read or `cancel` is cancelled, which
+/// leaves it unreadable. The files `known` names are not waited for: their profiles are
+/// known already, such as one this revisor is compacting, and they stay unreadable as
+/// busy for the caller to tell.
+pub fn list_when_free(
+    dir: &Path,
+    cancel: &Cancel,
+    known: impl Fn(&Path) -> bool,
+) -> io::Result<(Vec<ProfileFile>, Vec<Unreadable>)> {
+    let read_now = |path: &Path| Store::open_with_timeout(path, Duration::ZERO)?.settings();
+    list_reading(dir, |path| {
+        if known(path) {
+            read_now(path)
+        } else {
+            store::retry_while_busy(cancel, |_| {}, || read_now(path))
+        }
+    })
+}
+
+/// The profiles in `dir` and the files there that are not profiles, with `settings`
+/// reading the settings of each database file.
+fn list_reading(
+    dir: &Path,
+    settings: impl Fn(&Path) -> Result<ProfileSettings, StoreError>,
+) -> io::Result<(Vec<ProfileFile>, Vec<Unreadable>)> {
     let mut profiles = Vec::new();
     let mut unreadable = Vec::new();
     let entries = match fs::read_dir(dir) {
@@ -78,7 +111,7 @@ pub fn list(dir: &Path) -> io::Result<(Vec<ProfileFile>, Vec<Unreadable>)> {
         if !is_db || !entry.file_type()?.is_file() {
             continue;
         }
-        match settings_of(&path) {
+        match settings(&path) {
             Ok(settings) => profiles.push(ProfileFile {
                 path,
                 name: settings.name,

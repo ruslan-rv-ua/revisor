@@ -34,6 +34,11 @@ pub struct AppState {
     /// Whether the database being compacted is the open profile's, which is then closed
     /// even to reading (TASK-9).
     pub compacting_open_profile: bool,
+    /// Whether a comment waits for the database of its profile (TASK-24).
+    pub comment_waiting: bool,
+    /// Whether the comment waiting is of the open profile, which then cannot be changed
+    /// nor its snapshots deleted.
+    pub commenting_open_profile: bool,
     /// Whether revisor runs as administrator (TASK-8).
     pub elevated: bool,
     /// Which types of rows the difference list shows, indexed by `ChangeType`, and in
@@ -50,7 +55,7 @@ impl AppState {
         }
     }
 
-    /// Takes the flags of the background jobs, all five at once, as the jobs give them
+    /// Takes the flags of the background jobs, all at once, as the jobs give them
     /// for the open profile (ADR-0011).
     pub fn set_jobs(&mut self, flags: Flags) {
         let Flags {
@@ -59,12 +64,16 @@ impl AppState {
             comparison_running,
             compaction_running,
             compacting_open_profile,
+            comment_waiting,
+            commenting_open_profile,
         } = flags;
         self.snapshot_running = snapshot_running;
         self.snapshotting_open_profile = snapshotting_open_profile;
         self.comparison_running = comparison_running;
         self.compaction_running = compaction_running;
         self.compacting_open_profile = compacting_open_profile;
+        self.comment_waiting = comment_waiting;
+        self.commenting_open_profile = commenting_open_profile;
     }
 
     pub fn shows(&self, change: ChangeType) -> bool {

@@ -818,3 +818,109 @@ fn a_cancel_ends_the_wait_for_a_busy_database() {
     assert_eq!(waits, [true]);
     cancelling.join().unwrap();
 }
+
+#[test]
+fn a_cancel_during_the_pause_ends_the_wait_before_the_next_try() {
+    let tmp = TempDir::new("store");
+    drop(create(&tmp.db()));
+    let _lock = lock_exclusively(&tmp);
+    let cancel = Arc::new(Cancel::new());
+    let cancelling = {
+        let cancel = Arc::clone(&cancel);
+        // In the middle of the first pause.
+        thread::spawn(move || {
+            thread::sleep(BUSY_RETRY / 2);
+            cancel.cancel();
+        })
+    };
+    let mut tries = 0;
+    let result = retry_while_busy(
+        &cancel,
+        |_| {},
+        || {
+            tries += 1;
+            Store::open_with_timeout(&tmp.db(), Duration::ZERO)
+        },
+    );
+    assert!(matches!(result, Err(StoreError::Cancelled)));
+    assert_eq!(tries, 1, "a cancelled wait tried again");
+    cancelling.join().unwrap();
+}
+
+/// Polls `job` until its comment waits for the database.
+fn wait_until_waiting(job: &Job<CommentWork>) {
+    let deadline = Instant::now() + Duration::from_secs(60);
+    while !job.progress().is_waiting() {
+        assert!(job.is_running(), "the comment ended without waiting");
+        assert!(Instant::now() < deadline, "the comment never waited");
+        thread::sleep(Duration::from_millis(5));
+    }
+}
+
+fn comment_of(db: &Path, id: i64) -> Option<String> {
+    let store = Store::open(db).unwrap();
+    let snapshot = store.snapshot(id).unwrap().unwrap();
+    snapshot.comment
+}
+
+#[test]
+fn a_comment_on_a_free_database_is_written_at_once() {
+    let tmp = TempDir::new("store");
+    let mut store = create(&tmp.db());
+    let id = save(&mut store, &synthetic(10));
+    drop(store);
+    write_comment(&tmp.db(), id, Some("Перед оновленням")).unwrap();
+    assert_eq!(
+        comment_of(&tmp.db(), id).as_deref(),
+        Some("Перед оновленням")
+    );
+    write_comment(&tmp.db(), id, None).unwrap();
+    assert_eq!(comment_of(&tmp.db(), id), None);
+}
+
+#[test]
+fn a_comment_on_a_busy_database_fails_at_once_as_busy() {
+    let tmp = TempDir::new("store");
+    let mut store = create(&tmp.db());
+    let id = save(&mut store, &synthetic(10));
+    drop(store);
+    let _lock = lock_exclusively(&tmp);
+    let trying = Instant::now();
+    let error = write_comment(&tmp.db(), id, Some("x")).unwrap_err();
+    assert!(error.is_busy(), "{error:?}");
+    assert!(trying.elapsed() < Duration::from_secs(1), "SQLite waited");
+}
+
+#[test]
+fn a_comment_waits_for_a_busy_database_and_is_written_once_it_is_free() {
+    let tmp = TempDir::new("store");
+    let mut store = create(&tmp.db());
+    let id = save(&mut store, &synthetic(10));
+    drop(store);
+    let lock = lock_exclusively(&tmp);
+    let mut job = Job::start(CommentWork::new(&tmp.db(), id, Some("Після".into())));
+    wait_until_waiting(&job);
+    // Held for longer than SQLite's own wait would be, the database is still waited for.
+    thread::sleep(BUSY_RETRY * 3);
+    assert!(job.poll().is_none(), "the comment did not wait");
+    drop(lock);
+    assert!(matches!(poll_until_ended(&mut job), Ok(Outcome::Done(()))));
+    assert!(!job.progress().is_waiting());
+    assert_eq!(comment_of(&tmp.db(), id).as_deref(), Some("Після"));
+}
+
+#[test]
+fn a_comment_cancelled_while_it_waits_is_not_written() {
+    let tmp = TempDir::new("store");
+    let mut store = create(&tmp.db());
+    let id = save(&mut store, &synthetic(10));
+    store.set_comment(id, Some("Раніший")).unwrap();
+    drop(store);
+    let lock = lock_exclusively(&tmp);
+    let mut job = Job::start(CommentWork::new(&tmp.db(), id, Some("Новий".into())));
+    wait_until_waiting(&job);
+    job.cancel();
+    assert!(matches!(poll_until_ended(&mut job), Ok(Outcome::Cancelled)));
+    drop(lock);
+    assert_eq!(comment_of(&tmp.db(), id).as_deref(), Some("Раніший"));
+}

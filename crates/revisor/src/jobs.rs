@@ -9,15 +9,21 @@
 //! the comparison the snapshot's report, which waits for the difference. The command is
 //! a comparison from its start, so the rule «the later comparison is the one wanted»
 //! (TASK-11 #15) counts it from then.
+//!
+//! A comment (TASK-24) is a job only while the database is busy: it is tried at once,
+//! and a database another connection holds is waited for on the job's thread by the one
+//! rule of the store (ADR-0012), which the window shows and can cancel.
 
 use std::path::Path;
 use std::time::Duration;
 
 use revisor_core::compare::{self, CompareError, CompareWork, Difference};
-use revisor_core::job::{Job, Lost, Outcome};
+use revisor_core::job::{self, Job, Lost, Outcome};
 use revisor_core::profiles::ProfileFile;
 use revisor_core::snapshot::{self, Report, SnapshotError, SnapshotWork};
-use revisor_core::store::{Compacted, Compaction, SnapshotInfo, Store, StoreError};
+use revisor_core::store::{
+    self, CommentWork, Compacted, Compaction, SnapshotInfo, Store, StoreError,
+};
 
 /// How long a comparison runs before the progress row shows it (TASK-11 #7): a shorter
 /// one shows no progress at all.
@@ -29,11 +35,12 @@ pub enum Kind {
     Snapshot,
     Comparison,
     Compaction,
+    Comment,
 }
 
-/// What the progress row shows: the progress of the snapshot being taken, else that of
-/// a comparison that has run for a second or more, else the profile whose database is
-/// being compacted.
+/// What the progress row shows: the progress of the snapshot being taken, else a comment
+/// waiting for the database, else the progress of a comparison that has run for a second
+/// or more, else the profile whose database is being compacted.
 #[derive(Clone, Copy, Debug)]
 pub enum Shown<'a> {
     Snapshot(&'a snapshot::Progress),
@@ -43,6 +50,8 @@ pub enum Shown<'a> {
         elapsed: Duration,
     },
     Compaction(&'a ProfileFile),
+    /// A comment waits for the database of its profile (TASK-24).
+    Comment,
 }
 
 impl Shown<'_> {
@@ -51,6 +60,7 @@ impl Shown<'_> {
             Shown::Snapshot(_) => Kind::Snapshot,
             Shown::Comparison { .. } => Kind::Comparison,
             Shown::Compaction(_) => Kind::Compaction,
+            Shown::Comment => Kind::Comment,
         }
     }
 }
@@ -67,6 +77,11 @@ pub struct Flags {
     /// The database being compacted is the open profile's, which is then closed even to
     /// reading (TASK-9).
     pub compacting_open_profile: bool,
+    /// A comment waits for the database of its profile; one goes at a time (TASK-24).
+    pub comment_waiting: bool,
+    /// The comment waiting is of the open profile, which then cannot be changed nor its
+    /// snapshots deleted, as during a snapshot of it.
+    pub commenting_open_profile: bool,
 }
 
 /// A job that has ended: the profile it was of, and how it ended; `Err(Lost)` when its
@@ -94,6 +109,13 @@ pub struct Superseded {
     pub report: Report,
 }
 
+/// The comment of a snapshot: the snapshot `id` is to have `comment`, or none.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct Comment {
+    pub id: i64,
+    pub comment: Option<String>,
+}
+
 /// A job that [`Jobs::poll`] found ended.
 #[derive(Debug)]
 pub enum Event {
@@ -104,6 +126,8 @@ pub enum Event {
     /// which waited for it (TASK-12 #8).
     Comparison(Ended<Outcome<Difference, CompareError>>, Option<Report>),
     Compaction(Ended<Outcome<Compacted, StoreError>>),
+    /// A comment that waited for the database ended (TASK-24).
+    Comment(Ended<Outcome<(), StoreError>>, Comment),
 }
 
 /// A snapshot being taken, the profile it is of, and, for the snapshot of «Знімок +
@@ -131,12 +155,22 @@ struct Compacting {
     job: Job<Compaction>,
 }
 
+/// A comment waiting for the database of its profile.
+struct Commenting {
+    profile: ProfileFile,
+    comment: Comment,
+    job: Job<CommentWork>,
+    /// Whether the window has said that the comment waits.
+    announced: bool,
+}
+
 /// The background jobs, one place for each kind.
 #[derive(Default)]
 pub struct Jobs {
     snapshot: Option<Snapshotting>,
     comparison: Option<Comparing>,
     compaction: Option<Compacting>,
+    comment: Option<Commenting>,
 }
 
 impl Jobs {
@@ -242,6 +276,46 @@ impl Jobs {
         });
     }
 
+    /// Writes `comment` in the database of `profile` (TASK-24). A database that is free
+    /// takes it at once, so the comment is over as the command is, and gives the result;
+    /// a busy one makes it a job, which waits for the database and ends through
+    /// [`Jobs::poll`], and gives `None`. The commands see to it that no other comment
+    /// waits.
+    pub fn comment(
+        &mut self,
+        profile: ProfileFile,
+        comment: Comment,
+    ) -> Option<Result<(), StoreError>> {
+        debug_assert!(self.comment.is_none(), "one comment at a time");
+        match store::write_comment(&profile.path, comment.id, comment.comment.as_deref()) {
+            Err(e) if e.is_busy() => {
+                let work = CommentWork::new(&profile.path, comment.id, comment.comment.clone());
+                self.comment = Some(Commenting {
+                    profile,
+                    comment,
+                    job: Job::start(work),
+                    announced: false,
+                });
+                None
+            }
+            written => Some(written),
+        }
+    }
+
+    /// Whether a comment has started to wait for the database since the last look, which
+    /// the window then says (TASK-24 #2): true once for each comment that waits. The
+    /// window looks at the end of every event, after [`Jobs::poll`], so a comment that
+    /// waited only for the save that ended in the same event is never said to wait.
+    pub fn comment_started_waiting(&mut self) -> bool {
+        match &mut self.comment {
+            Some(commenting) if !commenting.announced => {
+                commenting.announced = true;
+                true
+            }
+            _ => false,
+        }
+    }
+
     /// Asks the job of `kind` to stop, if one runs; its end comes through
     /// [`Jobs::poll`], like any other.
     pub fn cancel(&self, kind: Kind) {
@@ -261,17 +335,40 @@ impl Jobs {
                     compacting.job.cancel();
                 }
             }
+            Kind::Comment => {
+                if let Some(commenting) = &self.comment {
+                    commenting.job.cancel();
+                }
+            }
         }
     }
 
-    /// The jobs that have ended, a snapshot before a comparison before a compaction;
-    /// they leave their places. A snapshot whose save is over is waited for a moment, so
-    /// that it ends with the command that waited for its save (TASK-21).
+    /// The jobs that have ended, a comment before a snapshot before a comparison before
+    /// a compaction; they leave their places. A snapshot whose save is over is waited for
+    /// a moment, so that it ends with the command that waited for its save (TASK-21); so
+    /// is a comment that waited for the save of a snapshot of its profile, once that
+    /// snapshot has ended, so that the two are said together, the comment first
+    /// (TASK-24 #1).
     pub fn poll(&mut self) -> Vec<Event> {
         let mut ended = Vec::new();
+        let mut snapshot_of = None;
         if let Some(outcome) = self.snapshot.as_mut().and_then(|s| s.job.poll()) {
             let Snapshotting { profile, then, .. } = self.snapshot.take().expect("polled just now");
+            snapshot_of = Some(profile.path.clone());
             ended.push(Event::Snapshot(Ended { profile, outcome }, then));
+        }
+        let comment_outcome = self.comment.as_mut().and_then(|c| {
+            if snapshot_of.as_ref() == Some(&c.profile.path) {
+                c.job.poll_within(job::GRACE)
+            } else {
+                c.job.poll()
+            }
+        });
+        if let Some(outcome) = comment_outcome {
+            let Commenting {
+                profile, comment, ..
+            } = self.comment.take().expect("polled just now");
+            ended.insert(0, Event::Comment(Ended { profile, outcome }, comment));
         }
         if let Some(outcome) = self.comparison.as_mut().and_then(|c| c.job.poll()) {
             let Comparing { profile, after, .. } = self.comparison.take().expect("polled just now");
@@ -284,13 +381,17 @@ impl Jobs {
         ended
     }
 
-    /// What the progress row shows: a snapshot before a comparison that has run for
-    /// [`COMPARISON_SHOWN_AFTER`] or longer, before a compaction. The comparison of
+    /// What the progress row shows: a snapshot before a comment waiting for the database
+    /// (TASK-24), before a comparison that has run for [`COMPARISON_SHOWN_AFTER`] or
+    /// longer, before a compaction. The comparison of
     /// «Знімок + порівняння» shows at once: it takes the row over from its snapshot, so
     /// the row, and the focus on it, stay (TASK-12 #5, #9).
     pub fn shown(&self) -> Option<Shown<'_>> {
         if let Some(snapshotting) = &self.snapshot {
             return Some(Shown::Snapshot(snapshotting.job.progress()));
+        }
+        if self.comment.is_some() {
+            return Some(Shown::Comment);
         }
         if let Some(comparing) = &self.comparison {
             let elapsed = comparing.job.elapsed();
@@ -312,12 +413,16 @@ impl Jobs {
             Kind::Snapshot => self.snapshot.is_some(),
             Kind::Comparison => self.comparison.is_some(),
             Kind::Compaction => self.compaction.is_some(),
+            Kind::Comment => self.comment.is_some(),
         }
     }
 
     /// Whether any job runs.
     pub fn any(&self) -> bool {
-        self.snapshot.is_some() || self.comparison.is_some() || self.compaction.is_some()
+        self.snapshot.is_some()
+            || self.comparison.is_some()
+            || self.compaction.is_some()
+            || self.comment.is_some()
     }
 
     /// The flags of the state, with `open` the database of the open profile.
@@ -332,6 +437,8 @@ impl Jobs {
                 .compaction
                 .as_ref()
                 .is_some_and(|c| is_open(&c.profile)),
+            comment_waiting: self.comment.is_some(),
+            commenting_open_profile: self.comment.as_ref().is_some_and(|c| is_open(&c.profile)),
         }
     }
 
@@ -352,6 +459,7 @@ impl Jobs {
             self.snapshot.as_mut().map(|s| &mut s.profile),
             self.comparison.as_mut().map(|c| &mut c.profile),
             self.compaction.as_mut().map(|c| &mut c.profile),
+            self.comment.as_mut().map(|c| &mut c.profile),
         ];
         for place in places.into_iter().flatten() {
             if place.path == old {
@@ -480,17 +588,37 @@ mod tests {
         }
     }
 
+    /// How long a test waits for a job before it fails: far longer than any job of the
+    /// tests takes, so that a slow machine does not fail them.
+    const PATIENCE: Duration = Duration::from_secs(60);
+
+    /// Waits until `done`, looking every `every`; fails, saying `what` never happened,
+    /// after [`PATIENCE`].
+    fn wait_until(what: &str, every: Duration, mut done: impl FnMut() -> bool) {
+        let deadline = Instant::now() + PATIENCE;
+        while !done() {
+            assert!(Instant::now() < deadline, "{what} never happened");
+            thread::sleep(every);
+        }
+    }
+
     /// Polls `jobs`, as the window's timer does, until no job is left, and gives the
     /// jobs that ended.
     fn poll_until_idle(jobs: &mut Jobs) -> Vec<Event> {
-        let deadline = Instant::now() + Duration::from_secs(60);
-        let mut ended = Vec::new();
-        while jobs.any() {
-            assert!(Instant::now() < deadline, "the jobs never ended");
-            ended.extend(jobs.poll());
-            thread::sleep(Duration::from_millis(5));
-        }
-        ended
+        poll_until_idle_by_poll(jobs)
+            .into_iter()
+            .flatten()
+            .collect()
+    }
+
+    /// Polls `jobs` until no job is left, and gives what each poll found ended.
+    fn poll_until_idle_by_poll(jobs: &mut Jobs) -> Vec<Vec<Event>> {
+        let mut polls = Vec::new();
+        wait_until("the end of the jobs", Duration::from_millis(5), || {
+            polls.push(jobs.poll());
+            !jobs.any()
+        });
+        polls
     }
 
     #[test]
@@ -669,28 +797,24 @@ mod tests {
         // A comparison that waits for the database holds nothing of it.
         let held = lock(&a);
         assert!(jobs.start_comparison(a.clone(), first, second).is_none());
-        let deadline = Instant::now() + Duration::from_secs(60);
-        while jobs.shown().is_none_or(|s| s.kind() != Kind::Comparison) {
-            assert!(Instant::now() < deadline, "the comparison never showed");
-            thread::sleep(Duration::from_millis(5));
-        }
+        wait_until("the comparison showing", Duration::from_millis(5), || {
+            jobs.shown().is_some_and(|s| s.kind() == Kind::Comparison)
+        });
         assert!(!jobs.comparison_holds_database(&a.path));
         // Then it loads, holding the database, and lets it go once the trees are loaded,
         // polled or not.
         drop(held);
-        while !jobs.comparison_holds_database(&a.path) {
-            assert!(Instant::now() < deadline, "the comparison never loaded");
+        wait_until("the comparison loading", Duration::from_millis(1), || {
             assert!(
                 jobs.poll().is_empty(),
                 "the comparison ended before it was seen loading"
             );
-            thread::sleep(Duration::from_millis(1));
-        }
+            jobs.comparison_holds_database(&a.path)
+        });
         assert!(!jobs.comparison_holds_database(&b.path));
-        while jobs.comparison_holds_database(&a.path) {
-            assert!(Instant::now() < deadline, "the comparison never loaded");
-            thread::sleep(Duration::from_millis(1));
-        }
+        wait_until("the end of the loading", Duration::from_millis(1), || {
+            !jobs.comparison_holds_database(&a.path)
+        });
         assert!(jobs.runs(Kind::Comparison));
         poll_until_idle(&mut jobs);
         assert!(!jobs.comparison_holds_database(&a.path));
@@ -840,14 +964,13 @@ mod tests {
         let third_id = third.id;
         let held = lock(&a);
         jobs.start_comparison_after_snapshot(a.clone(), first.id, third);
-        let deadline = Instant::now() + Duration::from_secs(60);
-        while !matches!(
-            jobs.shown(),
-            Some(Shown::Comparison { progress, .. }) if progress.phase() == compare::Phase::Waiting
-        ) {
-            assert!(Instant::now() < deadline, "the comparison never waited");
-            thread::sleep(Duration::from_millis(5));
-        }
+        wait_until("the comparison waiting", Duration::from_millis(5), || {
+            matches!(
+                jobs.shown(),
+                Some(Shown::Comparison { progress, .. })
+                    if progress.phase() == compare::Phase::Waiting
+            )
+        });
         // The database stays held: a comparison sees a cancel while it waits.
         jobs.cancel(Kind::Comparison);
         let ended = poll_until_idle(&mut jobs);
@@ -944,5 +1067,158 @@ mod tests {
         jobs.finish_compaction(false);
         assert!(!jobs.any());
         assert!(jobs.poll().is_empty());
+    }
+
+    /// The comment of the snapshot `id` of `profile`, as its database keeps it.
+    fn comment_of(profile: &ProfileFile, id: i64) -> Option<String> {
+        profiles::snapshots_of(&profile.path)
+            .unwrap()
+            .into_iter()
+            .find(|s| s.id == id)
+            .unwrap()
+            .comment
+    }
+
+    fn comment(id: i64, text: &str) -> Comment {
+        Comment {
+            id,
+            comment: Some(text.into()),
+        }
+    }
+
+    #[test]
+    fn a_comment_on_a_free_database_is_written_at_once_without_a_job() {
+        let dir = Profiles::new("comment-free");
+        let a = dir.profile("A");
+        let id = snapshot(&a).id;
+        let mut jobs = Jobs::default();
+        assert!(matches!(
+            jobs.comment(a.clone(), comment(id, "Перед оновленням")),
+            Some(Ok(()))
+        ));
+        assert!(!jobs.any());
+        assert!(!jobs.comment_started_waiting(), "nothing waits");
+        assert_eq!(comment_of(&a, id).as_deref(), Some("Перед оновленням"));
+        let removed = Comment { id, comment: None };
+        assert!(matches!(jobs.comment(a.clone(), removed), Some(Ok(()))));
+        assert_eq!(comment_of(&a, id), None);
+    }
+
+    #[test]
+    fn a_comment_on_a_busy_database_waits_in_the_progress_row_and_is_written_once_free() {
+        let dir = Profiles::new("comment-busy");
+        let (a, b) = (dir.profile("A"), dir.profile("B"));
+        let id = snapshot(&a).id;
+        let mut jobs = Jobs::default();
+        let held = lock(&a);
+        assert!(jobs.comment(a.clone(), comment(id, "Після")).is_none());
+
+        // It waits as a job of its own: the progress row shows it, the flags say so for
+        // its profile, and it holds on for longer than SQLite's own wait would.
+        assert!(jobs.runs(Kind::Comment));
+        assert!(matches!(jobs.shown(), Some(Shown::Comment)));
+        let waiting = Flags {
+            comment_waiting: true,
+            ..Flags::default()
+        };
+        assert_eq!(
+            jobs.flags(Some(&a.path)),
+            Flags {
+                commenting_open_profile: true,
+                ..waiting
+            }
+        );
+        assert_eq!(jobs.flags(Some(&b.path)), waiting);
+        // The window says once that it waits.
+        assert!(jobs.comment_started_waiting());
+        assert!(!jobs.comment_started_waiting());
+        thread::sleep(Duration::from_millis(300));
+        assert!(jobs.poll().is_empty());
+
+        // A snapshot being taken shows before it.
+        jobs.start_snapshot(b.clone());
+        assert!(matches!(jobs.shown(), Some(Shown::Snapshot(_))));
+
+        drop(held);
+        let ended = poll_until_idle(&mut jobs);
+        assert!(
+            ended.iter().any(|e| matches!(
+                e,
+                Event::Comment(Ended { profile, outcome: Ok(Outcome::Done(())) }, c)
+                    if *profile == a && *c == comment(id, "Після")
+            )),
+            "{ended:?}"
+        );
+        assert_eq!(comment_of(&a, id).as_deref(), Some("Після"));
+        assert_eq!(jobs.flags(Some(&a.path)), Flags::default());
+    }
+
+    #[test]
+    fn a_comment_cancelled_while_it_waits_leaves_the_earlier_one() {
+        let dir = Profiles::new("comment-cancel");
+        let a = dir.profile("A");
+        let id = snapshot(&a).id;
+        let mut jobs = Jobs::default();
+        assert!(matches!(
+            jobs.comment(a.clone(), comment(id, "Раніший")),
+            Some(Ok(()))
+        ));
+        let held = lock(&a);
+        assert!(jobs.comment(a.clone(), comment(id, "Новий")).is_none());
+        jobs.cancel(Kind::Comment);
+        let ended = poll_until_idle(&mut jobs);
+        drop(held);
+        assert!(
+            matches!(
+                ended.as_slice(),
+                [Event::Comment(
+                    Ended {
+                        outcome: Ok(Outcome::Cancelled),
+                        ..
+                    },
+                    _
+                )]
+            ),
+            "{ended:?}"
+        );
+        assert_eq!(comment_of(&a, id).as_deref(), Some("Раніший"));
+    }
+
+    #[test]
+    fn a_comment_that_waited_for_a_snapshot_of_its_profile_ends_with_it_and_first() {
+        // The snapshot and the comment both wait for the lock; whichever gets it first,
+        // the comment never ends in a later poll than the snapshot, and when both end in
+        // one poll, the comment comes first (TASK-21, TASK-24 #1).
+        let dir = Profiles::new("comment-snapshot");
+        let a = dir.profile("A");
+        let id = snapshot(&a).id;
+        for _ in 0..3 {
+            let mut jobs = Jobs::default();
+            let held = lock(&a);
+            jobs.start_snapshot(a.clone());
+            assert!(jobs.comment(a.clone(), comment(id, "Разом")).is_none());
+            thread::sleep(Duration::from_millis(150));
+            drop(held);
+            let polls = poll_until_idle_by_poll(&mut jobs);
+            let poll_of = |kind: Kind| {
+                polls.iter().position(|poll| {
+                    poll.iter().any(|e| match e {
+                        Event::Comment(..) => kind == Kind::Comment,
+                        Event::Snapshot(..) => kind == Kind::Snapshot,
+                        _ => false,
+                    })
+                })
+            };
+            let (commented, snapshotted) = (poll_of(Kind::Comment), poll_of(Kind::Snapshot));
+            assert!(commented <= snapshotted, "{polls:?}");
+            if commented == snapshotted {
+                let poll = &polls[commented.unwrap()];
+                assert!(
+                    matches!(poll.as_slice(), [Event::Comment(..), Event::Snapshot(..)]),
+                    "{poll:?}"
+                );
+            }
+            assert_eq!(comment_of(&a, id).as_deref(), Some("Разом"));
+        }
     }
 }

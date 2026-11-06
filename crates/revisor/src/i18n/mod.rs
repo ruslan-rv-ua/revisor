@@ -169,6 +169,8 @@ pub trait Strings {
     fn comment_of(&self, snapshot: &str) -> String;
     fn comment_saved(&self) -> &'static str;
     fn comment_removed(&self) -> &'static str;
+    /// A comment whose wait for the database was cancelled (TASK-24).
+    fn comment_cancelled(&self) -> &'static str;
     fn comment_not_saved(&self, reason: &str) -> String;
     /// The question before one snapshot, named with its comment, is deleted.
     fn delete_snapshot_question(&self, name: &str, comment: Option<&str>) -> String;
@@ -217,6 +219,9 @@ pub trait Strings {
     fn comparison_failed(&self, reason: &str) -> String;
     /// The reason when the comparison's thread ended without a result.
     fn comparison_stopped(&self) -> &'static str;
+    /// The reason when the thread of a comment waiting for the database ended without a
+    /// result (TASK-24).
+    fn comment_stopped(&self) -> &'static str;
     /// The label of the list of the «Порівняти з…» window, without access key or colon;
     /// `snapshot` is the current snapshot's name.
     fn compare_with_label(&self, snapshot: &str) -> String;

@@ -245,3 +245,11 @@ fn cancelling_interrupts_the_statement_running_under_the_token() {
         "{counted:?}"
     );
 }
+
+#[test]
+fn a_poll_within_a_time_waits_for_the_result_up_to_that_time() {
+    let (mut job, open) = gated(9);
+    assert!(job.poll_within(Duration::from_millis(50)).is_none());
+    open_after(open, Duration::from_millis(50));
+    assert_eq!(job.poll_within(Duration::from_secs(60)), Some(Ok(9)));
+}

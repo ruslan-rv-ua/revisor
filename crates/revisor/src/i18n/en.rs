@@ -74,6 +74,7 @@ impl Strings for En {
             CommandId::CompareWithPrevious => "Compare with previous",
             CommandId::CompareWith => "Compare with",
             CommandId::CancelComparison => "Cancel comparison",
+            CommandId::CancelComment => "Cancel comment",
             CommandId::Details => "Details",
             CommandId::ShowInExplorer => "Show in File Explorer",
             CommandId::FilterByText => "Filter by text",
@@ -121,6 +122,8 @@ impl Strings for En {
             Reason::SnapshotNotRunning => "no snapshot is being taken",
             Reason::ComparisonNotRunning => "no comparison is running",
             Reason::CompactionNotRunning => "no compaction is running",
+            Reason::CommentWaiting => "a comment is still waiting for the profile's database",
+            Reason::CommentNotWaiting => "no comment is waiting for the profile's database",
             Reason::CompactionRunning => {
                 "a database is being compacted, and only one goes at a time"
             }
@@ -501,6 +504,10 @@ impl Strings for En {
         "Comment removed."
     }
 
+    fn comment_cancelled(&self) -> &'static str {
+        "Comment cancelled."
+    }
+
     fn comment_not_saved(&self, reason: &str) -> String {
         format!("The comment was not saved: {reason}.")
     }
@@ -636,6 +643,10 @@ impl Strings for En {
 
     fn comparison_stopped(&self) -> &'static str {
         "the comparison stopped unexpectedly"
+    }
+
+    fn comment_stopped(&self) -> &'static str {
+        "writing the comment stopped unexpectedly"
     }
 
     fn compare_with_label(&self, snapshot: &str) -> String {

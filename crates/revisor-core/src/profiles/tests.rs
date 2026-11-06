@@ -220,3 +220,42 @@ fn a_missing_folder_holds_no_profiles() {
     let (profiles, unreadable) = list(&profiles(&tmp)).unwrap();
     assert!(profiles.is_empty() && unreadable.is_empty());
 }
+
+#[test]
+fn the_list_when_free_waits_for_a_profile_another_connection_holds() {
+    let tmp = TempDir::new("profiles");
+    let home = create(&profiles(&tmp), &settings("Дім")).unwrap();
+    let holder = rusqlite::Connection::open(&home.path).unwrap();
+    holder.execute_batch("BEGIN EXCLUSIVE").unwrap();
+    let releasing = std::thread::spawn(move || {
+        std::thread::sleep(std::time::Duration::from_millis(300));
+        holder.execute_batch("COMMIT").unwrap();
+    });
+    let listing = std::time::Instant::now();
+    let (found, unreadable) = list_when_free(&profiles(&tmp), &Cancel::new(), |_| false).unwrap();
+    assert!(listing.elapsed() >= std::time::Duration::from_millis(200));
+    assert_eq!(found, [home]);
+    assert!(unreadable.is_empty());
+    releasing.join().unwrap();
+}
+
+#[test]
+fn the_list_when_free_does_not_wait_for_a_known_profile_nor_a_cancelled_one() {
+    let tmp = TempDir::new("profiles");
+    let home = create(&profiles(&tmp), &settings("Дім")).unwrap();
+    let holder = rusqlite::Connection::open(&home.path).unwrap();
+    holder.execute_batch("BEGIN EXCLUSIVE").unwrap();
+
+    let (found, unreadable) =
+        list_when_free(&profiles(&tmp), &Cancel::new(), |path| path == home.path).unwrap();
+    assert!(found.is_empty());
+    assert_eq!(unreadable.len(), 1);
+    assert!(unreadable[0].error.is_busy(), "{:?}", unreadable[0].error);
+
+    let cancel = Cancel::new();
+    cancel.cancel();
+    let (found, unreadable) = list_when_free(&profiles(&tmp), &cancel, |_| false).unwrap();
+    assert!(found.is_empty());
+    assert!(matches!(unreadable[0].error, StoreError::Cancelled));
+    drop(holder);
+}
