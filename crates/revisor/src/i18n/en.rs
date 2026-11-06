@@ -8,7 +8,7 @@ use revisor_core::settings::{
 };
 
 use super::plural::{Category, category};
-use super::{Failure, Lang, Strings, in_sentence};
+use super::{Failure, Lang, Strings, error_code, in_sentence};
 use crate::commands::{CommandId, MenuId, Pane, Reason, SubmenuId};
 use crate::details::{Attribute, Inaccessibility, Property, Unreadable};
 use crate::difference::{
@@ -369,7 +369,9 @@ impl Strings for En {
             }
             Failure::Cancelled => "the action was canceled".into(),
             Failure::SnapshotDeleted => "the snapshot has been deleted meanwhile".into(),
-            Failure::Other { text, code } => format!("{} (code {code})", in_sentence(text)),
+            Failure::Other { text, code } => {
+                format!("{} (code {})", in_sentence(text), error_code(*code))
+            }
             Failure::Unexpected(text) => format!("an unexpected error occurred ({text})"),
         }
     }

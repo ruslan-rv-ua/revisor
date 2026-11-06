@@ -313,6 +313,11 @@ fn entries_in(en: &dyn Strings, uk: &dyn Strings) -> Vec<Entry> {
             text: "{text of Windows or SQLite}".into(),
             code: 5,
         },
+        // An HRESULT, E_FAIL, comes negative and shows in hexadecimal (TASK-26).
+        Failure::Other {
+            text: "{text of Windows}".into(),
+            code: i64::from(0x8000_4005_u32.cast_signed()),
+        },
         Failure::Unexpected("{text without a code}".into()),
     ];
     each_variant_in!(
@@ -340,6 +345,7 @@ fn entries_in(en: &dyn Strings, uk: &dyn Strings) -> Vec<Entry> {
             Failure::NotSettings => "NotSettings",
             Failure::Cancelled => "Cancelled",
             Failure::SnapshotDeleted => "SnapshotDeleted",
+            Failure::Other { code, .. } if *code < 0 => "Other.hresult",
             Failure::Other { .. } => "Other",
             Failure::Unexpected(_) => "Unexpected",
         };
