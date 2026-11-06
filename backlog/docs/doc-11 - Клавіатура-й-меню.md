@@ -3,7 +3,7 @@ id: doc-11
 title: Клавіатура й меню
 type: specification
 created_date: '2026-11-01 14:54'
-updated_date: '2026-11-06 18:13'
+updated_date: '2026-11-06 20:02'
 ---
 # Клавіатура й меню
 
@@ -112,13 +112,13 @@ updated_date: '2026-11-06 18:13'
 
 ## Назви клавіш
 
-В англійському інтерфейсі клавіші називаємо так, як їх підписано на клавіатурі. В українському — за посібником Microsoft для української (вирішено 2026-11-01 у DRAFT-14):
+В англійському інтерфейсі клавіші з написом називаємо так, як їх підписано на клавіатурі (Ctrl, Shift, Enter, Page Up, F1…F12), а клавіші без напису — назвами Microsoft Writing Style Guide: Spacebar, Up arrow, Down arrow, Left arrow, Right arrow, Application key (вирішено 2026-11-06 у TASK-25). В українському — за посібником Microsoft для української (вирішено 2026-11-01 у DRAFT-14):
 - назви, підписані на більшості клавіатур, лишаються англійськими й пишуться з великої літери: Ctrl, Shift, Alt, Enter, Esc, Delete, Backspace, Home, End, Page Up, Page Down, F1…F12;
 - решту перекладено: «ПРОБІЛ» (усі літери великі), «Стрілка вгору», «Стрілка вниз», «Стрілка вліво», «Стрілка вправо», «Клавіша контекстного меню», «Клавіша Windows»;
 - сполучення пишемо через «+» без пробілів (Ctrl+F5, Shift+F10), а сполучення зі стрілкою — зі словом «клавіші» й пробілами навколо «+» («клавіші Ctrl + стрілка вниз»);
 - у реченні перед назвою стоїть слово «клавіша»: «Клавіша Delete видаляє знімки лише в переліку знімків».
 
-Так клавіші названо в меню, у вікні «Гарячі клавіші» (F1) і в повідомленнях рядка стану. Джерело — [Microsoft Ukrainian Style Guide](https://download.microsoft.com/download/6/4/a/64a8b98e-e69f-47c9-96dd-f8bc55c176c6/ukr-ukr-StyleGuide.pdf), с. 136–137 і 145–146.
+Так клавіші названо в меню, у вікні «Гарячі клавіші» (F1) і в повідомленнях рядка стану. Джерела — [Microsoft Ukrainian Style Guide](https://download.microsoft.com/download/6/4/a/64a8b98e-e69f-47c9-96dd-f8bc55c176c6/ukr-ukr-StyleGuide.pdf), с. 136–137 і 145–146, і [Microsoft Writing Style Guide: Keys and keyboard shortcuts](https://learn.microsoft.com/en-us/style-guide/a-z-word-list-term-collections/term-collections/keys-keyboard-shortcuts). Решта правил рядків обох мов — у документі «Стиль рядків інтерфейсу».
 
 ## Меню й команди
 
