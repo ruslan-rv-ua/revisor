@@ -9,7 +9,7 @@ use revisor_core::settings::{
 };
 
 use super::plural::{Category, category};
-use super::{Failure, Lang, Strings, in_sentence};
+use super::{Failure, Lang, Strings, error_code, in_sentence};
 use crate::commands::{CommandId, MenuId, Pane, Reason, SubmenuId};
 use crate::details::{Attribute, Inaccessibility, Property, Unreadable};
 use crate::difference::{
@@ -365,7 +365,9 @@ impl Strings for Uk {
             }
             Failure::Cancelled => "дію скасовано".into(),
             Failure::SnapshotDeleted => "знімок тим часом видалено".into(),
-            Failure::Other { text, code } => format!("{} (код {code})", in_sentence(text)),
+            Failure::Other { text, code } => {
+                format!("{} (код {})", in_sentence(text), error_code(*code))
+            }
             Failure::Unexpected(text) => format!("сталася непередбачена помилка ({text})"),
         }
     }

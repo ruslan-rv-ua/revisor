@@ -47,7 +47,8 @@ pub enum Failure {
     /// The snapshot was deleted while the action needed it (TASK-11).
     SnapshotDeleted,
     /// Windows or SQLite gave this text and code: revisor shows both, as help is searched
-    /// for by the code.
+    /// for by the code. The code is as they give it, so an HRESULT or an NTSTATUS comes as a
+    /// negative number, which `error_code` writes in hexadecimal (TASK-26).
     Other {
         text: String,
         code: i64,
@@ -69,6 +70,19 @@ fn in_sentence(text: &str) -> String {
     match chars.next() {
         Some(first) if !is_name => first.to_lowercase().chain(chars).collect(),
         _ => text.to_string(),
+    }
+}
+
+/// A code of Windows or SQLite as help is searched for by it (TASK-26). A 32-bit code with
+/// its high bit set — an HRESULT or an NTSTATUS, negative as a number — is written in
+/// hexadecimal with "0x" and eight capital digits, as Microsoft's guidelines for error
+/// messages have it: "0x80004005". Any other code, as those of Win32 and SQLite, is
+/// written in decimal, as the System Error Codes reference and SQLite's documentation
+/// write them: "3".
+fn error_code(code: i64) -> String {
+    match i32::try_from(code) {
+        Ok(negative) if negative < 0 => format!("0x{:08X}", negative.cast_unsigned()),
+        _ => code.to_string(),
     }
 }
 
@@ -779,6 +793,59 @@ mod tests {
             En.snapshot_failed(&En.failure(&unexpected)),
             "The snapshot was not saved: an unexpected error occurred (Query returned no rows)."
         );
+    }
+
+    /// A code as `io::Error::raw_os_error` gives it: an HRESULT or an NTSTATUS negative.
+    fn raw(code: u32) -> i64 {
+        i64::from(code.cast_signed())
+    }
+
+    #[test]
+    fn an_hresult_is_hexadecimal_and_a_code_of_win32_or_sqlite_decimal_in_both_languages() {
+        let failed = |text: &str, code| Failure::Other {
+            text: text.into(),
+            code,
+        };
+        // E_FAIL, which carries no Win32 code, from File Explorer (TASK-26).
+        assert_eq!(
+            Uk.explorer_failed(&Uk.failure(&failed("Невизначена помилка", raw(0x8000_4005)))),
+            "Провідник не відкрито: невизначена помилка (код 0x80004005)."
+        );
+        assert_eq!(
+            En.explorer_failed(&En.failure(&failed("Unspecified error", raw(0x8000_4005)))),
+            "File Explorer did not open: unspecified error (code 0x80004005)."
+        );
+        // Capital letters, in an HRESULT (E_UNEXPECTED) and an NTSTATUS alike.
+        assert_eq!(
+            En.failure(&failed("Catastrophic failure", raw(0x8000_FFFF))),
+            "catastrophic failure (code 0x8000FFFF)"
+        );
+        assert_eq!(
+            Uk.failure(&failed("Порушення доступу", raw(0xC000_0005))),
+            "порушення доступу (код 0xC0000005)"
+        );
+        // The codes of Win32 and SQLite stay decimal.
+        assert_eq!(
+            Uk.failure(&failed("Системі не вдається знайти вказаний шлях", 3)),
+            "системі не вдається знайти вказаний шлях (код 3)"
+        );
+        assert_eq!(
+            En.failure(&failed("disk I/O error", 266)),
+            "disk I/O error (code 266)"
+        );
+    }
+
+    #[test]
+    fn only_a_32_bit_code_with_the_high_bit_set_is_hexadecimal() {
+        assert_eq!(error_code(0), "0");
+        assert_eq!(error_code(1223), "1223");
+        assert_eq!(error_code(i64::from(i32::MAX)), "2147483647");
+        // The high bit set: eight hexadecimal digits with capital letters.
+        assert_eq!(error_code(i64::from(i32::MIN)), "0x80000000");
+        assert_eq!(error_code(-1), "0xFFFFFFFF");
+        assert_eq!(error_code(raw(0x8007_000E)), "0x8007000E");
+        // A number beyond 32 bits is no such code: it is written as it is.
+        assert_eq!(error_code(i64::from(i32::MIN) - 1), "-2147483649");
     }
 
     #[test]

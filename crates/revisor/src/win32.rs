@@ -1099,6 +1099,26 @@ mod tests {
     }
 
     #[test]
+    fn an_hresult_gives_the_win32_error_it_carries_or_its_own_code() {
+        use crate::failure::of_io;
+        use crate::i18n::Failure;
+        let failure = |hr: u32| of_io(&hresult_error(hr.cast_signed()));
+        // E_FAIL carries no Win32 error: its own code, negative as a number, which the
+        // interface writes as 0x80004005, with the text Windows has for it (TASK-26).
+        let Failure::Other { text, code } = failure(0x8000_4005) else {
+            panic!("E_FAIL gives no failure with a code");
+        };
+        assert_eq!(code, i64::from(0x8000_4005_u32.cast_signed()));
+        assert!(!text.is_empty() && !text.contains("os error"), "{text}");
+        // An HRESULT made of a Win32 error is that error: a known cause, or its code.
+        assert_eq!(failure(0x8007_0005), Failure::AccessDenied);
+        assert!(matches!(
+            failure(0x8007_0003),
+            Failure::Other { code: 3, .. }
+        ));
+    }
+
+    #[test]
     fn counts_keep_their_digits_in_the_regional_format() {
         // The separator depends on the user's region; the digits do not.
         let digits =

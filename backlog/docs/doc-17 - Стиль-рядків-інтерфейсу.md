@@ -3,10 +3,11 @@ id: doc-17
 title: Стиль рядків інтерфейсу
 type: guide
 created_date: '2026-11-06 20:03'
+updated_date: '2026-11-06 21:19'
 ---
 # Стиль рядків інтерфейсу
 
-> Правила, за якими написано рядки інтерфейсу revisor обома мовами, і рішення, з яких вони взялися. Вичитка (усі рядки виводить `cargo run -p revisor --example strings <файл>`, TASK-17) звіряє рядки з цим документом, із глосарієм (терміни), документом «Клавіатура й меню» (назви клавіш, меню, клавіші доступу, три крапки) і посібниками Microsoft для української й англійської. Рішення, яке змінює чи доповнює правило, дописуємо сюди з датою й задачею. Рішення TASK-17 і TASK-25 ухвалено 2026-11-06.
+> Правила, за якими написано рядки інтерфейсу revisor обома мовами, і рішення, з яких вони взялися. Вичитка (усі рядки виводить `cargo run -p revisor --example strings <файл>`, TASK-17) звіряє рядки з цим документом, із глосарієм (терміни), документом «Клавіатура й меню» (назви клавіш, меню, клавіші доступу, три крапки) і посібниками Microsoft для української й англійської. Рішення, яке змінює чи доповнює правило, дописуємо сюди з датою й задачею. Рішення TASK-17, TASK-25 і TASK-26 ухвалено 2026-11-06.
 
 ## Посібники
 
@@ -33,6 +34,7 @@ created_date: '2026-11-06 20:03'
 
 - Відома причина має власний текст обома мовами: що сталося, чому й що робити (бриф, розділ 5).
 - Для решти до свого речення revisor додає текст Windows чи SQLite і код: «Знімок не збережено: системі не вдається знайти вказаний шлях (код 3).» / «… (code 3).»
+- Код пишемо так, як за ним шукають допомогу. Коди Win32 і SQLite — десятковим числом, як їх пишуть довідник System Error Codes («3 (0x3)») і документація SQLite («SQLITE_IOERR_READ (266)»): «(код 3)», «(code 266)». 32-бітний код зі старшим бітом — HRESULT чи NTSTATUS, який у десятковому записі від'ємний, — пишемо вісьмома шістнадцятковими цифрами з «0x» і великими літерами, як велять настанови Microsoft до повідомлень про помилки й як HRESULT пишуть довідники Microsoft: «Провідник не відкрито: невизначена помилка (код 0x80004005).» / «File Explorer did not open: unspecified error (code 0x80004005).» Від'ємний запис («код -2147467259») ті настанови називають неправильним. HRESULT, що несе код Win32 (0x8007xxxx), показуємо як цей код Win32: «немає доступу» для 0x80070005, «код 3» для 0x80070003. Каталог рядків має обидва записи: `failure.Other` і `failure.Other.hresult` (рішення TASK-26).
 - Текст Windows чи SQLite після двокрапки пишемо з малої літери, бо він продовжує речення revisor (рішення 9 TASK-17). Власна назва на його початку лишається, як є: слово Windows і слово з великою літерою не на початку, як SQLite, OneDrive, NTFS чи BitLocker. «revisor не перезапущено: Windows не вдається перевірити цифровий підпис цього файлу (код 577).», «…: the system cannot find the path specified (code 3).» Windows — єдина власна назва без такої літери, якою починаються тексти Windows (рішення TASK-25).
 - Помилка без коду Windows чи SQLite — власна помилка бібліотеки rusqlite чи помилка вводу-виводу без коду — каже, що її не чекали, а її текст іде в дужках як є, для повідомлення про ваду: «Знімок не збережено: сталася непередбачена помилка (Query returned no rows).» / «The snapshot was not saved: an unexpected error occurred (Query returned no rows).» Так радять настанови Microsoft до повідомлень про помилки: про невідому причину кажуть чесно, а не вигадують її (рішення TASK-25).
 - Причини, чому знімок не прочитав теку профілю: «теки немає», «тека на томі FAT32, не NTFS», «тека на мережевому ресурсі», «за цим шляхом файл, а не тека» (TASK-8, TASK-17) і «диск теки не підключено» / «the folder's drive is not connected» — коли диска теки немає в системі чи в пристрої немає носія (рішення TASK-25).
@@ -48,5 +50,7 @@ created_date: '2026-11-06 20:03'
 - [Microsoft Ukrainian Style Guide](https://download.microsoft.com/download/6/4/a/64a8b98e-e69f-47c9-96dd-f8bc55c176c6/ukr-ukr-StyleGuide.pdf)
 - [Microsoft Writing Style Guide](https://learn.microsoft.com/en-us/style-guide/welcome/): [тире](https://learn.microsoft.com/en-us/style-guide/punctuation/dashes-hyphens/), [клавіші й гарячі клавіші](https://learn.microsoft.com/en-us/style-guide/a-z-word-list-term-collections/term-collections/keys-keyboard-shortcuts)
 - [Настанови Microsoft щодо повідомлень про помилки](https://learn.microsoft.com/en-us/windows/win32/uxguide/mess-error) (Handling unknown errors, Error codes)
+- [Common HRESULT Values](https://learn.microsoft.com/en-us/windows/win32/seccrypto/common-hresult-values) і [System Error Codes](https://learn.microsoft.com/en-us/windows/win32/debug/system-error-codes--0-499-) — як Microsoft пише HRESULT і коди Win32
+- [Коди результатів SQLite](https://www.sqlite.org/rescode.html)
 - [Посібник Microsoft до Екранного диктора, розділ 1](https://support.microsoft.com/en-us/windows/chapter-1-introducing-narrator-7fe8fd72-541f-4536-7658-bfc37ddaf9c6)
-- Рішення й причини — у нотатках задач TASK-17 і TASK-25
+- Рішення й причини — у нотатках задач TASK-17, TASK-25 і TASK-26
