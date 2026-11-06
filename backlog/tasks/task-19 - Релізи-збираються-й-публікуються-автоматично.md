@@ -4,7 +4,7 @@ title: Релізи збираються й публікуються автом�
 status: To Do
 assignee: []
 created_date: '2026-10-30 17:04'
-updated_date: '2026-11-01 19:46'
+updated_date: '2026-11-06 19:10'
 labels: []
 milestone: m-1
 dependencies:
@@ -20,6 +20,7 @@ dependencies:
   - TASK-16
   - TASK-17
   - TASK-18
+  - TASK-25
 references:
   - >-
     https://github.com/ruslan-rv-ua/pathmaster/blob/develop/.github/workflows/release.yml
