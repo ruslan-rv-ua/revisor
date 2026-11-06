@@ -41,6 +41,7 @@ const STATE_NOT_NTFS: i64 = 2;
 const STATE_NETWORK: i64 = 3;
 const STATE_ERROR: i64 = 4;
 const STATE_NOT_A_FOLDER: i64 = 5;
+const STATE_NO_DRIVE: i64 = 6;
 /// How many entries are written between checks for cancellation.
 const CANCEL_CHECK: usize = 4096;
 /// How long a connection waits for another one's write to end before giving up: a
@@ -234,6 +235,9 @@ pub enum Unavailable {
     NotNtfs(String),
     /// The folder is on a network share.
     Network,
+    /// The folder's drive is not on the system (TASK-25): not even the root of the folder's
+    /// path was found, or the device holds no medium, as a card reader without a card.
+    NoDrive,
     /// The folder or its volume could not be reached: a Windows error code.
     Error(i32),
     /// A file stands at the folder's path.
@@ -507,6 +511,7 @@ impl Store {
                 STATE_NETWORK => FolderState::Unavailable(Unavailable::Network),
                 STATE_ERROR => FolderState::Unavailable(Unavailable::Error(r.get(2)?)),
                 STATE_NOT_A_FOLDER => FolderState::Unavailable(Unavailable::NotAFolder),
+                STATE_NO_DRIVE => FolderState::Unavailable(Unavailable::NoDrive),
                 other => {
                     return Err(rusqlite::Error::FromSqlConversionFailure(
                         1,
@@ -599,6 +604,9 @@ impl Store {
                     }
                     FolderState::Unavailable(Unavailable::NotAFolder) => {
                         (STATE_NOT_A_FOLDER, Value::Null, None)
+                    }
+                    FolderState::Unavailable(Unavailable::NoDrive) => {
+                        (STATE_NO_DRIVE, Value::Null, None)
                     }
                 };
                 let (volume_serial, root, count, real_path) = match scanned {

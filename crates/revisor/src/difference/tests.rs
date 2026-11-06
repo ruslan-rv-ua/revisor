@@ -461,16 +461,16 @@ fn the_details_and_the_path_are_of_the_row_at_a_place_of_the_list() {
     };
     assert_eq!(
         last_line(&list, 1),
-        "Inaccessible: in the later snapshot — the contents of the folder could not be read."
+        "Inaccessible: in the later snapshot—the contents of the folder could not be read."
     );
     assert_eq!(
         last_line(&list, 2),
-        "Inaccessible: in the later snapshot — whether it was there is unknown: a folder on \
+        "Inaccessible: in the later snapshot—whether it was there is unknown: a folder on \
          the way to it could not be read or is a link."
     );
     assert_eq!(
         last_line(&list, 3),
-        "Inaccessible: in the earlier snapshot — the contents of the folder could not be \
+        "Inaccessible: in the earlier snapshot—the contents of the folder could not be \
          read; the later snapshot does not have it."
     );
     // An added file is not inaccessible; nor is a modified one readable in both.

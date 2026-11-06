@@ -352,28 +352,25 @@ impl Strings for En {
     fn failure(&self, failure: &Failure) -> String {
         match failure {
             Failure::AccessDenied => {
-                "access is denied — check the permissions of this file or folder".into()
+                "access is denied—check the permissions of this file or folder".into()
             }
             Failure::InUse => "the file is open in another program, maybe another copy of \
-                revisor — close it and try again"
+                revisor—close it and try again"
                 .into(),
-            Failure::DiskFull => "the disk is full — free some space and try again".into(),
+            Failure::DiskFull => "the disk is full—free some space and try again".into(),
             Failure::NewerVersion => {
-                "a newer version of revisor made this profile — update revisor".into()
+                "a newer version of revisor made this profile—update revisor".into()
             }
             Failure::NotAProfile => {
-                "this is not a revisor profile file — move it out of the folder of profiles".into()
+                "this is not a revisor profile file—move it out of the folder of profiles".into()
             }
             Failure::NotSettings => {
-                "this is not a revisor settings file — move it out of the data folder".into()
+                "this is not a revisor settings file—move it out of the data folder".into()
             }
             Failure::Cancelled => "the action was canceled".into(),
             Failure::SnapshotDeleted => "the snapshot has been deleted meanwhile".into(),
-            Failure::Other {
-                text,
-                code: Some(code),
-            } => format!("{} (code {code})", in_sentence(text)),
-            Failure::Other { text, code: None } => in_sentence(text),
+            Failure::Other { text, code } => format!("{} (code {code})", in_sentence(text)),
+            Failure::Unexpected(text) => format!("an unexpected error occurred ({text})"),
         }
     }
 
@@ -427,6 +424,10 @@ impl Strings for En {
 
     fn folder_volume_network(&self) -> &'static str {
         "the folder is on a network share"
+    }
+
+    fn folder_drive_not_connected(&self) -> &'static str {
+        "the folder's drive is not connected"
     }
 
     fn folder_is_a_file(&self) -> &'static str {
@@ -1018,7 +1019,7 @@ impl Strings for En {
                  or is a link"
             }
         };
-        let mut text = format!("{} — {why}", self.inaccessible_in(inaccessible.which));
+        let mut text = format!("{}—{why}", self.inaccessible_in(inaccessible.which));
         if let Some(side) = inaccessible.absent_in {
             text.push_str(&format!(
                 "; the {} snapshot does not have it",
@@ -1065,18 +1066,18 @@ impl Strings for En {
         "Spacebar"
     }
     fn key_up(&self) -> &'static str {
-        "Up Arrow"
+        "Up arrow"
     }
     fn key_down(&self) -> &'static str {
-        "Down Arrow"
+        "Down arrow"
     }
     fn key_left(&self) -> &'static str {
-        "Left Arrow"
+        "Left arrow"
     }
     fn key_right(&self) -> &'static str {
-        "Right Arrow"
+        "Right arrow"
     }
     fn key_context_menu(&self) -> &'static str {
-        "Menu key"
+        "Application key"
     }
 }

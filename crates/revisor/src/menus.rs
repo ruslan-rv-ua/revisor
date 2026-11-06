@@ -168,8 +168,11 @@ pub fn shortcuts_text(s: &dyn Strings) -> String {
         f6.name(s),
         f6.shift().name(s)
     ));
-    let [shift_f10, menu_key] = context_keys.map(|k| k.name(s));
-    text.push_str(&format!("{} — {shift_f10}, {menu_key}\n", s.context_menu()));
+    let [shift_f10, application_key] = context_keys.map(|k| k.name(s));
+    text.push_str(&format!(
+        "{} — {shift_f10}, {application_key}\n",
+        s.context_menu()
+    ));
     text
 }
 

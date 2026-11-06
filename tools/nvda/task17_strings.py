@@ -10,30 +10,20 @@ the first snapshot and says it was not compared; Ctrl+F7 then says there is no o
 """
 
 import os
-import sqlite3
 import sys
 import time
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 from revisor_nvda import (  # noqa: E402
-    VK_ESCAPE, VK_F1, VK_F5, VK_MENU, App, control_text, focused_window, key, prepare, vk,
-    wait_for,
+    VK_CONTROL, VK_ESCAPE, VK_F1, VK_F5, VK_F7, VK_MENU, App, control_text, focused_window,
+    item_count, key, make_settings, prepare, snapshot_list, vk, wait_for,
 )
 
-VK_CONTROL, VK_F7 = 0x11, 0x76
 LANG = sys.argv[1] if len(sys.argv) > 1 else "uk"
 assert LANG in ("uk", "en"), LANG
-# PRAGMA application_id of the settings database, "RVST" (settings.rs APPLICATION_ID).
-SETTINGS_ID = 0x52565354
 
 paths = prepare({"Small": ([os.path.dirname(os.path.abspath(__file__))], [])})
-db = sqlite3.connect(os.path.join(os.path.dirname(paths["exe"]), "data", "settings.db"))
-db.executescript("CREATE TABLE setting (key TEXT PRIMARY KEY, value) WITHOUT ROWID;")
-db.execute(f"PRAGMA application_id = {SETTINGS_ID}")
-db.execute("PRAGMA user_version = 1")
-db.execute("INSERT INTO setting VALUES ('language', ?)", (LANG,))
-db.commit()
-db.close()
+make_settings(os.path.dirname(paths["exe"]), language=LANG)
 
 EXPECT = {
     "uk": {
@@ -55,18 +45,17 @@ EXPECT = {
 failures = []
 
 
-def check(what, spoken, expected):
-    heard = any(expected in line for line in spoken)
-    print(f"   {'OK' if heard else 'MISSING'}: {expected}")
-    if not heard:
-        failures.append(what)
-
-
-def check_text(what, text, expected):
+def check(what, where, text, expected):
+    """Note `what` as missing unless `text` — what NVDA said, or a window's text — has
+    `expected`."""
     found = expected in text
-    print(f"   {'OK' if found else 'MISSING'} in the window text: {expected}")
+    print(f"   {'OK' if found else 'MISSING'} {where}: {expected}")
     if not found:
         failures.append(what)
+
+
+def heard(lines):
+    return "\n".join(lines)
 
 
 with App(paths, paths["Small"]) as app:
@@ -74,28 +63,30 @@ with App(paths, paths["Small"]) as app:
 
     key(VK_F1)
     app.step("F1: keyboard shortcuts", 2)
-    check_text("shortcuts", control_text(focused_window()), EXPECT["shortcut"])
+    check("shortcuts", "in the window text", control_text(focused_window()), EXPECT["shortcut"])
     key(VK_ESCAPE)
     app.step("Esc", 1.5)
 
     key(VK_CONTROL, VK_F7)
-    check("why not, no snapshots", app.step("Ctrl+F7 without snapshots", 2),
-          EXPECT["no_snapshots"])
+    check("why not, no snapshots", "heard",
+          heard(app.step("Ctrl+F7 without snapshots", 2)), EXPECT["no_snapshots"])
 
     key(VK_CONTROL, VK_F5)
-    assert wait_for(lambda: app.progress() is not None, 5) or True
-    assert wait_for(app.snapshot_done, 60), "the snapshot did not end"
-    check("snapshot and compare", app.step("Ctrl+F5: the first snapshot", 3),
-          EXPECT["not_compared"])
+    # The first snapshot is in the list once it is saved; the speech follows it.
+    assert wait_for(lambda: item_count(snapshot_list(app.main)) == 1, 60), \
+        "the first snapshot was not saved"
+    check("snapshot and compare", "heard",
+          heard(app.step("Ctrl+F5: the first snapshot", 3)), EXPECT["not_compared"])
 
     key(VK_CONTROL, VK_F7)
-    check("why not, one snapshot", app.step("Ctrl+F7 with one snapshot", 2), EXPECT["no_other"])
+    check("why not, one snapshot", "heard",
+          heard(app.step("Ctrl+F7 with one snapshot", 2)), EXPECT["no_other"])
 
     key(VK_MENU, vk("H"))
     time.sleep(0.5)
     key(vk("A"))
     app.step("Alt+H, A: about", 2)
-    check_text("about", control_text(focused_window()), EXPECT["license"])
+    check("about", "in the window text", control_text(focused_window()), EXPECT["license"])
     key(VK_ESCAPE)
     app.step("Esc", 1.5)
 

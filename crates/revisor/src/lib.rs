@@ -68,7 +68,7 @@ fn interface_language(data_dir: &Path) -> Lang {
 
 /// The language a value of the setting stands for; `windows` is read only when it is
 /// needed, as it is a system call.
-pub fn language_of(chosen: Language, windows: impl FnOnce() -> Lang) -> Lang {
+pub(crate) fn language_of(chosen: Language, windows: impl FnOnce() -> Lang) -> Lang {
     match chosen {
         Language::SameAsWindows => windows(),
         Language::English => Lang::En,

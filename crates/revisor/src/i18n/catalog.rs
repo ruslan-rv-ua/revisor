@@ -4,8 +4,13 @@
 //! Each string has an id — the method of [`Strings`] and, for a string chosen by a value,
 //! that value — then its English and Ukrainian text. Parameters show as `{name}`, and a
 //! string with a count comes once per count that picks a plural form: 1, 3 and 5 give
-//! "one", "few" and "many" in Ukrainian and "one" and "other" in English. A test checks
-//! that every method of [`Strings`] is here.
+//! "one", "few" and "many" in Ukrainian and "one" and "other" in English.
+//!
+//! Nothing can be left out unnoticed (TASK-25). A test builds the catalog with recorders of
+//! the calls and checks that it calls every method of [`Strings`]. The values of every enum
+//! a string is chosen by come from `all!` or are checked by `each_variant_in!`: a new
+//! variant does not compile until it is named here, and one named without a value fails
+//! the tests.
 
 use std::path::PathBuf;
 
@@ -18,7 +23,7 @@ use revisor_core::settings::{
 use revisor_core::store::Unavailable;
 
 use super::{En, Failure, Strings, Uk};
-use crate::commands::{COMMANDS, MenuId, Pane, Reason, SubmenuId};
+use crate::commands::{COMMANDS, CommandId, MenuId, Pane, Reason, SubmenuId};
 use crate::details::{Attribute, Inaccessibility, Property, Unreadable};
 use crate::difference::{
     Column, Counted, Field, InaccessibleIn, PairText, RowChange, SizeChange, SnapshotText,
@@ -29,14 +34,30 @@ use crate::menus;
 /// Counts that pick every plural form of both languages.
 const COUNTS: [u64; 3] = [1, 3, 5];
 
-/// The values of an enum without `ALL`. The match makes a new variant fail to compile until
-/// it is listed here too, so the catalog cannot miss it.
+/// The values of an enum whose variants hold no data. The match makes a new variant fail to
+/// compile until it is listed here too, so the catalog cannot miss it.
 macro_rules! all {
     ($ty:ident { $($v:ident),* $(,)? }) => {{
         let _every_variant_is_listed = |x: $ty| match x {
             $($ty::$v)|* => (),
         };
         [$($ty::$v),*]
+    }};
+}
+
+/// Checks that `values`, a collection of an enum whose variants may hold data, have a value
+/// of every variant. The match makes a new variant fail to compile until it is named here
+/// too, and the assertion fails — in the tests, which build the catalog — when a named
+/// variant has no value.
+macro_rules! each_variant_in {
+    ($values:expr, $ty:ident { $($v:ident),* $(,)? }) => {{
+        let _every_variant_is_named = |x: &$ty| match x {
+            $($ty::$v { .. } => ()),*
+        };
+        $(assert!(
+            $values.iter().any(|value| matches!(value, $ty::$v { .. })),
+            concat!("the catalog has no ", stringify!($ty), "::", stringify!($v)),
+        );)*
     }};
 }
 
@@ -47,26 +68,31 @@ pub struct Entry {
     pub uk: String,
 }
 
-#[derive(Default)]
-struct Catalog(Vec<Entry>);
+/// The strings gathered so far, each as the two languages give it.
+struct Catalog<'a> {
+    en: &'a dyn Strings,
+    uk: &'a dyn Strings,
+    entries: Vec<Entry>,
+}
 
-impl Catalog {
+impl Catalog<'_> {
     fn add(&mut self, id: impl Into<String>, text: impl Fn(&dyn Strings) -> String) {
-        self.0.push(Entry {
+        self.entries.push(Entry {
             id: id.into(),
-            en: text(&En),
-            uk: text(&Uk),
+            en: text(self.en),
+            uk: text(self.uk),
         });
     }
 
-    /// A string with a count, once per count of [`COUNTS`].
-    fn counted(&mut self, id: &str, text: impl Fn(&dyn Strings, u64) -> String) {
+    /// Adds a string with a count once per count of [`COUNTS`].
+    fn add_per_count(&mut self, id: &str, text: impl Fn(&dyn Strings, u64) -> String) {
         for n in COUNTS {
             self.add(format!("{id}({n})"), |s| text(s, n));
         }
     }
 }
 
+/// A count with its text, as a summary shows it.
 fn counted(n: u64) -> Counted {
     Counted {
         n,
@@ -76,12 +102,61 @@ fn counted(n: u64) -> Counted {
 
 /// Every string of revisor, in the order of [`Strings`].
 pub fn entries() -> Vec<Entry> {
-    let mut c = Catalog::default();
+    entries_in(&En, &Uk)
+}
+
+/// Every string of revisor as `en` and `uk` give it.
+fn entries_in(en: &dyn Strings, uk: &dyn Strings) -> Vec<Entry> {
+    let mut c = Catalog {
+        en,
+        uk,
+        entries: Vec::new(),
+    };
     let panes = all!(Pane {
         Snapshots,
         Difference
     });
 
+    let commands: Vec<CommandId> = COMMANDS.iter().map(|command| command.id).collect();
+    each_variant_in!(
+        commands,
+        CommandId {
+            NewProfile,
+            EditProfile,
+            DeleteProfile,
+            Settings,
+            RestartAsAdmin,
+            Exit,
+            TakeSnapshot,
+            SnapshotAndCompare,
+            Comment,
+            DeleteSnapshots,
+            CancelSnapshot,
+            CancelCompaction,
+            CancelComment,
+            CompareWithPrevious,
+            CompareWith,
+            CancelComparison,
+            Details,
+            ShowInExplorer,
+            FilterByText,
+            ShowAdded,
+            ShowDeleted,
+            ShowModified,
+            ShowInaccessible,
+            SortByPath,
+            SortByName,
+            SortByChange,
+            SortByWhatChanged,
+            SortBySize,
+            SortByDateModified,
+            SortByFolder,
+            SortAscending,
+            SortDescending,
+            KeyboardShortcuts,
+            About,
+        }
+    );
     for command in COMMANDS {
         c.add(format!("command.{:?}", command.id), |s| {
             s.command(command.id).into()
@@ -92,7 +167,14 @@ pub fn entries() -> Vec<Entry> {
             menus::menu_label(s, command).replace('\t', "  [Tab]  ")
         });
     }
-    for menu in MenuId::ALL {
+    let menu_ids = all!(MenuId {
+        File,
+        Snapshot,
+        Compare,
+        Difference,
+        Help
+    });
+    for menu in menu_ids {
         c.add(format!("menu.{menu:?}"), |s| s.menu(menu).into());
         c.add(format!("menu.{menu:?} (menu bar)"), |s| {
             menus::top_menu_label(s, menu)
@@ -170,15 +252,17 @@ pub fn entries() -> Vec<Entry> {
         PatternError::Control('\u{7}'),
         PatternError::BadChar('|'),
     ];
-    for error in pattern_errors {
-        // Checks that the list above has every variant.
-        match error {
-            PatternError::NotFullPath
-            | PatternError::Slash
-            | PatternError::Colon
-            | PatternError::Control(_)
-            | PatternError::BadChar(_) => {}
+    each_variant_in!(
+        pattern_errors,
+        PatternError {
+            NotFullPath,
+            Slash,
+            Colon,
+            Control,
+            BadChar
         }
+    );
+    for error in pattern_errors {
         c.add(format!("bad_pattern.{error:?}"), |s| {
             s.bad_pattern(3, "{pattern}", error)
         });
@@ -199,7 +283,7 @@ pub fn entries() -> Vec<Entry> {
     c.add("delete_profile_question(0)", |s| {
         s.delete_profile_question("{name}", 0)
     });
-    c.counted("delete_profile_question", |s, n| {
+    c.add_per_count("delete_profile_question", |s, n| {
         s.delete_profile_question("{name}", n as usize)
     });
     c.add("delete", |s| s.delete().into());
@@ -227,13 +311,25 @@ pub fn entries() -> Vec<Entry> {
         Failure::SnapshotDeleted,
         Failure::Other {
             text: "{text of Windows or SQLite}".into(),
-            code: Some(5),
+            code: 5,
         },
-        Failure::Other {
-            text: "{text of Windows or SQLite}".into(),
-            code: None,
-        },
+        Failure::Unexpected("{text without a code}".into()),
     ];
+    each_variant_in!(
+        failures,
+        Failure {
+            AccessDenied,
+            InUse,
+            DiskFull,
+            NewerVersion,
+            NotAProfile,
+            NotSettings,
+            Cancelled,
+            SnapshotDeleted,
+            Other,
+            Unexpected,
+        }
+    );
     for failure in &failures {
         let id = match failure {
             Failure::AccessDenied => "AccessDenied",
@@ -244,24 +340,24 @@ pub fn entries() -> Vec<Entry> {
             Failure::NotSettings => "NotSettings",
             Failure::Cancelled => "Cancelled",
             Failure::SnapshotDeleted => "SnapshotDeleted",
-            Failure::Other { code: Some(_), .. } => "Other with a code",
-            Failure::Other { code: None, .. } => "Other without a code",
+            Failure::Other { .. } => "Other",
+            Failure::Unexpected(_) => "Unexpected",
         };
         c.add(format!("failure.{id}"), |s| s.failure(failure));
     }
 
     c.add("progress", |s| s.progress().into());
-    c.counted("snapshot_progress", |s, n| {
+    c.add_per_count("snapshot_progress", |s, n| {
         s.snapshot_progress(n, &n.to_string(), "{folder}")
     });
     c.add("snapshot_progress(5, no folder)", |s| {
         s.snapshot_progress(5, "5", "")
     });
-    c.counted("snapshot_saving", |s, n| {
+    c.add_per_count("snapshot_saving", |s, n| {
         s.snapshot_saving(n, &n.to_string())
     });
     c.add("snapshot_started", |s| s.snapshot_started().into());
-    c.counted("snapshot_saved", |s, n| s.snapshot_saved(n, &n.to_string()));
+    c.add_per_count("snapshot_saved", |s, n| s.snapshot_saved(n, &n.to_string()));
     c.add("entries_inaccessible", |s| {
         s.entries_inaccessible("{count}")
     });
@@ -277,6 +373,9 @@ pub fn entries() -> Vec<Entry> {
     });
     c.add("folder_volume_network", |s| {
         s.folder_volume_network().into()
+    });
+    c.add("folder_drive_not_connected", |s| {
+        s.folder_drive_not_connected().into()
     });
     c.add("folder_is_a_file", |s| s.folder_is_a_file().into());
     c.add("folder_unreachable", |s| s.folder_unreachable("{reason}"));
@@ -309,10 +408,10 @@ pub fn entries() -> Vec<Entry> {
     c.add("delete_snapshot_question (without a comment)", |s| {
         s.delete_snapshot_question("{date and time}", None)
     });
-    c.counted("delete_snapshots_question", |s, n| {
+    c.add_per_count("delete_snapshots_question", |s, n| {
         s.delete_snapshots_question(n as usize)
     });
-    c.counted("snapshots_deleted", |s, n| {
+    c.add_per_count("snapshots_deleted", |s, n| {
         s.snapshots_deleted(n as usize, "{profile}")
     });
     c.add("snapshots_not_deleted", |s| {
@@ -331,7 +430,12 @@ pub fn entries() -> Vec<Entry> {
     c.add("compaction_stopped", |s| s.compaction_stopped().into());
 
     c.add("focus_after_snapshot", |s| s.focus_after_snapshot().into());
-    for value in FocusAfterSnapshot::ALL {
+    let focus_options = all!(FocusAfterSnapshot {
+        IfInList,
+        Always,
+        Never
+    });
+    for value in focus_options {
         c.add(format!("focus_option.{value:?}"), |s| {
             s.focus_option(value).into()
         });
@@ -346,7 +450,12 @@ pub fn entries() -> Vec<Entry> {
     });
 
     c.add("language", |s| s.language().into());
-    for value in Language::ALL {
+    let languages = all!(Language {
+        SameAsWindows,
+        English,
+        Ukrainian
+    });
+    for value in languages {
         c.add(format!("language_option.{value:?}"), |s| {
             s.language_option(value).into()
         });
@@ -372,7 +481,12 @@ pub fn entries() -> Vec<Entry> {
     c.add("focus_after_comparison", |s| {
         s.focus_after_comparison().into()
     });
-    for value in FocusAfterComparison::ALL {
+    let comparison_focus_options = all!(FocusAfterComparison {
+        IfNotMoved,
+        Always,
+        Never
+    });
+    for value in comparison_focus_options {
         c.add(format!("comparison_focus_option.{value:?}"), |s| {
             s.comparison_focus_option(value).into()
         });
@@ -383,7 +497,15 @@ pub fn entries() -> Vec<Entry> {
     });
     c.add("nothing_to_compare", |s| s.nothing_to_compare().into());
 
-    for column in Column::ALL {
+    let columns = all!(Column {
+        Name,
+        Change,
+        WhatChanged,
+        Size,
+        DateModified,
+        Folder
+    });
+    for column in columns {
         c.add(format!("column.{column:?}"), |s| s.column(column).into());
     }
     let changes = all!(RowChange {
@@ -401,7 +523,17 @@ pub fn entries() -> Vec<Entry> {
             });
         }
     }
-    for field in Field::ALL {
+    let fields = all!(Field {
+        FileVersion,
+        ProductVersion,
+        LinkTarget,
+        Size,
+        DateModified,
+        DateCreated,
+        Attributes,
+        NameCase,
+    });
+    for field in fields {
         c.add(format!("field.{field:?}"), |s| s.field(field).into());
     }
     let inaccessible_in = all!(InaccessibleIn {
@@ -414,7 +546,7 @@ pub fn entries() -> Vec<Entry> {
             s.inaccessible_in(which).into()
         });
     }
-    c.counted("bytes", |s, n| s.bytes(n, &n.to_string()));
+    c.add_per_count("bytes", |s, n| s.bytes(n, &n.to_string()));
     for power in 1..=6 {
         c.add(format!("size_unit({power})"), |s| s.size_unit(power).into());
     }
@@ -466,27 +598,22 @@ pub fn entries() -> Vec<Entry> {
         warnings: counted(n),
     };
     c.add("summary (no changes)", |s| {
-        s.summary(&SummaryText {
-            changes: counted(0),
-            added: counted(0),
-            deleted: counted(0),
-            modified: counted(0),
-            replaced: counted(0),
-            inaccessible: counted(0),
-            size: SizeChange::Unchanged,
-            warnings: counted(0),
-        })
+        s.summary(&summary(0, SizeChange::Unchanged))
     });
     let sizes = [
         SizeChange::Increased("{size}".into()),
         SizeChange::Decreased("{size}".into()),
         SizeChange::Unchanged,
     ];
-    for size in &sizes {
-        // Checks that the list above has every variant.
-        match size {
-            SizeChange::Increased(_) | SizeChange::Decreased(_) | SizeChange::Unchanged => {}
+    each_variant_in!(
+        sizes,
+        SizeChange {
+            Increased,
+            Decreased,
+            Unchanged
         }
+    );
+    for size in &sizes {
         for n in [1, 5] {
             c.add(format!("summary({}, {size:?})", n * 4), |s| {
                 s.summary(&summary(n, size.clone()))
@@ -509,8 +636,9 @@ pub fn entries() -> Vec<Entry> {
     c.add("showing", |s| s.showing("{shown}", "{total}"));
     let path = || PathBuf::from("{folder}");
     let sides = all!(Side { Earlier, Later });
+    let mut warnings = Vec::new();
     for side in sides {
-        let warnings = [
+        for warning in [
             Warning::FolderOnlyIn { path: path(), side },
             Warning::FolderNarrowed {
                 wider: PathBuf::from("{wider}"),
@@ -527,13 +655,14 @@ pub fn entries() -> Vec<Entry> {
                 pattern: "{pattern}".into(),
                 side,
             },
-        ];
-        for warning in &warnings {
-            let id = format!("warning.{}.{side:?}", warning_name(warning));
-            c.add(id, |s| s.warning(warning, "{reason}"));
+        ] {
+            warnings.push((
+                format!("warning.{}.{side:?}", warning_name(&warning)),
+                warning,
+            ));
         }
     }
-    let warnings = [
+    for warning in [
         Warning::DifferentVolumes {
             path: path(),
             earlier: 1,
@@ -549,11 +678,24 @@ pub fn entries() -> Vec<Entry> {
             earlier: None,
             later: Some("{expanded}".into()),
         },
-    ];
-    for warning in &warnings {
-        c.add(format!("warning.{}", warning_name(warning)), |s| {
-            s.warning(warning, "{reason}")
-        });
+    ] {
+        warnings.push((format!("warning.{}", warning_name(&warning)), warning));
+    }
+    let every_warning: Vec<&Warning> = warnings.iter().map(|(_, warning)| warning).collect();
+    each_variant_in!(
+        every_warning,
+        Warning {
+            FolderOnlyIn,
+            FolderNarrowed,
+            FolderMissing,
+            FolderUnavailable,
+            DifferentVolumes,
+            ExclusionOnlyIn,
+            ExclusionAppliedDifferently,
+        }
+    );
+    for (id, warning) in &warnings {
+        c.add(id.as_str(), |s| s.warning(warning, "{reason}"));
     }
     c.add("no_difference_yet", |s| s.no_difference_yet().into());
     c.add("no_match", |s| s.no_match().into());
@@ -563,7 +705,12 @@ pub fn entries() -> Vec<Entry> {
     c.add("comparison_field", |s| s.comparison_field().into());
     c.add("filter_field", |s| s.filter_field().into());
     c.add("size_format", |s| s.size_format().into());
-    for value in SizeFormat::ALL {
+    let size_options = all!(SizeFormat {
+        Explorer,
+        Decimal,
+        Bytes
+    });
+    for value in size_options {
         c.add(format!("size_option.{value:?}"), |s| {
             s.size_option(value).into()
         });
@@ -600,7 +747,27 @@ pub fn entries() -> Vec<Entry> {
     for kind in kinds {
         c.add(format!("kind.{kind:?}"), |s| s.kind(kind).into());
     }
-    for attribute in Attribute::ALL {
+    let attributes = all!(Attribute {
+        ReadOnly,
+        Hidden,
+        System,
+        Archive,
+        Temporary,
+        SparseFile,
+        ReparsePoint,
+        Compressed,
+        Offline,
+        NotContentIndexed,
+        Encrypted,
+        IntegrityStream,
+        NoScrubData,
+        RecallOnOpen,
+        Pinned,
+        Unpinned,
+        RecallOnDataAccess,
+        StrictlySequential,
+    });
+    for attribute in attributes {
         c.add(format!("attribute.{attribute:?}"), |s| {
             s.attribute(attribute).into()
         });
@@ -625,17 +792,29 @@ pub fn entries() -> Vec<Entry> {
             });
         }
     }
-    let absent = Inaccessibility {
-        which: InaccessibleIn::Later,
-        why: Unreadable::Folder,
-        absent_in: Some(Side::Earlier),
-    };
-    c.add(
-        "inaccessible_details.Folder.Later (absent in the earlier)",
-        |s| s.inaccessible_details(&absent),
-    );
+    // An entry inaccessible in one snapshot and absent in the other, for either side.
+    for absent_in in sides {
+        let (which, absent_side) = match absent_in {
+            Side::Earlier => (InaccessibleIn::Later, "earlier"),
+            Side::Later => (InaccessibleIn::Earlier, "later"),
+        };
+        let absent = Inaccessibility {
+            which,
+            why: Unreadable::Folder,
+            absent_in: Some(absent_in),
+        };
+        c.add(
+            format!("inaccessible_details.Folder.{which:?} (absent in the {absent_side})"),
+            |s| s.inaccessible_details(&absent),
+        );
+    }
     c.add("attribute_format", |s| s.attribute_format().into());
-    for value in AttributeFormat::ALL {
+    let attribute_options = all!(AttributeFormat {
+        Words,
+        Letters,
+        LettersWithCommas
+    });
+    for value in attribute_options {
         c.add(format!("attribute_option.{value:?}"), |s| {
             s.attribute_option(value).into()
         });
@@ -652,7 +831,7 @@ pub fn entries() -> Vec<Entry> {
     c.add("key_left", |s| s.key_left().into());
     c.add("key_right", |s| s.key_right().into());
     c.add("key_context_menu", |s| s.key_context_menu().into());
-    c.0
+    c.entries
 }
 
 fn warning_name(warning: &Warning) -> &'static str {
@@ -697,44 +876,25 @@ pub fn catalog() -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
-
-    /// The names of the methods of `Strings`, read from its source.
-    fn string_methods() -> Vec<String> {
-        let source = include_str!("mod.rs");
-        let start = source
-            .find("pub trait Strings {")
-            .expect("the trait is in mod.rs");
-        let end = start + source[start..].find("\n}\n").expect("the trait ends");
-        source[start..end]
-            .lines()
-            .filter_map(|line| line.trim().strip_prefix("fn "))
-            .map(|rest| {
-                rest.split(['(', '<'])
-                    .next()
-                    .unwrap_or_default()
-                    .to_string()
-            })
-            .filter(|name| name != "lang")
-            .collect()
-    }
+    use crate::i18n::{METHODS, Recorder};
 
     #[test]
-    fn the_catalog_has_every_string_of_the_trait() {
-        let methods = string_methods();
-        assert!(methods.len() > 100, "the trait was read: {methods:?}");
-        let entries = entries();
-        let missing: Vec<&String> = methods
-            .iter()
-            .filter(|m| {
-                !entries.iter().any(|e| {
-                    e.id == **m
-                        || e.id.starts_with(&format!("{m}."))
-                        || e.id.starts_with(&format!("{m}("))
-                        || e.id.starts_with(&format!("{m} "))
-                })
-            })
-            .collect();
-        assert!(missing.is_empty(), "not in the catalog: {missing:?}");
+    fn the_catalog_calls_every_method_of_the_trait_in_both_languages() {
+        let (en, uk) = (Recorder::new(&En), Recorder::new(&Uk));
+        entries_in(&en, &uk);
+        assert!(
+            METHODS.len() > 100,
+            "the trait has its methods: {METHODS:?}"
+        );
+        for called in [en.called(), uk.called()] {
+            // The language of the strings is not a string.
+            let missing: Vec<&str> = METHODS
+                .iter()
+                .copied()
+                .filter(|&method| method != "lang" && !called.contains(method))
+                .collect();
+            assert!(missing.is_empty(), "not in the catalog: {missing:?}");
+        }
     }
 
     #[test]
