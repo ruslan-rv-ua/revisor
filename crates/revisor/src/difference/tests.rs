@@ -19,8 +19,16 @@ impl Regional for Plain {
         format!("t{file_time}")
     }
 
+    fn file_time_fraction(&self, file_time: i64, digits: u32) -> String {
+        format!("t{file_time}/{digits}")
+    }
+
     fn date_time(&self, unix_millis: i64) -> String {
         format!("d{unix_millis}")
+    }
+
+    fn attribute_letter(&self, flag: u32) -> Option<String> {
+        explorer_letter(flag)
     }
 }
 
@@ -49,9 +57,39 @@ impl Regional for Ukrainian {
         format!("t{file_time}")
     }
 
+    fn file_time_fraction(&self, file_time: i64, digits: u32) -> String {
+        format!("t{file_time}/{digits}")
+    }
+
     fn date_time(&self, unix_millis: i64) -> String {
         format!("d{unix_millis}")
     }
+
+    fn attribute_letter(&self, flag: u32) -> Option<String> {
+        explorer_letter(flag)
+    }
+}
+
+/// The letters of the column «Атрибути» of File Explorer on Windows 10 and 11, as Windows
+/// gives them; a sparse file has none.
+pub(crate) fn explorer_letter(flag: u32) -> Option<String> {
+    let letter = match flag {
+        0x1 => "R",
+        0x2 => "H",
+        0x4 => "S",
+        0x20 => "A",
+        0x100 => "T",
+        0x400 => "L",
+        0x800 => "C",
+        0x1000 => "O",
+        0x2000 => "I",
+        0x4000 => "E",
+        0x8_0000 => "P",
+        0x10_0000 => "U",
+        0x40_0000 => "M",
+        _ => return None,
+    };
+    Some(letter.to_string())
 }
 
 fn entry(parent: Option<u32>, name: &str, kind: EntryKind) -> Entry {
@@ -388,6 +426,108 @@ fn what_changed_names_the_fields_the_version_first_and_says_replaced_apart() {
             "Link replaced"
         ]
     );
+}
+
+#[test]
+fn the_details_and_the_path_are_of_the_row_at_a_place_of_the_list() {
+    // TASK-14: a modified file, folders inaccessible in one snapshot, unknown in one, and
+    // inaccessible in one and gone from the other, then a file added.
+    let mut made = Made::new(r"C:\Data");
+    made.modified("app.exe", EntryKind::File, (100, 150), Fields::SIZE);
+    made.inaccessible("docs", EntryKind::Dir, Some(false), Some(true));
+    made.inaccessible("plugins", EntryKind::Dir, Some(false), None);
+    made.inaccessible("locked", EntryKind::Dir, Some(true), None);
+    made.added("z.txt", EntryKind::File, 3);
+    let mut list = showing(difference(vec![made.done()], Vec::new()));
+    let details = list.details(0).unwrap();
+    assert_eq!(details.name, "app.exe");
+    assert_eq!(
+        details.text.lines().collect::<Vec<_>>(),
+        [
+            r"Path: C:\Data\app.exe",
+            "Change: modified; what changed: size",
+            "Kind: file",
+            "Size: before 100 bytes, after 150 bytes",
+            "Date created: t0 (unchanged)",
+            "Date modified: t0 (unchanged)",
+            "Attributes: no attributes (unchanged)",
+            "File version: version not read (unchanged)",
+            "Product version: version not read (unchanged)",
+        ]
+    );
+    let last_line = |list: &List, index: usize| {
+        let text = list.details(index).unwrap().text;
+        text.lines().last().unwrap().to_string()
+    };
+    assert_eq!(
+        last_line(&list, 1),
+        "Inaccessible: in the later snapshot — the contents of the folder could not be read."
+    );
+    assert_eq!(
+        last_line(&list, 2),
+        "Inaccessible: in the later snapshot — whether it was there is unknown: a folder on \
+         the way to it could not be read or is a link."
+    );
+    assert_eq!(
+        last_line(&list, 3),
+        "Inaccessible: in the earlier snapshot — the contents of the folder could not be \
+         read; the later snapshot does not have it."
+    );
+    // An added file is not inaccessible; nor is a modified one readable in both.
+    assert_eq!(last_line(&list, 4), "Attributes: no attributes");
+    // The path of the entry, from the later snapshot where it is there.
+    assert_eq!(list.entry_path(4), Some(PathBuf::from(r"C:\Data\z.txt")));
+    assert_eq!(list.entry_path(3), Some(PathBuf::from(r"C:\Data\locked")));
+    assert_eq!(list.entry_path(5), None);
+    assert_eq!(list.details(5), None);
+    // The row at a place of the list as filtered: the inaccessible ones only.
+    list.set_types([false, false, false, true]);
+    assert_eq!(list.details(0).unwrap().name, "docs");
+    assert_eq!(list.entry_path(0), Some(PathBuf::from(r"C:\Data\docs")));
+}
+
+#[test]
+fn an_inaccessible_entry_that_is_also_modified_shows_what_changed_in_its_details() {
+    // A folder inaccessible later whose name changed case is two rows: inaccessible, and
+    // modified; the details of both name the change of the name (TASK-14 #4).
+    let mut made = Made::new(r"C:\Data");
+    made.inaccessible("docs", EntryKind::Dir, Some(false), Some(true));
+    let at = |tree: &[Entry]| {
+        tree.iter()
+            .position(|e| &*e.name == OsStr::new("docs"))
+            .unwrap() as u32
+    };
+    let (a, b) = (at(&made.old), at(&made.new));
+    made.new[b as usize].name = OsString::from("Docs").into_boxed_os_str();
+    made.change(ChangeKind::Modified, Some(a), Some(b), Fields::NAME);
+    let list = showing(difference(vec![made.done()], Vec::new()));
+    assert_eq!(list.len(), 2);
+    for index in 0..2 {
+        let text = list.details(index).unwrap().text;
+        assert_eq!(
+            text.lines().nth(1),
+            Some("Name: before docs, after Docs"),
+            "{text}"
+        );
+    }
+}
+
+#[test]
+fn the_details_write_attributes_as_the_setting_says() {
+    let mut made = Made::new(r"C:\Data");
+    let b = made.added("secret.txt", EntryKind::File, 1);
+    made.new[b as usize].attributes = 0x2 | 0x20;
+    let mut list = showing(difference(vec![made.done()], Vec::new()));
+    let attributes = |list: &List| {
+        let text = list.details(0).unwrap().text;
+        text.lines().last().unwrap().to_string()
+    };
+    assert_eq!(attributes(&list), "Attributes: hidden, archive");
+    list.set_attribute_format(AttributeFormat::Letters);
+    assert_eq!(list.attribute_format(), AttributeFormat::Letters);
+    assert_eq!(attributes(&list), "Attributes: HA");
+    list.set_attribute_format(AttributeFormat::LettersWithCommas);
+    assert_eq!(attributes(&list), "Attributes: H, A");
 }
 
 #[test]

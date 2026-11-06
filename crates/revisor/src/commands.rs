@@ -125,8 +125,8 @@ pub enum Reason {
     NoOtherSnapshot,
     /// revisor already runs as administrator.
     AlreadyAdmin,
-    /// The command's own task has not been done yet.
-    NotYet,
+    /// The difference list shows no row, so there is no change to act on (TASK-14).
+    NoChangeShown,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -194,15 +194,6 @@ pub fn command(id: CommandId) -> &'static Command {
 
 fn always(_: &AppState) -> Result<(), Reason> {
     Ok(())
-}
-
-/// For commands whose task has not been done: unavailable, except in the demo state.
-fn not_yet(state: &AppState) -> Result<(), Reason> {
-    if state.demo {
-        Ok(())
-    } else {
-        Err(Reason::NotYet)
-    }
 }
 
 fn require(condition: bool, reason: Reason) -> Result<(), Reason> {
@@ -282,12 +273,12 @@ fn difference_shown(state: &AppState) -> Result<(), Reason> {
     require(state.has_difference, Reason::NoDifference)
 }
 
-/// For the commands on the difference whose task is not done (TASK-14): they need a
-/// difference, and then their own task.
-fn difference_not_yet(state: &AppState) -> Result<(), Reason> {
-    has_snapshots(state)?;
-    require(state.has_difference, Reason::NoDifference)?;
-    not_yet(state)
+/// The difference list shows a change to act on (TASK-14): a row of a difference of
+/// whichever profile, the one with the focus. The difference is in memory, so no profile
+/// or snapshot is needed (TASK-13 #6).
+fn change_shown(state: &AppState) -> Result<(), Reason> {
+    difference_shown(state)?;
+    require(state.difference_rows > 0, Reason::NoChangeShown)
 }
 
 /// The current snapshot can be compared (TASK-11): the profile has snapshots and its
@@ -344,8 +335,14 @@ const fn key(key: Key) -> Shortcut {
     Shortcut::new(key)
 }
 
-/// The defaults of a plain menu item; each entry overrides what it needs.
-const fn item(id: CommandId, place: Place, access: u8) -> Command {
+/// A plain menu item that can run when `available` says so; each entry overrides the
+/// defaults it needs. Every command names its condition: none runs by default.
+const fn item(
+    id: CommandId,
+    place: Place,
+    access: u8,
+    available: fn(&AppState) -> Result<(), Reason>,
+) -> Command {
     Command {
         id,
         place,
@@ -356,7 +353,7 @@ const fn item(id: CommandId, place: Place, access: u8) -> Command {
         scope: None,
         list_key: None,
         context: None,
-        available: not_yet,
+        available,
         checked: None,
     }
 }
@@ -365,8 +362,7 @@ const fn shown_check(id: CommandId, access: u8, digit: u8) -> Command {
     Command {
         kind: CommandKind::Check,
         shortcut: Some(key(Key::Digit(digit)).ctrl()),
-        available: difference_shown,
-        ..item(id, place(MenuId::Difference, 1), access)
+        ..item(id, place(MenuId::Difference, 1), access, difference_shown)
     }
 }
 
@@ -378,9 +374,8 @@ const fn sort_radio(
 ) -> Command {
     Command {
         kind: CommandKind::Radio,
-        available: difference_shown,
         checked: Some(checked),
-        ..item(id, sort_place(group), access)
+        ..item(id, sort_place(group), access, difference_shown)
     }
 }
 
@@ -393,45 +388,58 @@ pub static COMMANDS: &[Command] = &[
     Command {
         ellipsis: true,
         shortcut: Some(key(Key::Letter(b'N')).ctrl()),
-        available: always,
-        ..item(CommandId::NewProfile, place(MenuId::File, 0), b'N')
+        ..item(CommandId::NewProfile, place(MenuId::File, 0), b'N', always)
     },
     Command {
         ellipsis: true,
-        available: profile_free,
-        ..item(CommandId::EditProfile, place(MenuId::File, 0), b'E')
+        ..item(
+            CommandId::EditProfile,
+            place(MenuId::File, 0),
+            b'E',
+            profile_free,
+        )
     },
     Command {
         ellipsis: true,
-        available: profile_free,
-        ..item(CommandId::DeleteProfile, place(MenuId::File, 0), b'D')
+        ..item(
+            CommandId::DeleteProfile,
+            place(MenuId::File, 0),
+            b'D',
+            profile_free,
+        )
     },
     Command {
-        available: always,
-        ..item(CommandId::Settings, place(MenuId::File, 1), b'S')
+        ..item(CommandId::Settings, place(MenuId::File, 1), b'S', always)
     },
     Command {
-        available: not_elevated,
-        ..item(CommandId::RestartAsAdmin, place(MenuId::File, 1), b'R')
+        ..item(
+            CommandId::RestartAsAdmin,
+            place(MenuId::File, 1),
+            b'R',
+            not_elevated,
+        )
     },
     Command {
         shortcut: Some(key(Key::F(4)).alt()),
-        available: always,
-        ..item(CommandId::Exit, place(MenuId::File, 2), b'X')
+        ..item(CommandId::Exit, place(MenuId::File, 2), b'X', always)
     },
     // Snapshot
     Command {
         shortcut: Some(key(Key::F(5))),
-        available: snapshot_possible,
-        ..item(CommandId::TakeSnapshot, place(MenuId::Snapshot, 0), b'T')
+        ..item(
+            CommandId::TakeSnapshot,
+            place(MenuId::Snapshot, 0),
+            b'T',
+            snapshot_possible,
+        )
     },
     Command {
         shortcut: Some(key(Key::F(5)).ctrl()),
-        available: snapshot_possible,
         ..item(
             CommandId::SnapshotAndCompare,
             place(MenuId::Snapshot, 0),
             b'A',
+            snapshot_possible,
         )
     },
     Command {
@@ -441,8 +449,12 @@ pub static COMMANDS: &[Command] = &[
             pane: Pane::Snapshots,
             group: 1,
         }),
-        available: comment_possible,
-        ..item(CommandId::Comment, place(MenuId::Snapshot, 1), b'C')
+        ..item(
+            CommandId::Comment,
+            place(MenuId::Snapshot, 1),
+            b'C',
+            comment_possible,
+        )
     },
     Command {
         shortcut: Some(key(Key::Delete)),
@@ -451,20 +463,28 @@ pub static COMMANDS: &[Command] = &[
             pane: Pane::Snapshots,
             group: 2,
         }),
-        available: snapshots_deletable,
-        ..item(CommandId::DeleteSnapshots, place(MenuId::Snapshot, 1), b'D')
+        ..item(
+            CommandId::DeleteSnapshots,
+            place(MenuId::Snapshot, 1),
+            b'D',
+            snapshots_deletable,
+        )
     },
     Command {
         shortcut: Some(key(Key::F(5)).shift()),
-        available: snapshot_running,
-        ..item(CommandId::CancelSnapshot, place(MenuId::Snapshot, 2), b'N')
+        ..item(
+            CommandId::CancelSnapshot,
+            place(MenuId::Snapshot, 2),
+            b'N',
+            snapshot_running,
+        )
     },
     Command {
-        available: compaction_running,
         ..item(
             CommandId::CancelCompaction,
             place(MenuId::Snapshot, 2),
             b'O',
+            compaction_running,
         )
     },
     // Compare
@@ -475,11 +495,11 @@ pub static COMMANDS: &[Command] = &[
             pane: Pane::Snapshots,
             group: 0,
         }),
-        available: previous_comparable,
         ..item(
             CommandId::CompareWithPrevious,
             place(MenuId::Compare, 0),
             b'C',
+            previous_comparable,
         )
     },
     Command {
@@ -489,13 +509,21 @@ pub static COMMANDS: &[Command] = &[
             pane: Pane::Snapshots,
             group: 0,
         }),
-        available: other_comparable,
-        ..item(CommandId::CompareWith, place(MenuId::Compare, 0), b'W')
+        ..item(
+            CommandId::CompareWith,
+            place(MenuId::Compare, 0),
+            b'W',
+            other_comparable,
+        )
     },
     Command {
         shortcut: Some(key(Key::F(7)).shift()),
-        available: comparison_running,
-        ..item(CommandId::CancelComparison, place(MenuId::Compare, 1), b'N')
+        ..item(
+            CommandId::CancelComparison,
+            place(MenuId::Compare, 1),
+            b'N',
+            comparison_running,
+        )
     },
     // Difference
     Command {
@@ -505,8 +533,12 @@ pub static COMMANDS: &[Command] = &[
             pane: Pane::Difference,
             group: 0,
         }),
-        available: difference_not_yet,
-        ..item(CommandId::Details, place(MenuId::Difference, 0), b'D')
+        ..item(
+            CommandId::Details,
+            place(MenuId::Difference, 0),
+            b'D',
+            change_shown,
+        )
     },
     Command {
         shortcut: Some(key(Key::Enter).ctrl()),
@@ -514,17 +546,21 @@ pub static COMMANDS: &[Command] = &[
             pane: Pane::Difference,
             group: 0,
         }),
-        available: difference_not_yet,
         ..item(
             CommandId::ShowInExplorer,
             place(MenuId::Difference, 0),
             b'E',
+            change_shown,
         )
     },
     Command {
         shortcut: Some(key(Key::Letter(b'F')).ctrl()),
-        available: difference_shown,
-        ..item(CommandId::FilterByText, place(MenuId::Difference, 1), b'F')
+        ..item(
+            CommandId::FilterByText,
+            place(MenuId::Difference, 1),
+            b'F',
+            difference_shown,
+        )
     },
     Command {
         checked: Some(|s| s.shows(ChangeType::Added)),
@@ -568,12 +604,15 @@ pub static COMMANDS: &[Command] = &[
     // Help
     Command {
         shortcut: Some(key(Key::F(1))),
-        available: always,
-        ..item(CommandId::KeyboardShortcuts, place(MenuId::Help, 0), b'K')
+        ..item(
+            CommandId::KeyboardShortcuts,
+            place(MenuId::Help, 0),
+            b'K',
+            always,
+        )
     },
     Command {
-        available: always,
-        ..item(CommandId::About, place(MenuId::Help, 1), b'A')
+        ..item(CommandId::About, place(MenuId::Help, 1), b'A', always)
     },
 ];
 
@@ -721,58 +760,81 @@ mod tests {
     ];
 
     #[test]
-    fn outside_the_demo_only_the_commands_of_finished_tasks_run() {
-        // A profile with snapshots, one selected, and a difference, as a standard user,
-        // with nothing running.
+    fn with_a_profile_at_rest_and_a_difference_every_command_runs_but_the_cancels() {
+        // A profile with snapshots, one selected, and a difference of three rows, as a
+        // standard user, with nothing running.
         let state = AppState {
             profile: Some("Дім".into()),
             snapshots: 2,
             selected_snapshots: 1,
             current_snapshot: Some(1),
             has_difference: true,
+            difference_rows: 3,
             ..AppState::new()
         };
-        let finished = [
-            CommandId::NewProfile,
-            CommandId::EditProfile,
-            CommandId::DeleteProfile,
-            CommandId::Settings,
-            CommandId::RestartAsAdmin,
-            CommandId::Exit,
-            CommandId::TakeSnapshot,
-            CommandId::SnapshotAndCompare,
-            CommandId::Comment,
-            CommandId::DeleteSnapshots,
-            CommandId::CompareWithPrevious,
-            CommandId::CompareWith,
-            CommandId::KeyboardShortcuts,
-            CommandId::About,
-        ];
         for c in COMMANDS {
             let available = (c.available)(&state);
-            if finished.contains(&c.id) || DIFFERENCE_VIEW.contains(&c.id) {
-                assert_eq!(available, Ok(()), "{:?}", c.id);
-            } else if c.id == CommandId::CancelSnapshot {
-                assert_eq!(available, Err(Reason::SnapshotNotRunning));
-            } else if c.id == CommandId::CancelCompaction {
-                assert_eq!(available, Err(Reason::CompactionNotRunning));
-            } else if c.id == CommandId::CancelComparison {
-                assert_eq!(available, Err(Reason::ComparisonNotRunning));
-            } else {
-                assert!(available.is_err(), "{:?} runs before its task", c.id);
+            match c.id {
+                CommandId::CancelSnapshot => {
+                    assert_eq!(available, Err(Reason::SnapshotNotRunning));
+                }
+                CommandId::CancelCompaction => {
+                    assert_eq!(available, Err(Reason::CompactionNotRunning));
+                }
+                CommandId::CancelComparison => {
+                    assert_eq!(available, Err(Reason::ComparisonNotRunning));
+                }
+                _ => assert_eq!(available, Ok(()), "{:?}", c.id),
             }
         }
         let take = command(CommandId::TakeSnapshot).available;
         assert_eq!(take(&AppState::new()), Err(Reason::NoProfiles));
-        // Details and Show in File Explorer wait for TASK-14, but in the demo state.
+    }
+
+    #[test]
+    fn details_and_file_explorer_need_a_change_in_the_list_of_any_difference() {
+        let available = |id, state: &AppState| (command(id).available)(state);
+        // A difference shown while no profile is open, its profile deleted (TASK-13 #6):
+        // the details are in memory, and File Explorer needs only the path.
+        let rows = AppState {
+            has_difference: true,
+            difference_rows: 1,
+            ..AppState::new()
+        };
+        // A difference whose list shows nothing: no changes, or the filter hid them all.
+        let empty = AppState {
+            difference_rows: 0,
+            ..rows.clone()
+        };
         for id in [CommandId::Details, CommandId::ShowInExplorer] {
-            assert_eq!((command(id).available)(&state), Err(Reason::NotYet));
-            let demo = AppState {
-                demo: true,
-                ..state.clone()
-            };
-            assert_eq!((command(id).available)(&demo), Ok(()), "{id:?}");
+            assert_eq!(available(id, &rows), Ok(()), "{id:?}");
+            assert_eq!(available(id, &empty), Err(Reason::NoChangeShown), "{id:?}");
+            assert_eq!(
+                available(id, &AppState::new()),
+                Err(Reason::NoDifference),
+                "{id:?}"
+            );
+            let c = command(id);
+            assert_eq!(c.place.menu, MenuId::Difference, "{id:?}");
+            assert_eq!(
+                c.context,
+                Some(ContextPlace {
+                    pane: Pane::Difference,
+                    group: 0
+                }),
+                "{id:?}"
+            );
+            assert!(!c.ellipsis, "{id:?} shows a window without asking for more");
         }
+        // The keys of the document «Клавіатура й меню» (#14).
+        let details = command(CommandId::Details);
+        assert_eq!(details.shortcut, Some(key(Key::Enter).alt()));
+        assert_eq!(details.list_key, Some((Pane::Difference, key(Key::Enter))));
+        assert_eq!(details.access, b'D');
+        let explorer = command(CommandId::ShowInExplorer);
+        assert_eq!(explorer.shortcut, Some(key(Key::Enter).ctrl()));
+        assert_eq!(explorer.list_key, None);
+        assert_eq!(explorer.access, b'E');
     }
 
     #[test]
@@ -1117,6 +1179,7 @@ mod tests {
                     CommandId::CompareWithPrevious,
                     place(MenuId::Compare, 0),
                     b'C',
+                    always,
                 )
             },
             Command {
@@ -1125,6 +1188,7 @@ mod tests {
                     CommandId::ShowInExplorer,
                     place(MenuId::Difference, 0),
                     b'E',
+                    always,
                 )
             },
         ];
@@ -1142,22 +1206,37 @@ mod tests {
             // Same shortcut twice.
             Command {
                 shortcut: f5,
-                ..item(CommandId::TakeSnapshot, place(MenuId::Snapshot, 0), b'T')
+                ..item(
+                    CommandId::TakeSnapshot,
+                    place(MenuId::Snapshot, 0),
+                    b'T',
+                    always,
+                )
             },
             Command {
                 shortcut: f5,
-                ..item(CommandId::CancelSnapshot, place(MenuId::Snapshot, 0), b'N')
+                ..item(
+                    CommandId::CancelSnapshot,
+                    place(MenuId::Snapshot, 0),
+                    b'N',
+                    always,
+                )
             },
             // A forbidden shortcut.
             Command {
                 shortcut: Some(key(Key::Letter(b'X')).alt()),
-                ..item(CommandId::Exit, place(MenuId::File, 0), b'X')
+                ..item(CommandId::Exit, place(MenuId::File, 0), b'X', always)
             },
             // An access key used twice in one menu, and one missing from the name.
-            item(CommandId::Settings, place(MenuId::File, 0), b'X'),
-            item(CommandId::About, place(MenuId::Help, 0), b'Q'),
+            item(CommandId::Settings, place(MenuId::File, 0), b'X', always),
+            item(CommandId::About, place(MenuId::Help, 0), b'Q', always),
             // A Cyrillic access key.
-            item(CommandId::KeyboardShortcuts, place(MenuId::Help, 0), 0xD0),
+            item(
+                CommandId::KeyboardShortcuts,
+                place(MenuId::Help, 0),
+                0xD0,
+                always,
+            ),
             // A context menu whose Enter action is not first.
             Command {
                 context: Some(ContextPlace {
@@ -1168,6 +1247,7 @@ mod tests {
                     CommandId::ShowInExplorer,
                     place(MenuId::Difference, 0),
                     b'E',
+                    always,
                 )
             },
             Command {
@@ -1176,7 +1256,12 @@ mod tests {
                     pane: Pane::Difference,
                     group: 0,
                 }),
-                ..item(CommandId::Details, place(MenuId::Difference, 0), b'D')
+                ..item(
+                    CommandId::Details,
+                    place(MenuId::Difference, 0),
+                    b'D',
+                    always,
+                )
             },
         ];
         let problems = validate(&broken, &En);

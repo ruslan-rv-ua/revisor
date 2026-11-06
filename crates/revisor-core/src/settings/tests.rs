@@ -133,6 +133,13 @@ fn the_settings_of_the_details_survive_a_restart() {
     );
     assert!(settings.warn_missing_entry().unwrap());
     settings
+        .set_attribute_format(AttributeFormat::LettersWithCommas)
+        .unwrap();
+    assert_eq!(
+        settings.attribute_format().unwrap(),
+        AttributeFormat::LettersWithCommas
+    );
+    settings
         .set_attribute_format(AttributeFormat::Words)
         .unwrap();
     settings.set_warn_missing_entry(false).unwrap();

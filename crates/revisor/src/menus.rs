@@ -180,19 +180,18 @@ mod tests {
 
     #[test]
     fn context_menus_hold_only_available_commands_with_the_enter_action_first() {
-        // A profile with snapshots and a difference, in the demo state, which lets the
-        // commands of TASK-14 on the difference list's menu run.
-        let demo = AppState {
+        // A profile with snapshots and a difference whose list shows rows.
+        let ready = AppState {
             profile: Some("Дім".into()),
             snapshots: 3,
             selected_snapshots: 1,
             current_snapshot: Some(2),
             has_difference: true,
-            demo: true,
+            difference_rows: 2,
             ..AppState::new()
         };
         assert_eq!(
-            context_menu(Pane::Snapshots, &demo),
+            context_menu(Pane::Snapshots, &ready),
             ContextMenu {
                 groups: vec![
                     vec![CommandId::CompareWithPrevious, CommandId::CompareWith],
@@ -203,7 +202,7 @@ mod tests {
             }
         );
         assert_eq!(
-            context_menu(Pane::Difference, &demo),
+            context_menu(Pane::Difference, &ready),
             ContextMenu {
                 groups: vec![vec![CommandId::Details, CommandId::ShowInExplorer]],
                 default: Some(CommandId::Details),
@@ -214,9 +213,15 @@ mod tests {
             default: None,
         };
         assert_eq!(context_menu(Pane::Snapshots, &AppState::new()), empty);
+        // A difference whose list shows nothing, and no difference at all.
+        let no_rows = AppState {
+            difference_rows: 0,
+            ..ready.clone()
+        };
+        assert_eq!(context_menu(Pane::Difference, &no_rows), empty);
         let no_difference = AppState {
             has_difference: false,
-            ..demo
+            ..ready
         };
         assert_eq!(context_menu(Pane::Difference, &no_difference), empty);
     }

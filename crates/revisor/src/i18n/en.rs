@@ -3,11 +3,14 @@
 use revisor_core::compare::{Side, Warning};
 use revisor_core::exclude::PatternError;
 use revisor_core::scan::EntryKind;
-use revisor_core::settings::{FocusAfterComparison, FocusAfterSnapshot, Language, SizeFormat};
+use revisor_core::settings::{
+    AttributeFormat, FocusAfterComparison, FocusAfterSnapshot, Language, SizeFormat,
+};
 
 use super::plural::{Category, category};
 use super::{Failure, Lang, Strings};
 use crate::commands::{CommandId, MenuId, Pane, Reason, SubmenuId};
+use crate::details::{Attribute, Inaccessibility, Property, Unreadable};
 use crate::difference::{
     Column, Counted, Field, InaccessibleIn, PairText, RowChange, SizeChange, SnapshotText,
     SummaryText,
@@ -126,7 +129,7 @@ impl Strings for En {
             Reason::NoPreviousSnapshot => "there is no previous snapshot",
             Reason::NoOtherSnapshot => "the profile has no other snapshot",
             Reason::AlreadyAdmin => "revisor is already running as administrator",
-            Reason::NotYet => "this version of revisor does not have this command yet",
+            Reason::NoChangeShown => "the difference list shows no changes",
         }
     }
 
@@ -903,8 +906,146 @@ impl Strings for En {
         }
     }
 
-    fn demo_done(&self, command: &str) -> String {
-        format!("Done: {command}.")
+    fn property(&self, property: Property) -> &'static str {
+        match property {
+            Property::Path => "Path",
+            Property::Name => "Name",
+            Property::Change => "Change",
+            Property::Kind => "Kind",
+            Property::Size => "Size",
+            Property::DateCreated => "Date created",
+            Property::DateModified => "Date modified",
+            Property::Attributes => "Attributes",
+            Property::FileVersion => "File version",
+            Property::ProductVersion => "Product version",
+            Property::Target => "Target",
+            Property::Inaccessible => "Inaccessible",
+        }
+    }
+
+    fn before_after(&self, before: &str, after: &str) -> String {
+        format!("before {before}, after {after}")
+    }
+
+    fn unchanged(&self, value: &str) -> String {
+        format!("{value} (unchanged)")
+    }
+
+    fn not_counted(&self, text: &str) -> String {
+        format!("{text} (ignored)")
+    }
+
+    fn change_type(&self, change: RowChange) -> &'static str {
+        match change {
+            RowChange::Added => "added",
+            RowChange::Deleted => "deleted",
+            RowChange::Modified => "modified",
+            RowChange::Replaced => "replaced",
+            RowChange::Inaccessible => "inaccessible",
+        }
+    }
+
+    fn what_changed(&self, fields: &str) -> String {
+        format!("what changed: {fields}")
+    }
+
+    fn kind(&self, kind: EntryKind) -> &'static str {
+        match kind {
+            EntryKind::File => "file",
+            EntryKind::Dir => "folder",
+            EntryKind::Link => "link",
+        }
+    }
+
+    fn attribute(&self, attribute: Attribute) -> &'static str {
+        match attribute {
+            Attribute::ReadOnly => "read-only",
+            Attribute::Hidden => "hidden",
+            Attribute::System => "system",
+            Attribute::Archive => "archive",
+            Attribute::Temporary => "temporary",
+            Attribute::SparseFile => "sparse",
+            Attribute::ReparsePoint => "reparse point",
+            Attribute::Compressed => "compressed",
+            Attribute::Offline => "offline",
+            Attribute::NotContentIndexed => "not content indexed",
+            Attribute::Encrypted => "encrypted",
+            Attribute::IntegrityStream => "integrity stream",
+            Attribute::NoScrubData => "no scrub data",
+            Attribute::RecallOnOpen => "recall on open",
+            Attribute::Pinned => "pinned",
+            Attribute::Unpinned => "unpinned",
+            Attribute::RecallOnDataAccess => "recall on data access",
+            Attribute::StrictlySequential => "strictly sequential",
+        }
+    }
+
+    fn no_attributes(&self) -> &'static str {
+        "no attributes"
+    }
+
+    fn version_not_read(&self) -> &'static str {
+        "version not read"
+    }
+
+    fn no_version(&self) -> &'static str {
+        "none"
+    }
+
+    fn target_unknown(&self) -> &'static str {
+        "unknown"
+    }
+
+    fn inaccessible_details(&self, inaccessible: &Inaccessibility) -> String {
+        let why = match inaccessible.why {
+            Unreadable::Folder => "the contents of the folder could not be read",
+            Unreadable::LinkTarget => "the target of the link could not be read",
+            Unreadable::Unknown => {
+                "whether it was there is unknown: a folder on the way to it could not be read \
+                 or is a link"
+            }
+        };
+        let mut text = format!("{} — {why}", self.inaccessible_in(inaccessible.which));
+        if let Some(side) = inaccessible.absent_in {
+            text.push_str(&format!(
+                "; the {} snapshot does not have it",
+                self.side(side)
+            ));
+        }
+        text.push('.');
+        text
+    }
+
+    fn attribute_format(&self) -> &'static str {
+        "Attributes"
+    }
+
+    fn attribute_option(&self, value: AttributeFormat) -> &'static str {
+        match value {
+            AttributeFormat::Words => "As words",
+            AttributeFormat::Letters => "As letters, like File Explorer",
+            AttributeFormat::LettersWithCommas => "As letters with commas",
+        }
+    }
+
+    fn warn_missing_entry(&self) -> &'static str {
+        "Warn when the entry is no longer on disk"
+    }
+
+    fn entry_gone_question(&self) -> &'static str {
+        "This entry is no longer on disk. Open the folder where it was?"
+    }
+
+    fn open(&self) -> &'static str {
+        "Open"
+    }
+
+    fn no_folder_on_disk(&self, path: &str) -> String {
+        format!("no folder of the path “{path}” is on disk")
+    }
+
+    fn explorer_failed(&self, reason: &str) -> String {
+        format!("File Explorer did not open: {reason}.")
     }
 
     fn key_space(&self) -> &'static str {

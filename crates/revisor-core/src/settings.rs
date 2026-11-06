@@ -171,25 +171,30 @@ impl SizeFormat {
     }
 }
 
-/// How the details of a change write the attributes of an entry (TASK-14 #7).
+/// How the details of a change write the attributes of an entry (TASK-14 #7): in words, or
+/// in the letters of the column «Атрибути» of File Explorer, run together as it writes
+/// them or split by commas (decided 2026-11-06).
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub enum AttributeFormat {
     /// In words, "read-only, hidden", which is clearer to the ear.
     #[default]
     Words,
-    /// In the letters of the column «Атрибути» of File Explorer: "R, H".
+    /// In File Explorer's letters, run together as its column writes them: "RH".
     Letters,
+    /// The same letters split by commas, so a screen reader says each: "R, H".
+    LettersWithCommas,
 }
 
 impl AttributeFormat {
     /// Every value, in the order the settings window lists them.
-    pub const ALL: [Self; 2] = [Self::Words, Self::Letters];
+    pub const ALL: [Self; 3] = [Self::Words, Self::Letters, Self::LettersWithCommas];
 
     /// The value as the database stores it.
     pub fn as_str(self) -> &'static str {
         match self {
             Self::Words => "words",
             Self::Letters => "letters",
+            Self::LettersWithCommas => "letters_with_commas",
         }
     }
 

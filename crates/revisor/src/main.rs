@@ -3,7 +3,9 @@
 
 mod commands;
 mod compare_window;
+mod details;
 mod difference;
+mod explorer;
 mod failure;
 mod help;
 mod i18n;
@@ -18,6 +20,7 @@ mod settings_window;
 mod snapshots;
 mod state;
 mod status;
+mod text_window;
 mod win32;
 
 use std::ffi::OsStr;
@@ -38,15 +41,10 @@ fn main() {
     // An administrator reads with the backup privilege (TASK-8); a standard user has no
     // such privilege, and nothing changes for them.
     let _ = elevation::enable_backup_privilege();
-    // REVISOR_DEMO=1 in a debug build lets the commands TASK-14 will bring run, so the
-    // keyboard and the status bar can be checked with NVDA before it.
-    let demo = cfg!(debug_assertions) && std::env::var_os("REVISOR_DEMO").is_some_and(|v| v == "1");
-    let mut state = if demo {
-        AppState::demo()
-    } else {
-        AppState::new()
+    let state = AppState {
+        elevated: elevation::is_elevated(),
+        ..AppState::new()
     };
-    state.elevated = elevation::is_elevated();
     let open = profile_argument();
     wxdragon::main(move |_| {
         // The frame's event handlers hold the window, so it lives as long as the frame.

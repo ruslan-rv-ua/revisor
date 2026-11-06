@@ -4,11 +4,14 @@
 use revisor_core::compare::{Side, Warning};
 use revisor_core::exclude::PatternError;
 use revisor_core::scan::EntryKind;
-use revisor_core::settings::{FocusAfterComparison, FocusAfterSnapshot, Language, SizeFormat};
+use revisor_core::settings::{
+    AttributeFormat, FocusAfterComparison, FocusAfterSnapshot, Language, SizeFormat,
+};
 
 use super::plural::{Category, category};
 use super::{Failure, Lang, Strings};
 use crate::commands::{CommandId, MenuId, Pane, Reason, SubmenuId};
+use crate::details::{Attribute, Inaccessibility, Property, Unreadable};
 use crate::difference::{
     Column, Counted, Field, InaccessibleIn, PairText, RowChange, SizeChange, SnapshotText,
     SummaryText,
@@ -130,7 +133,7 @@ impl Strings for Uk {
             Reason::NoPreviousSnapshot => "попереднього знімка немає",
             Reason::NoOtherSnapshot => "іншого знімка в профілі немає",
             Reason::AlreadyAdmin => "revisor уже працює від імені адміністратора",
-            Reason::NotYet => "цієї команди ще немає в цій версії revisor",
+            Reason::NoChangeShown => "у списку різниці немає змін",
         }
     }
 
@@ -908,8 +911,143 @@ impl Strings for Uk {
         }
     }
 
-    fn demo_done(&self, command: &str) -> String {
-        format!("Виконано: {command}.")
+    fn property(&self, property: Property) -> &'static str {
+        match property {
+            Property::Path => "Шлях",
+            Property::Name => "Ім'я",
+            Property::Change => "Зміна",
+            Property::Kind => "Вид",
+            Property::Size => "Розмір",
+            Property::DateCreated => "Дата створення",
+            Property::DateModified => "Дата зміни",
+            Property::Attributes => "Атрибути",
+            Property::FileVersion => "Версія файлу",
+            Property::ProductVersion => "Версія продукту",
+            Property::Target => "Ціль",
+            Property::Inaccessible => "Недоступно",
+        }
+    }
+
+    fn before_after(&self, before: &str, after: &str) -> String {
+        format!("було {before}, стало {after}")
+    }
+
+    fn unchanged(&self, value: &str) -> String {
+        format!("{value} (без змін)")
+    }
+
+    fn not_counted(&self, text: &str) -> String {
+        format!("{text} (не враховано)")
+    }
+
+    fn change_type(&self, change: RowChange) -> &'static str {
+        match change {
+            RowChange::Added => "додано",
+            RowChange::Deleted => "видалено",
+            RowChange::Modified => "змінено",
+            RowChange::Replaced => "замінено",
+            RowChange::Inaccessible => "недоступно",
+        }
+    }
+
+    fn what_changed(&self, fields: &str) -> String {
+        format!("змінилося: {fields}")
+    }
+
+    fn kind(&self, kind: EntryKind) -> &'static str {
+        match kind {
+            EntryKind::File => "файл",
+            EntryKind::Dir => "тека",
+            EntryKind::Link => "посилання",
+        }
+    }
+
+    fn attribute(&self, attribute: Attribute) -> &'static str {
+        match attribute {
+            Attribute::ReadOnly => "лише для читання",
+            Attribute::Hidden => "прихований",
+            Attribute::System => "системний",
+            Attribute::Archive => "архівний",
+            Attribute::Temporary => "тимчасовий",
+            Attribute::SparseFile => "розріджений",
+            Attribute::ReparsePoint => "точка повторного аналізу",
+            Attribute::Compressed => "стиснутий",
+            Attribute::Offline => "дані не на пристрої",
+            Attribute::NotContentIndexed => "вміст не індексується",
+            Attribute::Encrypted => "зашифрований",
+            Attribute::IntegrityStream => "з контролем цілісності",
+            Attribute::NoScrubData => "без фонової перевірки цілісності",
+            Attribute::RecallOnOpen => "завантажується під час відкриття",
+            Attribute::Pinned => "завжди на цьому пристрої",
+            Attribute::Unpinned => "відкріплений",
+            Attribute::RecallOnDataAccess => "лише в Інтернеті",
+            Attribute::StrictlySequential => "суворо послідовний",
+        }
+    }
+
+    fn no_attributes(&self) -> &'static str {
+        "без атрибутів"
+    }
+
+    fn version_not_read(&self) -> &'static str {
+        "версію не прочитано"
+    }
+
+    fn no_version(&self) -> &'static str {
+        "немає"
+    }
+
+    fn target_unknown(&self) -> &'static str {
+        "невідома"
+    }
+
+    fn inaccessible_details(&self, inaccessible: &Inaccessibility) -> String {
+        let why = match inaccessible.why {
+            Unreadable::Folder => "вміст теки не вдалося прочитати",
+            Unreadable::LinkTarget => "ціль посилання не вдалося прочитати",
+            Unreadable::Unknown => {
+                "невідомо, чи він там був: теку на шляху до нього не вдалося прочитати або \
+                 вона є посиланням"
+            }
+        };
+        let mut text = format!("{} — {why}", self.inaccessible_in(inaccessible.which));
+        if let Some(side) = inaccessible.absent_in {
+            text.push_str(&format!("; у {} знімку його немає", self.side(side)));
+        }
+        text.push('.');
+        text
+    }
+
+    fn attribute_format(&self) -> &'static str {
+        "Атрибути"
+    }
+
+    fn attribute_option(&self, value: AttributeFormat) -> &'static str {
+        match value {
+            AttributeFormat::Words => "Словами",
+            AttributeFormat::Letters => "Літерами, як у Провіднику",
+            AttributeFormat::LettersWithCommas => "Літерами через кому",
+        }
+    }
+
+    fn warn_missing_entry(&self) -> &'static str {
+        "Попереджати, коли запису вже немає на диску"
+    }
+
+    fn entry_gone_question(&self) -> &'static str {
+        "Цього запису вже немає на диску. Відкрити теку, де він був?"
+    }
+
+    fn open(&self) -> &'static str {
+        "Відкрити"
+    }
+
+    fn no_folder_on_disk(&self, path: &str) -> String {
+        format!("на диску немає жодної теки шляху «{path}»")
+    }
+
+    fn explorer_failed(&self, reason: &str) -> String {
+        format!("Провідник не відкрито: {reason}.")
     }
 
     fn key_space(&self) -> &'static str {

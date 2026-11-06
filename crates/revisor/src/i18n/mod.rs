@@ -13,9 +13,12 @@ pub use uk::Uk;
 use revisor_core::compare::Warning;
 use revisor_core::exclude::PatternError;
 use revisor_core::scan::EntryKind;
-use revisor_core::settings::{FocusAfterComparison, FocusAfterSnapshot, Language, SizeFormat};
+use revisor_core::settings::{
+    AttributeFormat, FocusAfterComparison, FocusAfterSnapshot, Language, SizeFormat,
+};
 
 use crate::commands::{CommandId, MenuId, Pane, Reason, SubmenuId};
+use crate::details::{Attribute, Inaccessibility, Property};
 use crate::difference::{Column, Field, InaccessibleIn, PairText, RowChange, SummaryText};
 
 /// An interface language.
@@ -267,8 +270,43 @@ pub trait Strings {
     fn size_format(&self) -> &'static str;
     fn size_option(&self, value: SizeFormat) -> &'static str;
 
-    // The debug-only demo state (REVISOR_DEMO=1).
-    fn demo_done(&self, command: &str) -> String;
+    // The details of a change (TASK-14).
+    /// The name of a property, at the start of its line: "Розмір".
+    fn property(&self, property: Property) -> &'static str;
+    /// A property that differs: "було 5 байтів, стало 7 байтів".
+    fn before_after(&self, before: &str, after: &str) -> String;
+    /// A property that has not changed: "5 байтів (без змін)".
+    fn unchanged(&self, value: &str) -> String;
+    /// A difference the comparison does not count: "… (не враховано)".
+    fn not_counted(&self, text: &str) -> String;
+    /// The type of a change at the start of the line «Зміна»: "змінено".
+    fn change_type(&self, change: RowChange) -> &'static str;
+    /// What changed, after the type in the line «Зміна»: "змінилося: розмір".
+    fn what_changed(&self, fields: &str) -> String;
+    /// The kind of an entry: "тека".
+    fn kind(&self, kind: EntryKind) -> &'static str;
+    /// An attribute in words: "прихований".
+    fn attribute(&self, attribute: Attribute) -> &'static str;
+    fn no_attributes(&self) -> &'static str;
+    fn version_not_read(&self) -> &'static str;
+    /// In place of the version of a file without one.
+    fn no_version(&self) -> &'static str;
+    /// In place of the target of a link that could not be read.
+    fn target_unknown(&self) -> &'static str;
+    /// The value of the line «Недоступно»: in which snapshot, and why.
+    fn inaccessible_details(&self, inaccessible: &Inaccessibility) -> String;
+    /// The label of the setting «Атрибути», without access key or colon.
+    fn attribute_format(&self) -> &'static str;
+    fn attribute_option(&self, value: AttributeFormat) -> &'static str;
+    /// The check box of the setting «Попереджати, коли запису вже немає на диску».
+    fn warn_missing_entry(&self) -> &'static str;
+    /// The question before File Explorer opens the folder of an entry no longer on disk.
+    fn entry_gone_question(&self) -> &'static str;
+    /// The button of that question that opens the folder.
+    fn open(&self) -> &'static str;
+    /// Why File Explorer was not opened: no folder of `path` is on disk.
+    fn no_folder_on_disk(&self, path: &str) -> String;
+    fn explorer_failed(&self, reason: &str) -> String;
 
     // Key names that are not printed on most keyboards.
     fn key_space(&self) -> &'static str;

@@ -144,7 +144,7 @@ mod tests {
     }
 
     /// A profile with three snapshots, the newest current and selected, and a difference
-    /// shown: every finished command can run.
+    /// of two rows shown: every command but the cancels can run.
     fn ready() -> AppState {
         AppState {
             profile: Some("Дім".into()),
@@ -152,6 +152,7 @@ mod tests {
             selected_snapshots: 1,
             current_snapshot: Some(2),
             has_difference: true,
+            difference_rows: 2,
             ..AppState::new()
         }
     }
@@ -184,21 +185,21 @@ mod tests {
 
     #[test]
     fn keys_that_are_not_revisors_pass() {
-        let demo = ready();
+        let state = ready();
         assert_eq!(
-            route(key(Key::Letter(b'Q')).ctrl(), SNAPSHOT_LIST, &demo, &[]),
+            route(key(Key::Letter(b'Q')).ctrl(), SNAPSHOT_LIST, &state, &[]),
             Route::Pass
         );
         assert_eq!(
-            route(key(Key::Letter(b'Q')), SNAPSHOT_LIST, &demo, &[]),
+            route(key(Key::Letter(b'Q')), SNAPSHOT_LIST, &state, &[]),
             Route::Pass
         );
         assert_eq!(
-            route(key(Key::Down), SNAPSHOT_LIST, &demo, &[]),
+            route(key(Key::Down), SNAPSHOT_LIST, &state, &[]),
             Route::Pass
         );
         assert_eq!(
-            route(key(Key::Esc), COMPARISON_FIELD, &demo, &[]),
+            route(key(Key::Esc), COMPARISON_FIELD, &state, &[]),
             Route::Pass
         );
     }
@@ -206,9 +207,9 @@ mod tests {
     #[test]
     fn a_key_limited_to_one_list_says_where_it_works() {
         let delete = key(Key::Delete);
-        let demo = ready();
+        let state = ready();
         assert_eq!(
-            route(delete, SNAPSHOT_LIST, &demo, &[]),
+            route(delete, SNAPSHOT_LIST, &state, &[]),
             Route::Run(CommandId::DeleteSnapshots)
         );
         let no_snapshots = AppState {
@@ -220,36 +221,65 @@ mod tests {
             Route::Refuse(CommandId::DeleteSnapshots, Reason::NoSnapshots)
         );
         assert_eq!(
-            route(delete, DIFFERENCE_LIST, &demo, &[]),
+            route(delete, DIFFERENCE_LIST, &state, &[]),
             Route::OnlyIn(delete, Pane::Snapshots)
         );
         assert_eq!(
-            route(delete, PROFILE_BOX, &demo, &[]),
+            route(delete, PROFILE_BOX, &state, &[]),
             Route::OnlyIn(delete, Pane::Snapshots)
         );
         // The filter field deletes characters with it.
-        assert_eq!(route(delete, FILTER_FIELD, &demo, &[]), Route::Pass);
+        assert_eq!(route(delete, FILTER_FIELD, &state, &[]), Route::Pass);
     }
 
     #[test]
     fn enter_runs_the_lists_action_and_stays_the_controls_elsewhere() {
         let enter = key(Key::Enter);
-        let demo = ready();
+        let state = ready();
         assert_eq!(
-            route(enter, SNAPSHOT_LIST, &demo, &[]),
+            route(enter, SNAPSHOT_LIST, &state, &[]),
             Route::Run(CommandId::CompareWithPrevious)
         );
-        // Enter in the difference list is «Подробиці», whose task is TASK-14.
+        // Enter in the difference list is «Подробиці» (TASK-14 #1).
         assert_eq!(
-            route(enter, DIFFERENCE_LIST, &demo, &[]),
-            Route::Refuse(CommandId::Details, Reason::NotYet)
+            route(enter, DIFFERENCE_LIST, &state, &[]),
+            Route::Run(CommandId::Details)
+        );
+        let no_rows = AppState {
+            difference_rows: 0,
+            ..ready()
+        };
+        assert_eq!(
+            route(enter, DIFFERENCE_LIST, &no_rows, &[]),
+            Route::Refuse(CommandId::Details, Reason::NoChangeShown)
         );
         assert_eq!(
             route(enter, SNAPSHOT_LIST, &AppState::new(), &[]),
             Route::Refuse(CommandId::CompareWithPrevious, Reason::NoProfiles)
         );
-        assert_eq!(route(enter, FILTER_FIELD, &demo, &[]), Route::Pass);
-        assert_eq!(route(enter, PROFILE_BOX, &demo, &[]), Route::Pass);
+        assert_eq!(route(enter, FILTER_FIELD, &state, &[]), Route::Pass);
+        assert_eq!(route(enter, PROFILE_BOX, &state, &[]), Route::Pass);
+    }
+
+    #[test]
+    fn alt_enter_and_ctrl_enter_act_on_the_change_from_anywhere() {
+        // «Подробиці» and «Показати в Провіднику» have shortcuts of the whole window, so
+        // they work from the field «Фільтр:» too (TASK-14 #14).
+        let state = ready();
+        for focus in [DIFFERENCE_LIST, FILTER_FIELD, SNAPSHOT_LIST] {
+            assert_eq!(
+                route(key(Key::Enter).alt(), focus, &state, &[]),
+                Route::Run(CommandId::Details)
+            );
+            assert_eq!(
+                route(key(Key::Enter).ctrl(), focus, &state, &[]),
+                Route::Run(CommandId::ShowInExplorer)
+            );
+        }
+        assert_eq!(
+            route(key(Key::Enter).ctrl(), SNAPSHOT_LIST, &AppState::new(), &[]),
+            Route::Refuse(CommandId::ShowInExplorer, Reason::NoDifference)
+        );
     }
 
     #[test]
