@@ -613,7 +613,9 @@ impl Walker<'_> {
     }
 }
 
-fn has_version_extension(name: &OsStr) -> bool {
+/// Whether a snapshot reads the version of a file named `name`: an exe or a dll, whatever
+/// the case of the extension (TASK-8 #3).
+pub fn has_version_extension(name: &OsStr) -> bool {
     Path::new(name)
         .extension()
         .is_some_and(|ext| ext.eq_ignore_ascii_case("exe") || ext.eq_ignore_ascii_case("dll"))

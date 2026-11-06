@@ -6,27 +6,29 @@
 //! change and per inaccessible entry — in tree order. Over them it keeps the view the
 //! user chose: the types shown, the text filter and the order, which give the rows the
 //! list shows, and the row that has the focus. It writes the text of the cells, the line
-//! of the pair of snapshots, the summary and the warnings. The window keeps the list
-//! controls: they ask the model for the text of the rows they show, and put the focus
-//! where the model says after the view changes.
+//! of the pair of snapshots, the summary and the warnings, and gives the details of a row
+//! and the path of its entry (TASK-14). The window keeps the list controls: they ask the
+//! model for the text of the rows they show, and put the focus where the model says after
+//! the view changes.
 
 use std::cmp::Ordering;
 use std::collections::HashMap;
 use std::ffi::OsStr;
 use std::os::windows::ffi::OsStrExt;
-use std::path::Path;
+use std::path::{Path, PathBuf};
 use std::thread;
 
-use revisor_core::compare::{Difference, Warning};
+use revisor_core::compare::{Difference, Side, Warning};
 use revisor_core::diff::{self, Change, ChangeKind, Fields, Inaccessible};
 use revisor_core::names::upcase;
 use revisor_core::profiles::ProfileFile;
 use revisor_core::scan::{Entry, EntryKind, VersionInfo};
 use revisor_core::settings::{
-    ChangeType, DifferenceSort, FocusAfterComparison, SizeFormat, SortColumn,
+    AttributeFormat, ChangeType, DifferenceSort, FocusAfterComparison, SizeFormat, SortColumn,
 };
 use revisor_core::store::{SnapshotInfo, Unavailable};
 
+use crate::details::{self, Formats, Inaccessibility, Unreadable};
 use crate::i18n::Strings;
 
 /// The user's regional formats, in which the model writes numbers and moments: those of
@@ -38,8 +40,15 @@ pub trait Regional {
     /// A moment given as a FILETIME, as a snapshot's name shows a moment: the regional
     /// short date and the time with seconds, in this computer's time zone.
     fn file_time(&self, file_time: i64) -> String;
+    /// A moment as `file_time` writes it, with `digits` digits, 1 to 7, of the fraction of
+    /// the second after the seconds, so two moments of one second differ (TASK-14 #9).
+    fn file_time_fraction(&self, file_time: i64, digits: u32) -> String;
     /// A moment given as Unix time in milliseconds, the same way: a snapshot's name.
     fn date_time(&self, unix_millis: i64) -> String;
+    /// The letter the column «Атрибути» of File Explorer writes for `flag`, a single
+    /// `FILE_ATTRIBUTE_*` bit, as Windows gives it; `None` for a flag it writes none for
+    /// (TASK-14 #7).
+    fn attribute_letter(&self, flag: u32) -> Option<String>;
 }
 
 /// A column of the difference list, in the order the list shows them (#12): the name
@@ -648,11 +657,21 @@ struct Shown {
     index: Option<Index>,
 }
 
+/// The details of a row (TASK-14): the name of its entry, which the window's title shows,
+/// and the text, a line per property.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct Details {
+    pub name: String,
+    pub text: String,
+}
+
 /// The model of the difference list (TASK-13).
 pub struct List {
     s: &'static dyn Strings,
     regional: Box<dyn Regional>,
     size_format: SizeFormat,
+    /// How the details write attributes (TASK-14 #7).
+    attribute_format: AttributeFormat,
     view: View,
     /// The text filter as typed, and as the keys of paths hold it.
     text: String,
@@ -673,6 +692,7 @@ impl List {
             s,
             regional,
             size_format,
+            attribute_format: AttributeFormat::default(),
             view,
             text: String::new(),
             needle: Vec::new(),
@@ -696,6 +716,15 @@ impl List {
     /// Writes sizes as `format` says from now on (#17).
     pub fn set_size_format(&mut self, format: SizeFormat) {
         self.size_format = format;
+    }
+
+    pub fn attribute_format(&self) -> AttributeFormat {
+        self.attribute_format
+    }
+
+    /// The details write attributes as `format` says from now on (TASK-14 #7).
+    pub fn set_attribute_format(&mut self, format: AttributeFormat) {
+        self.attribute_format = format;
     }
 
     pub fn has_difference(&self) -> bool {
@@ -824,6 +853,59 @@ impl List {
                     .unwrap_or_default(),
             },
         }
+    }
+
+    /// The whole path of the entry of the row at `index` of the list, as its columns show
+    /// it: in the later snapshot, else in the earlier (TASK-14 #11).
+    pub fn entry_path(&self, index: usize) -> Option<PathBuf> {
+        let shown = self.shown.as_ref()?;
+        let &r = shown.visible.get(index)?;
+        let (tree, _, at) = shown_entry(&shown.difference, &shown.rows[r as usize]);
+        Some(diff::path(tree, at))
+    }
+
+    /// The details of the row at `index` of the list (TASK-14 #2–#10): the entry's name
+    /// for the window's title, and a line per property.
+    pub fn details(&self, index: usize) -> Option<Details> {
+        let shown = self.shown.as_ref()?;
+        let &r = shown.visible.get(index)?;
+        let row = &shown.rows[r as usize];
+        let folder = &shown.difference.folders[row.folder as usize];
+        let old = (row.old != NONE).then(|| &folder.old[row.old as usize]);
+        let new = (row.new != NONE).then(|| &folder.new[row.new as usize]);
+        let fields = match row.kind {
+            // An entry inaccessible in a tree may be modified too: its change says how.
+            ChangeType::Inaccessible if old.is_some() && new.is_some() => folder
+                .diff
+                .changes
+                .iter()
+                .find(|c| c.old == Some(row.old) && c.new == Some(row.new))
+                .map_or_else(Fields::default, |c| c.fields),
+            _ => row.fields,
+        };
+        let what_changed = match row.kind {
+            ChangeType::Modified => {
+                what_changed_words(self.s, what_changed(&shown.difference, row))
+            }
+            _ => String::new(),
+        };
+        let subject = details::Row {
+            path: self.entry_path(index)?.to_string_lossy().into_owned(),
+            change: row.change_type(),
+            what_changed,
+            old,
+            new,
+            fields,
+            inaccessible: inaccessibility(row.kind, old, new),
+        };
+        let formats = Formats {
+            size: self.size_format,
+            attributes: self.attribute_format,
+        };
+        Some(Details {
+            name: self.cell(index, Column::Name),
+            text: details::text(self.s, &*self.regional, formats, &subject),
+        })
     }
 
     /// The profile of the difference shown, as last known.
@@ -1130,6 +1212,64 @@ fn what_changed_words(s: &dyn Strings, what: WhatChanged) -> String {
     }
 }
 
+/// In which snapshot the entry of a row of `kind` is inaccessible, and why, as far as the
+/// snapshots know (TASK-14 #3, decided 2026-11-06): an entry marked so could not be read
+/// there — a folder's contents, or a link's target —; an entry of an inaccessible row
+/// that is in one tree only and not marked is unknown in the other, whose folder on the
+/// way could not be read or is a link (TASK-10). `None` for an entry readable in both.
+fn inaccessibility(
+    kind: ChangeType,
+    old: Option<&Entry>,
+    new: Option<&Entry>,
+) -> Option<Inaccessibility> {
+    let why = |entry: &Entry| match entry.kind {
+        EntryKind::Link => Unreadable::LinkTarget,
+        // Only folders and links are ever marked: files are never listed.
+        EntryKind::Dir | EntryKind::File => Unreadable::Folder,
+    };
+    let in_snapshot = |side: Side| match side {
+        Side::Earlier => InaccessibleIn::Earlier,
+        Side::Later => InaccessibleIn::Later,
+    };
+    match (old, new) {
+        (Some(a), Some(b)) => {
+            let which = match (a.inaccessible, b.inaccessible) {
+                (true, false) => InaccessibleIn::Earlier,
+                (false, true) => InaccessibleIn::Later,
+                (true, true) => InaccessibleIn::Both,
+                (false, false) => return None,
+            };
+            let marked = if a.inaccessible { a } else { b };
+            Some(Inaccessibility {
+                which,
+                why: why(marked),
+                absent_in: None,
+            })
+        }
+        (Some(entry), None) | (None, Some(entry)) if kind == ChangeType::Inaccessible => {
+            let (here, other) = if old.is_some() {
+                (Side::Earlier, Side::Later)
+            } else {
+                (Side::Later, Side::Earlier)
+            };
+            Some(if entry.inaccessible {
+                Inaccessibility {
+                    which: in_snapshot(here),
+                    why: why(entry),
+                    absent_in: Some(other),
+                }
+            } else {
+                Inaccessibility {
+                    which: in_snapshot(other),
+                    why: Unreadable::Unknown,
+                    absent_in: None,
+                }
+            })
+        }
+        _ => None,
+    }
+}
+
 /// Why a folder of a snapshot could not be read, in the interface's words (TASK-8,
 /// TASK-13 #9).
 pub fn unavailable_reason(s: &dyn Strings, reason: &Unavailable) -> String {
@@ -1323,4 +1463,4 @@ pub fn arrival_after_snapshot(
 }
 
 #[cfg(test)]
-mod tests;
+pub(crate) mod tests;

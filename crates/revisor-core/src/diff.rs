@@ -627,6 +627,31 @@ impl Walk<'_, '_> {
     }
 }
 
+/// Fields in which two entries of the same kind differ although the comparison does not
+/// count it (TASK-10 #6, #10, #11; TASK-14 #5): attributes that differ in the ignored ones
+/// only — archive, normal and the cloud states —, the last write time of a folder, a
+/// version only one snapshot read, and the version and link target of an entry
+/// inaccessible in either tree, `unknown`, where they may be missing. The name and the
+/// file ID are left out: a root is named by its whole path, and another file ID makes the
+/// entry replaced.
+pub fn ignored_fields(old: &Entry, new: &Entry, unknown: bool) -> Fields {
+    let mut differ = Fields::default();
+    for (field, differs) in [
+        (Fields::SIZE, old.size != new.size),
+        (Fields::CREATED, old.created != new.created),
+        (Fields::MODIFIED, old.modified != new.modified),
+        (Fields::ATTRIBUTES, old.attributes != new.attributes),
+        (Fields::VERSION, old.version != new.version),
+        (Fields::LINK_TARGET, old.link_target != new.link_target),
+    ] {
+        if differs {
+            differ |= field;
+        }
+    }
+    let counted = changed_fields(old, new, true, unknown, false);
+    Fields(differ.0 & !counted.0)
+}
+
 /// Fields that differ between two entries of the same kind. The names of the compared
 /// roots are not compared: a root is named by its whole path. `unknown` is set when
 /// either entry is inaccessible, so its version or link target may be missing.

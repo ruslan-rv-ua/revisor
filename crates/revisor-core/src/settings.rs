@@ -2,7 +2,9 @@
 //! from the profiles, for what belongs to no profile — the profile opened last, what the
 //! focus does when a snapshot ends, whether deleting snapshots asks first (TASK-9), the
 //! interface language (TASK-16), what the focus does when a comparison ends (TASK-11), how
-//! sizes are written, and which rows the difference list shows in which order (TASK-13).
+//! sizes are written, which rows the difference list shows in which order (TASK-13), how
+//! the details of a change write attributes, and whether showing a change in File Explorer
+//! warns when it is no longer on disk (TASK-14).
 //! Each setting is one row of a key–value table, read and written through typed methods,
 //! so a later setting needs no change of the schema.
 
@@ -40,6 +42,8 @@ const KEY_SIZE_FORMAT: &str = "size_format";
 const KEY_DIFFERENCE_TYPES: &str = "difference_types";
 const KEY_DIFFERENCE_SORT: &str = "difference_sort";
 const KEY_DIFFERENCE_DESCENDING: &str = "difference_descending";
+const KEY_ATTRIBUTE_FORMAT: &str = "attribute_format";
+const KEY_WARN_MISSING_ENTRY: &str = "warn_missing_entry";
 
 #[derive(Debug)]
 pub enum SettingsError {
@@ -159,6 +163,38 @@ impl SizeFormat {
             Self::Explorer => "explorer",
             Self::Decimal => "decimal",
             Self::Bytes => "bytes",
+        }
+    }
+
+    pub fn parse(text: &str) -> Option<Self> {
+        Self::ALL.into_iter().find(|v| v.as_str() == text)
+    }
+}
+
+/// How the details of a change write the attributes of an entry (TASK-14 #7): in words, or
+/// in the letters of the column «Атрибути» of File Explorer, run together as it writes
+/// them or split by commas (decided 2026-11-06).
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub enum AttributeFormat {
+    /// In words, "read-only, hidden", which is clearer to the ear.
+    #[default]
+    Words,
+    /// In File Explorer's letters, run together as its column writes them: "RH".
+    Letters,
+    /// The same letters split by commas, so a screen reader says each: "R, H".
+    LettersWithCommas,
+}
+
+impl AttributeFormat {
+    /// Every value, in the order the settings window lists them.
+    pub const ALL: [Self; 3] = [Self::Words, Self::Letters, Self::LettersWithCommas];
+
+    /// The value as the database stores it.
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::Words => "words",
+            Self::Letters => "letters",
+            Self::LettersWithCommas => "letters_with_commas",
         }
     }
 
@@ -462,6 +498,31 @@ impl Settings {
     pub fn set_difference_sort(&self, sort: DifferenceSort) -> Result<(), SettingsError> {
         self.set(KEY_DIFFERENCE_SORT, sort.column.as_str())?;
         self.set(KEY_DIFFERENCE_DESCENDING, i64::from(sort.descending))
+    }
+
+    /// How the details of a change write attributes; in words when nothing is stored.
+    pub fn attribute_format(&self) -> Result<AttributeFormat, SettingsError> {
+        Ok(match self.get(KEY_ATTRIBUTE_FORMAT)? {
+            Some(Value::Text(text)) => AttributeFormat::parse(&text).unwrap_or_default(),
+            _ => AttributeFormat::default(),
+        })
+    }
+
+    pub fn set_attribute_format(&self, value: AttributeFormat) -> Result<(), SettingsError> {
+        self.set(KEY_ATTRIBUTE_FORMAT, value.as_str())
+    }
+
+    /// Whether «Показати в Провіднику» asks first when the entry is no longer on disk; off
+    /// by default, as an action that harms nothing needs no confirmation (TASK-14 #13).
+    pub fn warn_missing_entry(&self) -> Result<bool, SettingsError> {
+        Ok(matches!(
+            self.get(KEY_WARN_MISSING_ENTRY)?,
+            Some(Value::Integer(n)) if n != 0
+        ))
+    }
+
+    pub fn set_warn_missing_entry(&self, warn: bool) -> Result<(), SettingsError> {
+        self.set(KEY_WARN_MISSING_ENTRY, i64::from(warn))
     }
 
     fn get(&self, key: &str) -> Result<Option<Value>, SettingsError> {

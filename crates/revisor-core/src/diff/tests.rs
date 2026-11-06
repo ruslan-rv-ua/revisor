@@ -380,6 +380,72 @@ fn last_write_time_of_folders_is_ignored() {
 }
 
 #[test]
+fn the_differences_the_comparison_does_not_count_are_known_apart() {
+    let file = |attributes| Entry {
+        attributes,
+        ..entry(Some(0), "a.exe", EntryKind::File)
+    };
+    // The archive, normal and cloud state attributes alone are not counted (TASK-14 #5).
+    let archived = file(FILE_ATTRIBUTE_ARCHIVE);
+    let pinned = file(FILE_ATTRIBUTE_NORMAL | FILE_ATTRIBUTE_PINNED);
+    assert_eq!(
+        ignored_fields(&archived, &pinned, false),
+        Fields::ATTRIBUTES
+    );
+    // With another attribute too, the difference counts.
+    let hidden = file(FILE_ATTRIBUTE_HIDDEN);
+    assert_eq!(ignored_fields(&archived, &hidden, false), Fields::default());
+    // The last write time of a folder, but not of a file.
+    let dir = |modified| Entry {
+        modified,
+        ..entry(Some(0), "d", EntryKind::Dir)
+    };
+    assert_eq!(ignored_fields(&dir(1), &dir(2), false), Fields::MODIFIED);
+    let written = |modified| Entry {
+        modified,
+        ..entry(Some(0), "f.txt", EntryKind::File)
+    };
+    assert_eq!(
+        ignored_fields(&written(1), &written(2), false),
+        Fields::default()
+    );
+    // A version one snapshot did not read; the version and the target of an entry
+    // inaccessible in either tree.
+    let exe = |version| Entry {
+        version,
+        ..entry(Some(0), "a.exe", EntryKind::File)
+    };
+    let (one, two) = (exe(version([1, 0, 0, 0])), exe(version([2, 0, 0, 0])));
+    assert_eq!(
+        ignored_fields(&one, &exe(VersionInfo::NotRead), false),
+        Fields::VERSION
+    );
+    assert_eq!(ignored_fields(&one, &two, false), Fields::default());
+    assert_eq!(ignored_fields(&one, &two, true), Fields::VERSION);
+    let link = |target: &str| Entry {
+        link_target: Some(OsStr::new(target).into()),
+        ..entry(Some(0), "l", EntryKind::Link)
+    };
+    assert_eq!(
+        ignored_fields(&link("a"), &link("b"), true),
+        Fields::LINK_TARGET
+    );
+    assert_eq!(
+        ignored_fields(&link("a"), &link("b"), false),
+        Fields::default()
+    );
+    // Sizes and creation times always count; names and file IDs are not among them.
+    let mut renamed = entry(Some(0), "A.EXE", EntryKind::File);
+    renamed.size = 5;
+    renamed.created = 7;
+    renamed.file_id = FileId([9; 16]);
+    assert_eq!(
+        ignored_fields(&archived, &renamed, false),
+        Fields::default()
+    );
+}
+
+#[test]
 fn names_match_without_regard_to_case() {
     let old = sample();
     let mut new = sample();

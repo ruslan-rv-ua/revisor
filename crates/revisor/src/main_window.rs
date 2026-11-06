@@ -4,9 +4,10 @@
 //! snapshot list of the open profile with its comments, deletion and the compaction
 //! that follows it (TASK-9), the comparison of the current snapshot with another, made
 //! in the background, whose difference the difference list shows (TASK-11) with the field
-//! «Порівняння» above it and its filter under it (TASK-13), and «Знімок + порівняння»,
-//! which chains a snapshot and its comparison (TASK-12). The profile box lists the
-//! profiles (TASK-7).
+//! «Порівняння» above it and its filter under it (TASK-13), the details of its change in
+//! focus and the change shown in File Explorer (TASK-14), and «Знімок + порівняння», which
+//! chains a snapshot and its comparison (TASK-12). The profile box lists the profiles
+//! (TASK-7).
 
 use std::cell::{Cell, RefCell};
 use std::ffi::c_void;
@@ -32,6 +33,7 @@ use wxdragon::prelude::*;
 use crate::commands::{COMMANDS, CommandId, CommandKind, MenuId, Pane, command};
 use crate::compare_window;
 use crate::difference::{self, Column, List, View};
+use crate::explorer::{self, Reveal};
 use crate::failure;
 use crate::help;
 use crate::i18n::Strings;
@@ -52,6 +54,7 @@ use crate::snapshots::{
 };
 use crate::state::{AppState, ChangeType, SortColumn};
 use crate::status::Announcer;
+use crate::text_window;
 use crate::win32;
 
 /// The commands that show or hide the types of the difference list's rows, in the order
@@ -162,6 +165,9 @@ const CLOSE_ACCESS: u8 = b'C';
 /// The buttons of the question after the interface language changed (TASK-16).
 const RESTART_NOW_ACCESS: u8 = b'R';
 const LATER_ACCESS: u8 = b'L';
+/// The action button of the question before File Explorer opens the folder of an entry no
+/// longer on disk (TASK-14 #13).
+const OPEN_ACCESS: u8 = b'O';
 
 fn wx_id(id: CommandId) -> i32 {
     let index = COMMANDS
@@ -300,12 +306,16 @@ impl MainWindow {
             .ok()
             .and_then(|settings| settings.size_format().ok())
             .unwrap_or_default();
-        let difference_list = Rc::new(RefCell::new(List::new(
-            s,
-            Box::new(win32::RegionalFormat),
-            view,
-            size_format,
-        )));
+        let mut list = List::new(s, Box::new(win32::RegionalFormat), view, size_format);
+        // How the details write attributes, as kept (TASK-14 #7).
+        list.set_attribute_format(
+            settings
+                .as_ref()
+                .ok()
+                .and_then(|settings| settings.attribute_format().ok())
+                .unwrap_or_default(),
+        );
+        let difference_list = Rc::new(RefCell::new(list));
 
         let panel = Panel::builder(&frame).build();
         // Made in tab order. Each label comes right before its control, so screen readers
@@ -878,12 +888,10 @@ impl MainWindow {
             CommandId::SortByFolder => self.sort_by(SortColumn::Folder),
             CommandId::SortAscending => self.sort_direction(false),
             CommandId::SortDescending => self.sort_direction(true),
+            CommandId::Details => self.show_details(),
+            CommandId::ShowInExplorer => self.show_in_explorer(),
             CommandId::KeyboardShortcuts => help::show_shortcuts(&self.frame, s),
             CommandId::About => help::show_about(&self.frame, s),
-            // Only the demo state gets here: TASK-14's commands are not done yet.
-            CommandId::Details | CommandId::ShowInExplorer => {
-                self.say(&s.demo_done(s.command(id)));
-            }
         }
         self.refresh_menus();
         true
@@ -1196,6 +1204,16 @@ impl MainWindow {
             .unwrap_or_default()
     }
 
+    /// Whether «Показати в Провіднику» asks before it opens the folder of an entry no
+    /// longer on disk (TASK-14 #13); off by default.
+    fn warn_missing_entry(&self) -> bool {
+        self.settings
+            .as_ref()
+            .ok()
+            .and_then(|settings| settings.warn_missing_entry().ok())
+            .unwrap_or(false)
+    }
+
     /// Shows the settings window and keeps what the user confirmed. When the language
     /// setting makes the next start speak another language, offers to restart now
     /// (TASK-16 #3).
@@ -1207,7 +1225,9 @@ impl MainWindow {
             focus_after_snapshot: self.focus_after_snapshot(),
             focus_after_comparison: self.focus_after_comparison(),
             size_format: self.difference_list.borrow().size_format(),
+            attribute_format: self.difference_list.borrow().attribute_format(),
             confirm_snapshot_deletion: self.confirm_deletion(),
+            warn_missing_entry: self.warn_missing_entry(),
         };
         let Some(values) = settings_window::show(&self.frame, s, initial) else {
             return;
@@ -1218,9 +1238,11 @@ impl MainWindow {
                 .and_then(|()| settings.set_focus_after_snapshot(values.focus_after_snapshot))
                 .and_then(|()| settings.set_focus_after_comparison(values.focus_after_comparison))
                 .and_then(|()| settings.set_size_format(values.size_format))
+                .and_then(|()| settings.set_attribute_format(values.attribute_format))
                 .and_then(|()| {
                     settings.set_confirm_snapshot_deletion(values.confirm_snapshot_deletion)
                 })
+                .and_then(|()| settings.set_warn_missing_entry(values.warn_missing_entry))
                 .map_err(|e| s.failure(&failure::of_settings(&e))),
             Err(message) => Err(message.clone()),
         };
@@ -1231,10 +1253,12 @@ impl MainWindow {
                 return;
             }
         }
-        // Sizes in the list and the summary as the setting «Розмір» says (TASK-13 #17).
+        // Sizes in the list and the summary as the setting «Розмір» says (TASK-13 #17), and
+        // attributes in the details as «Атрибути» says (TASK-14 #7).
         let current = {
             let mut list = self.difference_list.borrow_mut();
             list.set_size_format(values.size_format);
+            list.set_attribute_format(values.attribute_format);
             list.current()
         };
         self.refresh_difference(current);
@@ -1706,13 +1730,14 @@ impl MainWindow {
     /// and the filter's controls, which work once there is a difference (#30).
     fn describe_difference(&self) {
         let s = self.s;
-        let (name, text, view, has_difference) = {
+        let (name, text, view, has_difference, rows) = {
             let list = self.difference_list.borrow();
             (
                 list.list_name(),
                 list.comparison_text(),
                 list.view(),
                 list.has_difference(),
+                list.len(),
             )
         };
         let text = text.unwrap_or_else(|| {
@@ -1743,6 +1768,7 @@ impl MainWindow {
         {
             let mut state = self.state.borrow_mut();
             state.has_difference = has_difference;
+            state.difference_rows = rows;
             state.shown_types = view.types;
             state.sort = view.sort;
         }
@@ -1892,6 +1918,67 @@ impl MainWindow {
     fn filter_by_text(&self) {
         self.filter_field.set_focus();
         self.filter_field.select_all();
+    }
+
+    // --- The details and File Explorer (TASK-14) ----------------------------------------
+
+    /// «Подробиці»: the details of the change with the focus in the difference list, in a
+    /// window of their own (#1, #2), whose title names the entry. The jobs' timer rests
+    /// while it is open, so the difference does not change under it, and the focus goes
+    /// back where it was — on the same change, when it was in the list.
+    fn show_details(&self) {
+        let s = self.s;
+        let details = {
+            let list = self.difference_list.borrow();
+            list.current().and_then(|row| list.details(row))
+        };
+        let Some(details) = details else {
+            return;
+        };
+        let title = format!("{}: {}", s.command(CommandId::Details), details.name);
+        self.with_jobs_paused(|| text_window::show(&self.frame, s, &title, &details.text));
+    }
+
+    /// «Показати в Провіднику»: File Explorer opens the folder of the change with the focus
+    /// and selects the entry itself (#11); an entry no longer on disk leaves its folder,
+    /// or the nearest one above, to open without a selection, after a question when the
+    /// setting asks for one (#12, #13). When no folder of the path is on disk, or the shell
+    /// fails, nothing opens, and the status bar says why: once File Explorer has the
+    /// focus, a screen reader would not hear revisor any more.
+    fn show_in_explorer(&self) {
+        let s = self.s;
+        let command = s.command(CommandId::ShowInExplorer);
+        let path = {
+            let list = self.difference_list.borrow();
+            list.current().and_then(|row| list.entry_path(row))
+        };
+        let Some(path) = path else {
+            return;
+        };
+        let shown = match explorer::reveal(&path, explorer::on_disk) {
+            Reveal::Select(entry) => win32::select_in_explorer(&entry),
+            Reveal::Open(folder) => {
+                if self.warn_missing_entry() {
+                    let open = (s.open(), OPEN_ACCESS);
+                    let question = s.entry_gone_question();
+                    let agreed = self.with_jobs_paused(|| {
+                        confirm(&self.frame, s, command, question, open, false)
+                    });
+                    if !agreed {
+                        return;
+                    }
+                }
+                win32::open_in_explorer(&folder)
+            }
+            Reveal::Nowhere => {
+                let reason = s.no_folder_on_disk(&path.to_string_lossy());
+                self.say(&s.unavailable(command, &reason));
+                return;
+            }
+        };
+        if let Err(e) = shown {
+            self.say(&s.explorer_failed(&s.failure(&failure::of_io(&e))));
+        }
     }
 
     /// The progress field for the comparison the row shows, with the bar once the
@@ -2660,6 +2747,7 @@ mod tests {
         assert_ne!(RESTART_NOW_ACCESS, LATER_ACCESS);
         assert!(has(En.close(), CLOSE_ACCESS));
         assert!(has(En.delete(), DELETE_ACCESS));
+        assert!(has(En.open(), OPEN_ACCESS));
         assert!(has(&En.comment_of("x"), COMMENT_ACCESS));
     }
 

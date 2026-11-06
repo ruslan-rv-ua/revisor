@@ -3,8 +3,9 @@
 //! positions, a subclass of the main window that answers WM_MENUCHAR by key position and
 //! makes a context menu's first item its bold default, counts, dates and sizes in the
 //! regional format, the shield icon of a menu item, the restart as administrator (TASK-8),
-//! the snapshot list's rows, styles and empty text (TASK-9), and the sort arrow of the
-//! difference list's column headers (TASK-13).
+//! the snapshot list's rows, styles and empty text (TASK-9), the sort arrow of the
+//! difference list's column headers (TASK-13), and the fractions of a second of the
+//! details and File Explorer opened on an entry (TASK-14).
 
 use std::cell::{Cell, RefCell};
 use std::ffi::{OsStr, c_void};
@@ -15,18 +16,21 @@ use std::path::Path;
 use std::ptr;
 
 use windows_sys::Win32::Foundation::{
-    FILETIME, HWND, LPARAM, LRESULT, POINT, RECT, SYSTEMTIME, WPARAM,
+    FILETIME, HWND, LPARAM, LRESULT, POINT, PROPERTYKEY, RECT, SYSTEMTIME, WPARAM,
 };
 use windows_sys::Win32::Globalization::{
     DATE_SHORTDATE, GetDateFormatEx, GetLocaleInfoEx, GetNumberFormatEx, GetTimeFormatEx,
-    GetUserDefaultUILanguage, LOCALE_SDECIMAL, LOCALE_SGROUPING, LOCALE_STHOUSAND, NUMBERFMTW,
+    GetUserDefaultUILanguage, LOCALE_SDECIMAL, LOCALE_SGROUPING, LOCALE_STHOUSAND,
+    LOCALE_STIMEFORMAT, NUMBERFMTW,
 };
 use windows_sys::Win32::Graphics::Gdi::{
     BI_RGB, BITMAPINFO, BITMAPINFOHEADER, ClientToScreen, CreateCompatibleDC, CreateDIBSection,
     DIB_RGB_COLORS, DeleteDC, DeleteObject, HBITMAP, InvalidateRect, RGBQUAD, SelectObject,
 };
+use windows_sys::Win32::System::Com::StructuredStorage::PROPVARIANT;
 use windows_sys::Win32::System::Com::{CLSCTX_INPROC_SERVER, CoCreateInstance};
 use windows_sys::Win32::System::Time::{FileTimeToSystemTime, SystemTimeToTzSpecificLocalTime};
+use windows_sys::Win32::System::Variant::VT_UI4;
 use windows_sys::Win32::UI::Accessibility::{
     CLSID_AccPropServices, LiveSetting_Property_GUID, NotifyWinEvent, PROPID_ACC_NAME, Polite,
 };
@@ -40,10 +44,12 @@ use windows_sys::Win32::UI::Controls::{
 use windows_sys::Win32::UI::Input::KeyboardAndMouse::{
     GetFocus, GetKeyState, GetKeyboardLayout, VK_MENU, VkKeyScanExW,
 };
+use windows_sys::Win32::UI::Shell::Common::ITEMIDLIST;
+use windows_sys::Win32::UI::Shell::PropertiesSystem::{PDFF_DEFAULT, PSFormatForDisplay};
 use windows_sys::Win32::UI::Shell::{
-    DefSubclassProc, RemoveWindowSubclass, SHGSI_ICON, SHGSI_SMALLICON, SHGetStockIconInfo,
-    SHSTOCKICONINFO, SIID_SHIELD, SetWindowSubclass, ShellExecuteW, StrCmpLogicalW,
-    StrFormatByteSizeW,
+    DefSubclassProc, ILFree, RemoveWindowSubclass, SHGSI_ICON, SHGSI_SMALLICON, SHGetStockIconInfo,
+    SHOpenFolderAndSelectItems, SHParseDisplayName, SHSTOCKICONINFO, SIID_SHIELD,
+    SetWindowSubclass, ShellExecuteW, StrCmpLogicalW, StrFormatByteSizeW,
 };
 use windows_sys::Win32::UI::WindowsAndMessaging::{
     CHILDID_SELF, DI_NORMAL, DestroyIcon, DrawIconEx, EVENT_OBJECT_LIVEREGIONCHANGED, GWL_STYLE,
@@ -579,13 +585,7 @@ pub fn format_count(count: u64) -> String {
 /// "1.17" (TASK-13). As written when the format cannot be read.
 pub fn format_number(digits: &str, decimals: u32) -> String {
     let plain = digits.to_string();
-    let locale_info = |kind: u32| -> Option<Vec<u16>> {
-        let mut buf = [0u16; 32];
-        // SAFETY: the user's default locale (a null name); the buffer length is passed.
-        let len = unsafe { GetLocaleInfoEx(ptr::null(), kind, buf.as_mut_ptr(), buf.len() as i32) };
-        // The length counts the terminating NUL, which the format needs too.
-        (len > 0).then(|| buf[..len as usize].to_vec())
-    };
+    // The strings keep their terminating NUL, which the format needs too.
     let (Some(mut thousand), Some(mut decimal), Some(grouping)) = (
         locale_info(LOCALE_STHOUSAND),
         locale_info(LOCALE_SDECIMAL),
@@ -641,15 +641,78 @@ const EPOCH_DIFFERENCE: i64 = 116_444_736_000_000_000;
 /// A moment given as a FILETIME — 100-ns intervals since 1601-01-01 UTC, as entries keep
 /// their times — the way [`format_date_time`] writes it (TASK-13 #18).
 pub fn format_file_time(intervals: i64) -> String {
-    let fallback = || {
-        iso_utc(
-            intervals
-                .saturating_sub(EPOCH_DIFFERENCE)
-                .div_euclid(10_000),
+    format_file_time_with(intervals, None).unwrap_or_else(|| iso_utc(unix_millis_of(intervals)))
+}
+
+/// A moment as [`format_file_time`] writes it, with `digits` digits, 1 to 7, of the
+/// fraction of the second after the seconds, in the region's decimal separator:
+/// "06.11.2026 0:24:40,1" (TASK-14 #9). The fraction goes into the region's own time
+/// format, right after its seconds, so "2:05:12,1 PM" keeps its AM and PM.
+pub fn format_file_time_fraction(intervals: i64, digits: u32) -> String {
+    let ticks = format!("{:07}", intervals.rem_euclid(10_000_000));
+    let fraction = &ticks[..digits.clamp(1, 7) as usize];
+    let separator = locale_info(LOCALE_SDECIMAL)
+        .map(|s| String::from_utf16_lossy(&s[..s.len() - 1]))
+        .unwrap_or_else(|| ".".into());
+    let picture = locale_info(LOCALE_STIMEFORMAT).map(|p| {
+        after_seconds(
+            &String::from_utf16_lossy(&p[..p.len() - 1]),
+            &format!("{separator}{fraction}"),
         )
-    };
+    });
+    picture
+        .and_then(|picture| format_file_time_with(intervals, Some(&picture)))
+        .unwrap_or_else(|| {
+            iso_utc(unix_millis_of(intervals)).replace(" UTC", &format!(".{fraction} UTC"))
+        })
+}
+
+/// Unix time in milliseconds of a FILETIME.
+fn unix_millis_of(intervals: i64) -> i64 {
+    intervals
+        .saturating_sub(EPOCH_DIFFERENCE)
+        .div_euclid(10_000)
+}
+
+/// A locale string of the user's default locale, with its terminating NUL.
+fn locale_info(kind: u32) -> Option<Vec<u16>> {
+    let mut buf = [0u16; 128];
+    // SAFETY: the user's default locale (a null name); the buffer length is passed.
+    let len = unsafe { GetLocaleInfoEx(ptr::null(), kind, buf.as_mut_ptr(), buf.len() as i32) };
+    (len > 0).then(|| buf[..len as usize].to_vec())
+}
+
+/// The time format picture `picture` with `literal` right after its seconds, as quoted
+/// text; at its end when it has no seconds. Text in quotes is not taken for seconds.
+fn after_seconds(picture: &str, literal: &str) -> String {
+    let quoted = format!("'{}'", literal.replace('\'', "''"));
+    let mut in_quotes = false;
+    let mut end = None;
+    let mut chars = picture.char_indices().peekable();
+    while let Some((i, c)) = chars.next() {
+        match c {
+            '\'' => in_quotes = !in_quotes,
+            's' if !in_quotes => {
+                let mut at = i + 1;
+                while let Some(&(j, 's')) = chars.peek() {
+                    at = j + 1;
+                    chars.next();
+                }
+                end = Some(at);
+            }
+            _ => {}
+        }
+    }
+    let at = end.unwrap_or(picture.len());
+    format!("{}{quoted}{}", &picture[..at], &picture[at..])
+}
+
+/// A moment given as a FILETIME in the regional short date and the time, by `picture` or
+/// the region's own time format, in this computer's time zone; `None` when Windows cannot
+/// convert or format it.
+fn format_file_time_with(intervals: i64, picture: Option<&str>) -> Option<String> {
     if intervals < 0 {
-        return fallback();
+        return None;
     }
     let file_time = FILETIME {
         dwLowDateTime: intervals as u32,
@@ -664,12 +727,14 @@ pub fn format_file_time(intervals: i64) -> String {
             && SystemTimeToTzSpecificLocalTime(ptr::null(), &utc, &mut local) != 0
     };
     if !converted {
-        return fallback();
+        return None;
     }
+    let picture: Option<Vec<u16>> = picture.map(|p| p.encode_utf16().chain([0]).collect());
     let mut date = [0u16; 128];
     let mut time = [0u16; 128];
-    // SAFETY: the user's default locale (a null name); the buffer lengths are passed and
-    // the format and calendar are the locale's own.
+    // SAFETY: the user's default locale (a null name); the buffer lengths are passed, the
+    // picture is NUL-terminated or null for the locale's own format, and the calendar is
+    // the locale's own.
     let (date_len, time_len) = unsafe {
         (
             GetDateFormatEx(
@@ -685,7 +750,7 @@ pub fn format_file_time(intervals: i64) -> String {
                 ptr::null(),
                 0,
                 &local,
-                ptr::null(),
+                picture.as_ref().map_or(ptr::null(), |p| p.as_ptr()),
                 time.as_mut_ptr(),
                 time.len() as i32,
             ),
@@ -693,13 +758,13 @@ pub fn format_file_time(intervals: i64) -> String {
     };
     // The lengths count the terminating NUL.
     if date_len <= 1 || time_len <= 1 {
-        return fallback();
+        return None;
     }
-    format!(
+    Some(format!(
         "{} {}",
         String::from_utf16_lossy(&date[..date_len as usize - 1]),
         String::from_utf16_lossy(&time[..time_len as usize - 1])
-    )
+    ))
 }
 
 /// "2026-10-31 12:05:12 UTC" for a Unix time in milliseconds, with no calendar library:
@@ -725,7 +790,55 @@ fn iso_utc(unix_millis: i64) -> String {
     )
 }
 
-/// The user's regional formats, for the difference list (TASK-13 #18).
+/// System.FileAttributes, the shell property of the column «Атрибути» of File Explorer.
+const PKEY_FILE_ATTRIBUTES: PROPERTYKEY = PROPERTYKEY {
+    fmtid: GUID::from_u128(0xB725F130_47EF_101A_A5F1_02608C9EEBAC),
+    pid: 13,
+};
+
+thread_local! {
+    /// The letters Windows gave for each attribute flag so far.
+    static ATTRIBUTE_LETTERS: RefCell<Vec<(u32, Option<String>)>> =
+        const { RefCell::new(Vec::new()) };
+}
+
+/// The letter the column «Атрибути» of File Explorer writes for the attribute `flag`, a
+/// single `FILE_ATTRIBUTE_*` bit, as this Windows writes it (TASK-14 #7, decided
+/// 2026-11-06): the shell formats the column's property for display; `None` for a flag it
+/// writes no letter for, or when the shell cannot say.
+pub fn attribute_letter(flag: u32) -> Option<String> {
+    if let Some(known) = ATTRIBUTE_LETTERS.with(|letters| {
+        letters
+            .borrow()
+            .iter()
+            .find(|(f, _)| *f == flag)
+            .map(|(_, letter)| letter.clone())
+    }) {
+        return known;
+    }
+    // A zeroed PROPVARIANT is VT_EMPTY; its type and its 32-bit value make it a VT_UI4.
+    let mut value = PROPVARIANT::default();
+    value.Anonymous.Anonymous.vt = VT_UI4;
+    value.Anonymous.Anonymous.Anonymous.ulVal = flag;
+    let mut text = [0u16; 32];
+    // SAFETY: the key and the value are valid for the call, and the buffer length is passed.
+    let hr = unsafe {
+        PSFormatForDisplay(
+            &PKEY_FILE_ATTRIBUTES,
+            &value,
+            PDFF_DEFAULT,
+            text.as_mut_ptr(),
+            text.len() as u32,
+        )
+    };
+    let len = text.iter().position(|&c| c == 0).unwrap_or(text.len());
+    let letter = (hr >= 0 && len > 0).then(|| String::from_utf16_lossy(&text[..len]));
+    ATTRIBUTE_LETTERS.with(|letters| letters.borrow_mut().push((flag, letter.clone())));
+    letter
+}
+
+/// The user's regional formats, for the difference list (TASK-13 #18), and the letters of
+/// the attributes as File Explorer writes them (TASK-14 #7).
 pub struct RegionalFormat;
 
 impl Regional for RegionalFormat {
@@ -737,8 +850,16 @@ impl Regional for RegionalFormat {
         format_file_time(file_time)
     }
 
+    fn file_time_fraction(&self, file_time: i64, digits: u32) -> String {
+        format_file_time_fraction(file_time, digits)
+    }
+
     fn date_time(&self, unix_millis: i64) -> String {
         format_date_time(unix_millis)
+    }
+
+    fn attribute_letter(&self, flag: u32) -> Option<String> {
+        attribute_letter(flag)
     }
 }
 
@@ -869,6 +990,75 @@ fn icon_to_bitmap(icon: HICON) -> Option<HBITMAP> {
     }
 }
 
+/// Opens the folder of `path` in File Explorer with the entry itself selected — a file, a
+/// folder or a link, not the link's target (TASK-14 #11): the shell's item of the path,
+/// given alone, makes File Explorer open its parent folder and select it.
+pub fn select_in_explorer(path: &Path) -> io::Result<()> {
+    let wide: Vec<u16> = path.as_os_str().encode_wide().chain([0]).collect();
+    let mut item: *mut ITEMIDLIST = ptr::null_mut();
+    // SAFETY: a NUL-terminated path and an out pointer; no bind context, no attributes.
+    let parsed = unsafe {
+        SHParseDisplayName(
+            wide.as_ptr(),
+            ptr::null_mut(),
+            &mut item,
+            0,
+            ptr::null_mut(),
+        )
+    };
+    if parsed < 0 || item.is_null() {
+        return Err(hresult_error(parsed));
+    }
+    // SAFETY: the item just parsed; with no items of its own (cidl 0), the call opens the
+    // item's folder and selects the item.
+    let opened = unsafe { SHOpenFolderAndSelectItems(item, 0, ptr::null(), 0) };
+    // SAFETY: the item came from SHParseDisplayName and is freed once.
+    unsafe { ILFree(item) };
+    if opened < 0 {
+        Err(hresult_error(opened))
+    } else {
+        Ok(())
+    }
+}
+
+/// Opens `folder` in File Explorer with nothing selected (TASK-14 #12), by the verb
+/// «explore», as browsers do when an item cannot be selected.
+pub fn open_in_explorer(folder: &Path) -> io::Result<()> {
+    let wide = |s: &OsStr| -> Vec<u16> { s.encode_wide().chain([0]).collect() };
+    let verb = wide(OsStr::new("explore"));
+    let folder = wide(folder.as_os_str());
+    // SAFETY: every string is NUL-terminated; no window owns an error box.
+    let result = unsafe {
+        ShellExecuteW(
+            ptr::null_mut(),
+            verb.as_ptr(),
+            folder.as_ptr(),
+            ptr::null(),
+            ptr::null(),
+            SW_SHOWNORMAL,
+        )
+    };
+    // A value above 32 means success; the rest are error codes, with the detail in the
+    // last error.
+    if result as usize > 32 {
+        Ok(())
+    } else {
+        Err(io::Error::last_os_error())
+    }
+}
+
+/// A failed HRESULT as an I/O error: the Windows error it carries, or the HRESULT itself,
+/// whose text Windows knows too.
+fn hresult_error(hr: HRESULT) -> io::Error {
+    const FACILITY_WIN32: u32 = 0x8007_0000;
+    let code = hr as u32;
+    if code & 0xFFFF_0000 == FACILITY_WIN32 {
+        io::Error::from_raw_os_error((code & 0xFFFF) as i32)
+    } else {
+        io::Error::from_raw_os_error(hr)
+    }
+}
+
 /// Starts `exe` with `args` as administrator, through the UAC prompt. An error means it
 /// did not start; declining the prompt is `ERROR_CANCELLED`.
 pub fn run_as_admin(exe: &Path, args: &str) -> io::Result<()> {
@@ -956,6 +1146,68 @@ mod tests {
         assert!(!half.contains('.') || half.ends_with("50"), "{half}");
         assert_eq!(digits(format_number("1234567", 0)), "1234567");
         assert_eq!(format_number("0", 0), "0");
+    }
+
+    #[test]
+    fn windows_gives_the_letters_of_the_column_of_file_explorer() {
+        use windows_sys::Win32::System::Com::{COINIT_APARTMENTTHREADED, CoInitializeEx};
+        // SAFETY: the test's thread joins an apartment for the shell's property system, as
+        // the window's thread has.
+        unsafe { CoInitializeEx(ptr::null(), COINIT_APARTMENTTHREADED as u32) };
+        // The flags Microsoft documents a letter for: R, S, A, C, O and I (PSFormatForDisplay,
+        // whose example 0x1801 is "RCO"). Their letters are one each, whatever the language.
+        for flag in [0x1, 0x4, 0x20, 0x800, 0x1000, 0x2000] {
+            let letter = attribute_letter(flag);
+            assert!(
+                letter.as_ref().is_some_and(|l| l.chars().count() == 1),
+                "{flag:#x}: {letter:?}"
+            );
+            // Asked again, the same.
+            assert_eq!(attribute_letter(flag), letter);
+        }
+    }
+
+    #[test]
+    fn the_fraction_of_a_second_goes_right_after_the_seconds() {
+        assert_eq!(after_seconds("H:mm:ss", ",1"), "H:mm:ss',1'");
+        assert_eq!(after_seconds("h:mm:ss tt", ".25"), "h:mm:ss'.25' tt");
+        assert_eq!(after_seconds("H:m:s", ",5"), "H:m:s',5'");
+        // An s in quotes is text, not the seconds.
+        assert_eq!(
+            after_seconds("HH' h 'mm' min 'ss' s'", ",3"),
+            "HH' h 'mm' min 'ss',3'' s'"
+        );
+        // Without seconds, at the end; a quote in the text is doubled.
+        assert_eq!(after_seconds("H:mm", ",5"), "H:mm',5'");
+        assert_eq!(after_seconds("H:mm:ss", "'7"), "H:mm:ss'''7'");
+    }
+
+    #[test]
+    fn a_file_time_with_a_fraction_keeps_the_digits_asked_for() {
+        // 2026-10-31 12:05:12.1234567 UTC: the seconds and the fraction are the same in
+        // any time zone, and only a separator stands between them.
+        let file_time = 1_793_448_312_000 * 10_000 + EPOCH_DIFFERENCE + 1_234_567;
+        let digits = |text: &str| -> String { text.chars().filter(char::is_ascii_digit).collect() };
+        let one = format_file_time_fraction(file_time, 1);
+        let seven = format_file_time_fraction(file_time, 7);
+        assert!(digits(&one).contains("121"), "{one}");
+        assert!(digits(&seven).contains("121234567"), "{seven}");
+        // Without its fraction, the moment is written as a snapshot's name.
+        let separator = locale_info(LOCALE_SDECIMAL)
+            .map(|s| String::from_utf16_lossy(&s[..s.len() - 1]))
+            .unwrap();
+        let without = |text: &str, fraction: &str| {
+            let fraction = format!("{separator}{fraction}");
+            let at = text.rfind(&fraction).expect("the fraction is there");
+            format!("{}{}", &text[..at], &text[at + fraction.len()..])
+        };
+        assert_eq!(without(&one, "1"), format_file_time(file_time));
+        assert_eq!(without(&seven, "1234567"), format_file_time(file_time));
+        // A moment Windows cannot convert keeps its fraction in the ISO form.
+        assert_eq!(
+            format_file_time_fraction(-1, 3),
+            "1600-12-31 23:59:59.999 UTC"
+        );
     }
 
     #[test]

@@ -1,12 +1,16 @@
 //! The settings window (TASK-9): the application's own settings (ADR-0007) that have a
 //! control of their own — the interface language (TASK-16), what the focus does when a
 //! snapshot ends, what it does when a comparison ends (TASK-11), how sizes are written
-//! (TASK-13), and whether deleting snapshots asks first. The profile opened last and the
-//! view of the difference list are kept without a control.
+//! (TASK-13), how the details of a change write attributes (TASK-14), whether deleting
+//! snapshots asks first, and whether showing a change no longer on disk in File Explorer
+//! asks first (TASK-14). The profile opened last and the view of the difference list are
+//! kept without a control.
 
 use std::rc::Rc;
 
-use revisor_core::settings::{FocusAfterComparison, FocusAfterSnapshot, Language, SizeFormat};
+use revisor_core::settings::{
+    AttributeFormat, FocusAfterComparison, FocusAfterSnapshot, Language, SizeFormat,
+};
 use wxdragon::prelude::*;
 
 use crate::commands::CommandId;
@@ -21,7 +25,9 @@ pub struct Values {
     pub focus_after_snapshot: FocusAfterSnapshot,
     pub focus_after_comparison: FocusAfterComparison,
     pub size_format: SizeFormat,
+    pub attribute_format: AttributeFormat,
     pub confirm_snapshot_deletion: bool,
+    pub warn_missing_entry: bool,
 }
 
 /// The labelled controls of the window. OK and Cancel are not among them: they have no
@@ -32,16 +38,20 @@ enum Control {
     FocusAfterSnapshot,
     FocusAfterComparison,
     SizeFormat,
+    AttributeFormat,
     ConfirmDeletion,
+    WarnMissingEntry,
 }
 
 impl Control {
-    const ALL: [Control; 5] = [
+    const ALL: [Control; 7] = [
         Self::Language,
         Self::FocusAfterSnapshot,
         Self::FocusAfterComparison,
         Self::SizeFormat,
+        Self::AttributeFormat,
         Self::ConfirmDeletion,
+        Self::WarnMissingEntry,
     ];
 
     /// The access key, as the document «Клавіатура й меню» lists it.
@@ -51,7 +61,9 @@ impl Control {
             Self::FocusAfterSnapshot => b'F',
             Self::FocusAfterComparison => b'M',
             Self::SizeFormat => b'S',
+            Self::AttributeFormat => b'A',
             Self::ConfirmDeletion => b'C',
+            Self::WarnMissingEntry => b'W',
         }
     }
 
@@ -61,7 +73,9 @@ impl Control {
             Self::FocusAfterSnapshot => s.focus_after_snapshot(),
             Self::FocusAfterComparison => s.focus_after_comparison(),
             Self::SizeFormat => s.size_format(),
+            Self::AttributeFormat => s.attribute_format(),
             Self::ConfirmDeletion => s.confirm_snapshot_deletion(),
+            Self::WarnMissingEntry => s.warn_missing_entry(),
         }
     }
 
@@ -73,8 +87,9 @@ impl Control {
             Self::Language
             | Self::FocusAfterSnapshot
             | Self::FocusAfterComparison
-            | Self::SizeFormat => field_label(s, name, access),
-            Self::ConfirmDeletion => button_label(s, name, access, false),
+            | Self::SizeFormat
+            | Self::AttributeFormat => field_label(s, name, access),
+            Self::ConfirmDeletion | Self::WarnMissingEntry => button_label(s, name, access, false),
         }
     }
 }
@@ -84,7 +99,9 @@ struct Window {
     focus: Choice,
     comparison_focus: Choice,
     size_format: Choice,
+    attribute_format: Choice,
     confirm: CheckBox,
+    warn_missing: CheckBox,
 }
 
 /// Shows the window with the `initial` values and returns the new ones once the user
@@ -141,10 +158,26 @@ pub fn show(parent: &Frame, s: &'static dyn Strings, initial: Values) -> Option<
         .position(|&v| v == initial.size_format)
         .unwrap_or(0);
     size_format.set_selection(chosen as u32);
+    let attribute_label = StaticText::builder(&dialog)
+        .with_label(&Control::AttributeFormat.label(s))
+        .build();
+    let attribute_format = Choice::builder(&dialog).build();
+    for value in AttributeFormat::ALL {
+        attribute_format.append(s.attribute_option(value));
+    }
+    let chosen = AttributeFormat::ALL
+        .iter()
+        .position(|&v| v == initial.attribute_format)
+        .unwrap_or(0);
+    attribute_format.set_selection(chosen as u32);
     let confirm = CheckBox::builder(&dialog)
         .with_label(&Control::ConfirmDeletion.label(s))
         .build();
     confirm.set_value(initial.confirm_snapshot_deletion);
+    let warn_missing = CheckBox::builder(&dialog)
+        .with_label(&Control::WarnMissingEntry.label(s))
+        .build();
+    warn_missing.set_value(initial.warn_missing_entry);
     let ok = Button::builder(&dialog)
         .with_id(ID_OK)
         .with_label(s.ok())
@@ -166,7 +199,10 @@ pub fn show(parent: &Frame, s: &'static dyn Strings, initial: Values) -> Option<
     sizer.add(&comparison_focus, 0, SizerFlag::Expand | SizerFlag::All, 12);
     sizer.add(&size_label, 0, side, 12);
     sizer.add(&size_format, 0, SizerFlag::Expand | SizerFlag::All, 12);
+    sizer.add(&attribute_label, 0, side, 12);
+    sizer.add(&attribute_format, 0, SizerFlag::Expand | SizerFlag::All, 12);
     sizer.add(&confirm, 0, side | SizerFlag::Bottom, 12);
+    sizer.add(&warn_missing, 0, side | SizerFlag::Bottom, 12);
     let commit_row = BoxSizer::builder(Orientation::Horizontal).build();
     commit_row.add(&ok, 0, SizerFlag::AlignLeft, 8);
     commit_row.add(&cancel, 0, SizerFlag::Left, 8);
@@ -183,7 +219,9 @@ pub fn show(parent: &Frame, s: &'static dyn Strings, initial: Values) -> Option<
         focus,
         comparison_focus,
         size_format,
+        attribute_format,
         confirm,
+        warn_missing,
     });
     // Access keys by the key's position, so they work in the Ukrainian layout too
     // (document «Клавіатура й меню»).
@@ -219,9 +257,14 @@ impl Window {
             Control::FocusAfterSnapshot => self.focus.set_focus(),
             Control::FocusAfterComparison => self.comparison_focus.set_focus(),
             Control::SizeFormat => self.size_format.set_focus(),
+            Control::AttributeFormat => self.attribute_format.set_focus(),
             Control::ConfirmDeletion => {
                 self.confirm.set_value(!self.confirm.get_value());
                 self.confirm.set_focus();
+            }
+            Control::WarnMissingEntry => {
+                self.warn_missing.set_value(!self.warn_missing.get_value());
+                self.warn_missing.set_focus();
             }
         }
         true
@@ -232,6 +275,7 @@ impl Window {
         let chosen = self.focus.get_selection().unwrap_or(0) as usize;
         let comparison = self.comparison_focus.get_selection().unwrap_or(0) as usize;
         let size = self.size_format.get_selection().unwrap_or(0) as usize;
+        let attributes = self.attribute_format.get_selection().unwrap_or(0) as usize;
         Values {
             language: Language::ALL.get(language).copied().unwrap_or_default(),
             focus_after_snapshot: FocusAfterSnapshot::ALL
@@ -243,7 +287,12 @@ impl Window {
                 .copied()
                 .unwrap_or_default(),
             size_format: SizeFormat::ALL.get(size).copied().unwrap_or_default(),
+            attribute_format: AttributeFormat::ALL
+                .get(attributes)
+                .copied()
+                .unwrap_or_default(),
             confirm_snapshot_deletion: self.confirm.get_value(),
+            warn_missing_entry: self.warn_missing.get_value(),
         }
     }
 }
@@ -296,6 +345,47 @@ mod tests {
             Control::ConfirmDeletion.label(&Uk),
             "Підтверджувати видалення знімків (&C)"
         );
+        // TASK-14 #7, #13.
+        assert_eq!(Control::AttributeFormat.label(&En), "&Attributes:");
+        assert_eq!(Control::AttributeFormat.label(&Uk), "Атрибути (&A):");
+        assert_eq!(
+            Control::WarnMissingEntry.label(&En),
+            "&Warn when the entry is no longer on disk"
+        );
+        assert_eq!(
+            Control::WarnMissingEntry.label(&Uk),
+            "Попереджати, коли запису вже немає на диску (&W)"
+        );
+    }
+
+    #[test]
+    fn the_attribute_options_are_named_in_both_languages_in_setting_order() {
+        // TASK-14 #7; the first is the default.
+        let uk: Vec<&str> = AttributeFormat::ALL
+            .iter()
+            .map(|&v| Uk.attribute_option(v))
+            .collect();
+        assert_eq!(
+            uk,
+            [
+                "Словами",
+                "Літерами, як у Провіднику",
+                "Літерами через кому"
+            ]
+        );
+        let en: Vec<&str> = AttributeFormat::ALL
+            .iter()
+            .map(|&v| En.attribute_option(v))
+            .collect();
+        assert_eq!(
+            en,
+            [
+                "As words",
+                "As letters, like File Explorer",
+                "As letters with commas"
+            ]
+        );
+        assert_eq!(AttributeFormat::ALL[0], AttributeFormat::default());
     }
 
     #[test]

@@ -21,6 +21,9 @@ pub struct AppState {
     /// Whether the difference list shows a difference: of any profile, which need not be
     /// the open one (TASK-13 #6).
     pub has_difference: bool,
+    /// How many rows the difference list shows: the details and File Explorer act on the
+    /// one with the focus (TASK-14).
+    pub difference_rows: usize,
     // The flags of the background jobs: the window sets them all at once, with `set_jobs`.
     pub snapshot_running: bool,
     /// Whether the snapshot being taken is of the open profile, which then cannot be
@@ -37,9 +40,6 @@ pub struct AppState {
     /// which order (TASK-13): what the check marks of the menu «Різниця» say.
     pub shown_types: [bool; 4],
     pub sort: DifferenceSort,
-    /// Debug-only stand-in state (REVISOR_DEMO=1) for checking the keyboard with NVDA
-    /// before TASK-14 exists: its commands count as available.
-    pub demo: bool,
 }
 
 impl AppState {
@@ -47,15 +47,6 @@ impl AppState {
         Self {
             shown_types: [true; 4],
             ..Self::default()
-        }
-    }
-
-    /// The demo state: TASK-14's commands run, on the real profiles, snapshots and
-    /// difference.
-    pub fn demo() -> Self {
-        Self {
-            demo: true,
-            ..Self::new()
         }
     }
 
