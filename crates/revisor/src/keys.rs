@@ -328,6 +328,6 @@ mod tests {
             "Клавіша контекстного меню"
         );
         assert_eq!(Shortcut::new(Key::Space).ctrl().name(&En), "Ctrl+Spacebar");
-        assert_eq!(Shortcut::new(Key::ContextMenu).name(&En), "Menu key");
+        assert_eq!(Shortcut::new(Key::ContextMenu).name(&En), "Application key");
     }
 }

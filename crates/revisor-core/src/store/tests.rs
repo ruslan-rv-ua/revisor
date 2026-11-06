@@ -173,7 +173,8 @@ fn each_folder_of_a_snapshot_keeps_its_state_and_its_tree() {
     let unavailable = [
         Unavailable::NotNtfs("FAT32".into()),
         Unavailable::Network,
-        Unavailable::Error(21),
+        Unavailable::NoDrive,
+        Unavailable::Error(1920),
         Unavailable::NotAFolder,
     ];
     for (i, reason) in unavailable.iter().enumerate() {
@@ -200,12 +201,12 @@ fn each_folder_of_a_snapshot_keeps_its_state_and_its_tree() {
     let expected: Vec<SnapshotFolder> = snapshot.folders.iter().map(SnapshotFolder::from).collect();
     assert_eq!(folders, expected);
     assert_same(&load(&store, id, 0), &sample());
-    for position in 1..6 {
+    for position in 1..7 {
         assert!(load(&store, id, position).is_empty());
     }
     // The second tree comes back with its parents counted from its own root.
-    assert_same(&load(&store, id, 6), &synthetic(100));
-    assert!(load(&store, id, 7).is_empty());
+    assert_same(&load(&store, id, 7), &synthetic(100));
+    assert!(load(&store, id, 8).is_empty());
     assert!(load(&store, id + 1, 0).is_empty());
     assert!(store.snapshot_folders(id + 1).unwrap().is_empty());
 }

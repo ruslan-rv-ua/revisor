@@ -69,11 +69,7 @@ fn a_snapshot_covers_every_folder_of_the_profile_and_reports_each() {
             if *volume_serial != 0 && *real_path == folders::real_path(&app).unwrap()
     ));
     assert_eq!(states[1], &FolderState::Missing);
-    assert!(
-        matches!(states[2], FolderState::Unavailable(Unavailable::Error(_))),
-        "{:?}",
-        states[2]
-    );
+    assert_eq!(states[2], &FolderState::Unavailable(Unavailable::NoDrive));
     // The two scanned folders are on the same volume, each at its own real location.
     assert!(matches!(
         (states[0], states[3]),
@@ -246,6 +242,35 @@ fn a_file_at_a_folders_path_is_not_a_folder() {
             .unwrap()[0]
             .state,
         FolderState::Unavailable(Unavailable::NotAFolder)
+    );
+}
+
+#[test]
+fn a_folder_whose_drive_is_not_there_is_on_no_drive() {
+    let tmp = TempDir::new("snapshot");
+    let not_found = io::Error::from_raw_os_error(ERROR_PATH_NOT_FOUND);
+    // Not even the root of the path is there: the drive is not connected.
+    let nowhere = missing_drive().join(r"deep\nowhere");
+    assert_eq!(
+        absent(&nowhere, &not_found),
+        FolderState::Unavailable(Unavailable::NoDrive)
+    );
+    // A folder above it is there, so the drive is too.
+    assert_eq!(
+        absent(&tmp.path().join(r"gone\deeper"), &not_found),
+        FolderState::Missing
+    );
+    // A card reader without a card, a disc drive without a disc.
+    let not_ready = io::Error::from_raw_os_error(ERROR_NOT_READY);
+    assert_eq!(
+        absent(tmp.path(), &not_ready),
+        FolderState::Unavailable(Unavailable::NoDrive)
+    );
+    // Any other error stays as it is.
+    let denied = io::Error::from_raw_os_error(ERROR_ACCESS_DENIED);
+    assert_eq!(
+        absent(&nowhere, &denied),
+        FolderState::Unavailable(Unavailable::Error(ERROR_ACCESS_DENIED))
     );
 }
 

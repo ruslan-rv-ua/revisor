@@ -1271,12 +1271,14 @@ fn inaccessibility(
 }
 
 /// Why a folder of a snapshot could not be read, in the interface's words (TASK-8,
-/// TASK-13 #9). The warning already says the folder could not be read, so a Windows error
-/// comes as its reason alone (TASK-17).
+/// TASK-13 #9): the one place that says it, for the warning of a comparison and for the
+/// folders the snapshot did not find (TASK-25). The warning already says the folder could
+/// not be read, so a Windows error comes as its reason alone (TASK-17).
 pub fn unavailable_reason(s: &dyn Strings, reason: &Unavailable) -> String {
     match reason {
         Unavailable::NotNtfs(file_system) => s.folder_volume_not_ntfs(file_system),
         Unavailable::Network => s.folder_volume_network().into(),
+        Unavailable::NoDrive => s.folder_drive_not_connected().into(),
         Unavailable::NotAFolder => s.folder_is_a_file().into(),
         Unavailable::Error(code) => {
             let error = std::io::Error::from_raw_os_error(*code);

@@ -11,7 +11,6 @@
 
 use std::cell::{Cell, RefCell};
 use std::ffi::c_void;
-use std::io;
 use std::path::{Path, PathBuf};
 use std::ptr;
 use std::rc::Rc;
@@ -30,7 +29,7 @@ use revisor_core::store::{
 };
 use wxdragon::prelude::*;
 
-use crate::commands::{COMMANDS, CommandId, CommandKind, MenuId, Pane, command};
+use crate::commands::{COMMANDS, CommandId, CommandKind, MenuId, Pane, Reason, command};
 use crate::compare_window;
 use crate::difference::{self, Column, List, View};
 use crate::explorer::{self, Reveal};
@@ -788,9 +787,7 @@ impl MainWindow {
         let s = self.s;
         match routed {
             Route::Run(id) => self.run(id),
-            Route::Refuse(id, reason) => {
-                self.say(&s.unavailable(&command(id).spoken_name(s), s.reason(reason)))
-            }
+            Route::Refuse(id, reason) => self.refuse(id, reason),
             Route::OnlyIn(key, pane) => self.say(&s.key_only_in(&key.name(s), pane)),
             Route::FocusPane(pane) => self.list(pane).set_focus(),
             Route::FocusLabel(LABEL_PROFILE) => self.profile.set_focus(),
@@ -854,13 +851,20 @@ impl MainWindow {
         });
     }
 
+    /// Says why the command cannot run now, wherever it was asked for (ADR-0008): its name
+    /// as it reads outside the menu, then the reason.
+    fn refuse(&self, id: CommandId, reason: Reason) {
+        let s = self.s;
+        self.say(&s.unavailable(&command(id).spoken_name(s), s.reason(reason)));
+    }
+
     /// Runs the command; returns whether the window goes on, which it does not after
     /// «Вихід».
     fn run_command(&self, id: CommandId) -> bool {
         let s = self.s;
         let available = (command(id).available)(&self.state.borrow());
         if let Err(reason) = available {
-            self.say(&s.unavailable(&command(id).spoken_name(s), s.reason(reason)));
+            self.refuse(id, reason);
             return true;
         }
         match id {
@@ -2515,19 +2519,18 @@ impl MainWindow {
         }
     }
 
-    /// Why the snapshot did not scan a folder, in the interface's words.
+    /// Why the snapshot did not scan a folder, in the interface's words: the reason of an
+    /// unavailable folder is the comparison's (TASK-25), and a Windows error says the folder
+    /// could not be read before it.
     fn folder_state_reason(&self, state: &FolderState) -> String {
         let s = self.s;
         match state {
             FolderState::Scanned { .. } => String::new(),
             FolderState::Missing => s.folder_missing().into(),
-            FolderState::Unavailable(Unavailable::NotNtfs(fs)) => s.folder_volume_not_ntfs(fs),
-            FolderState::Unavailable(Unavailable::Network) => s.folder_volume_network().into(),
-            FolderState::Unavailable(Unavailable::NotAFolder) => s.folder_is_a_file().into(),
-            FolderState::Unavailable(Unavailable::Error(code)) => {
-                let error = io::Error::from_raw_os_error(*code);
-                s.folder_unreachable(&s.failure(&failure::of_io(&error)))
+            FolderState::Unavailable(reason @ Unavailable::Error(_)) => {
+                s.folder_unreachable(&difference::unavailable_reason(s, reason))
             }
+            FolderState::Unavailable(reason) => difference::unavailable_reason(s, reason),
         }
     }
 

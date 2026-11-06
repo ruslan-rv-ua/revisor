@@ -483,7 +483,7 @@ fn an_entry_unknown_in_a_snapshot_says_so() {
     assert_eq!(
         lines(&text(&En, &Seconds, Formats::default(), &row)).last(),
         Some(
-            &"Inaccessible: in the later snapshot — whether it was there is unknown: a folder \
+            &"Inaccessible: in the later snapshot—whether it was there is unknown: a folder \
               on the way to it could not be read or is a link."
         )
     );

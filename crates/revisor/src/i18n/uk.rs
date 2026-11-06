@@ -365,11 +365,8 @@ impl Strings for Uk {
             }
             Failure::Cancelled => "дію скасовано".into(),
             Failure::SnapshotDeleted => "знімок тим часом видалено".into(),
-            Failure::Other {
-                text,
-                code: Some(code),
-            } => format!("{} (код {code})", in_sentence(text)),
-            Failure::Other { text, code: None } => in_sentence(text),
+            Failure::Other { text, code } => format!("{} (код {code})", in_sentence(text)),
+            Failure::Unexpected(text) => format!("сталася непередбачена помилка ({text})"),
         }
     }
 
@@ -423,6 +420,10 @@ impl Strings for Uk {
 
     fn folder_volume_network(&self) -> &'static str {
         "тека на мережевому ресурсі"
+    }
+
+    fn folder_drive_not_connected(&self) -> &'static str {
+        "диск теки не підключено"
     }
 
     fn folder_is_a_file(&self) -> &'static str {

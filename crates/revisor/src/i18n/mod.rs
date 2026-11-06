@@ -46,25 +46,94 @@ pub enum Failure {
     Cancelled,
     /// The snapshot was deleted while the action needed it (TASK-11).
     SnapshotDeleted,
+    /// Windows or SQLite gave this text and code: revisor shows both, as help is searched
+    /// for by the code.
     Other {
         text: String,
-        code: Option<i64>,
+        code: i64,
     },
+    /// An error with no code of Windows or SQLite, such as one of rusqlite itself: revisor
+    /// says it did not expect it, and the text follows as it is, for a report of the defect
+    /// (TASK-25).
+    Unexpected(String),
 }
 
-/// The text of Windows or SQLite as the second half of a sentence (TASK-17): its first
-/// letter small, unless the word is all capitals, as "SQLite" or "NTFS" are not.
+/// The text of Windows or SQLite as the second half of a sentence (TASK-17, TASK-25): its
+/// first letter small, unless its first word is a name — the word "Windows", or a word
+/// with a capital letter after its first letter, as "SQLite", "OneDrive" or "NTFS".
 fn in_sentence(text: &str) -> String {
+    let word = text.split_whitespace().next().unwrap_or_default();
+    let is_name = word.trim_end_matches(|c: char| !c.is_alphanumeric()) == "Windows"
+        || word.chars().skip(1).any(char::is_uppercase);
     let mut chars = text.chars();
-    match (chars.next(), chars.next()) {
-        (Some(first), second) if !second.is_some_and(char::is_uppercase) => first
-            .to_lowercase()
-            .chain(text[first.len_utf8()..].chars())
-            .collect(),
+    match chars.next() {
+        Some(first) if !is_name => first.to_lowercase().chain(chars).collect(),
         _ => text.to_string(),
     }
 }
 
+/// Declares the trait [`Strings`] from its methods and, for the tests, `METHODS`, their
+/// names, and `Recorder`, a `Strings` that notes every method called on it. The test of
+/// the catalog builds the catalog with recorders, so it checks that the catalog calls
+/// every method without a list of them kept apart from the trait (TASK-25).
+macro_rules! strings {
+    (
+        $(#[$trait_attr:meta])*
+        pub trait Strings {
+            $(
+                $(#[$attr:meta])*
+                fn $name:ident(&self $(, $arg:ident: $ty:ty)*) -> $ret:ty;
+            )*
+        }
+    ) => {
+        $(#[$trait_attr])*
+        pub trait Strings {
+            $(
+                $(#[$attr])*
+                fn $name(&self $(, $arg: $ty)*) -> $ret;
+            )*
+        }
+
+        /// The names of the methods of [`Strings`].
+        #[cfg(test)]
+        pub const METHODS: &[&str] = &[$(stringify!($name)),*];
+
+        /// A [`Strings`] that answers as `inner` does and notes the name of every method
+        /// called on it.
+        #[cfg(test)]
+        pub struct Recorder<'a> {
+            inner: &'a dyn Strings,
+            called: std::cell::RefCell<std::collections::BTreeSet<&'static str>>,
+        }
+
+        #[cfg(test)]
+        impl<'a> Recorder<'a> {
+            pub fn new(inner: &'a dyn Strings) -> Self {
+                Self {
+                    inner,
+                    called: Default::default(),
+                }
+            }
+
+            /// The names of the methods called so far.
+            pub fn called(&self) -> std::collections::BTreeSet<&'static str> {
+                self.called.borrow().clone()
+            }
+        }
+
+        #[cfg(test)]
+        impl Strings for Recorder<'_> {
+            $(
+                fn $name(&self $(, $arg: $ty)*) -> $ret {
+                    self.called.borrow_mut().insert(stringify!($name));
+                    self.inner.$name($($arg),*)
+                }
+            )*
+        }
+    };
+}
+
+strings! {
 /// All interface strings of one language.
 pub trait Strings {
     fn lang(&self) -> Lang;
@@ -156,6 +225,8 @@ pub trait Strings {
     fn folder_missing(&self) -> &'static str;
     fn folder_volume_not_ntfs(&self, file_system: &str) -> String;
     fn folder_volume_network(&self) -> &'static str;
+    /// The folder's drive is not on the system, or its device holds no medium (TASK-25).
+    fn folder_drive_not_connected(&self) -> &'static str;
     fn folder_is_a_file(&self) -> &'static str;
     fn folder_unreachable(&self, reason: &str) -> String;
     fn snapshot_cancelled(&self) -> &'static str;
@@ -334,6 +405,7 @@ pub trait Strings {
     fn key_left(&self) -> &'static str;
     fn key_right(&self) -> &'static str;
     fn key_context_menu(&self) -> &'static str;
+}
 }
 
 #[cfg(test)]
@@ -611,18 +683,19 @@ mod tests {
 
     #[test]
     fn a_known_failure_gives_its_advice_after_a_dash() {
-        // The failure comes after a colon, so its advice takes a dash (TASK-17).
+        // The failure comes after a colon, so its advice takes a dash (TASK-17), with no
+        // spaces around it in English, as Microsoft Writing Style Guide has it (TASK-25).
         assert_eq!(
             Uk.profile_not_saved(&Uk.failure(&Failure::AccessDenied)),
             "Профіль не збережено: немає доступу — перевірте права на цей файл чи теку."
         );
         assert_eq!(
             En.profile_not_saved(&En.failure(&Failure::DiskFull)),
-            "The profile was not saved: the disk is full — free some space and try again."
+            "The profile was not saved: the disk is full—free some space and try again."
         );
         let other = Failure::Other {
             text: "Не вдається знайти вказаний шлях".into(),
-            code: Some(3),
+            code: 3,
         };
         assert_eq!(
             Uk.snapshot_failed(&Uk.failure(&other)),
@@ -631,11 +704,81 @@ mod tests {
     }
 
     #[test]
-    fn the_text_of_windows_starts_small_unless_it_is_a_capitalized_word() {
-        assert_eq!(in_sentence("The system cannot"), "the system cannot");
-        assert_eq!(in_sentence("SQLite failed"), "SQLite failed");
+    fn the_text_of_windows_starts_small_unless_its_first_word_is_a_name() {
+        // An ordinary first word, in either language of Windows.
+        assert_eq!(
+            in_sentence("The system cannot find the path specified"),
+            "the system cannot find the path specified"
+        );
+        assert_eq!(
+            in_sentence("Системі не вдається знайти вказаний шлях"),
+            "системі не вдається знайти вказаний шлях"
+        );
+        // A name: the word Windows, or a word with a capital letter after its first one.
+        for name in [
+            "Windows cannot verify the digital signature for this file",
+            "Windows не вдається перевірити цифровий підпис цього файлу",
+            "Windows, as it says",
+            "OneDrive cannot sync this file",
+            "SQLite failed",
+            "NTFS is needed",
+            "I/O error",
+        ] {
+            assert_eq!(in_sentence(name), name);
+        }
+        // Only the first word counts, and a word only starting as a name is none.
+        assert_eq!(
+            in_sentence("Access to OneDrive is denied"),
+            "access to OneDrive is denied"
+        );
+        assert_eq!(in_sentence("Windowsless"), "windowsless");
         assert_eq!(in_sentence("A"), "a");
         assert_eq!(in_sentence(""), "");
+    }
+
+    #[test]
+    fn a_failure_keeps_a_name_after_the_colon_in_both_languages() {
+        let failed = |text: &str, code| Failure::Other {
+            text: text.into(),
+            code,
+        };
+        assert_eq!(
+            En.restart_failed(&En.failure(&failed(
+                "Windows cannot verify the digital signature for this file",
+                577
+            ))),
+            "revisor was not restarted: Windows cannot verify the digital signature for this \
+             file (code 577)."
+        );
+        assert_eq!(
+            Uk.restart_failed(&Uk.failure(&failed(
+                "Windows не вдається перевірити цифровий підпис цього файлу",
+                577
+            ))),
+            "revisor не перезапущено: Windows не вдається перевірити цифровий підпис цього \
+             файлу (код 577)."
+        );
+        assert_eq!(
+            Uk.snapshot_failed(&Uk.failure(&failed("OneDrive не може синхронізувати", 362))),
+            "Знімок не збережено: OneDrive не може синхронізувати (код 362)."
+        );
+        assert_eq!(
+            En.snapshot_failed(&En.failure(&failed("Access is denied", 5))),
+            "The snapshot was not saved: access is denied (code 5)."
+        );
+    }
+
+    #[test]
+    fn an_error_without_a_code_is_unexpected_in_both_languages() {
+        let unexpected = Failure::Unexpected("Query returned no rows".into());
+        assert_eq!(
+            Uk.snapshot_failed(&Uk.failure(&unexpected)),
+            "Знімок не збережено: сталася непередбачена помилка (Query returned no rows)."
+        );
+        assert_eq!(
+            En.snapshot_failed(&En.failure(&unexpected)),
+            "The snapshot was not saved: an unexpected error occurred (Query returned no rows)."
+        );
     }
 
     #[test]
@@ -652,6 +795,23 @@ mod tests {
         assert_eq!(
             En.folders_not_found(&folders),
             r"Folders not found: “D:\Work” (the folder is missing)."
+        );
+        // A drive that is not connected says so in revisor's words (TASK-25).
+        let folders = [(
+            r"F:\Фото".to_string(),
+            Uk.folder_drive_not_connected().into(),
+        )];
+        assert_eq!(
+            Uk.folders_not_found(&folders),
+            r"Тек не знайдено: «F:\Фото» (диск теки не підключено)."
+        );
+        let folders = [(
+            r"F:\Photos".to_string(),
+            En.folder_drive_not_connected().into(),
+        )];
+        assert_eq!(
+            En.folders_not_found(&folders),
+            r"Folders not found: “F:\Photos” (the folder's drive is not connected)."
         );
     }
 }

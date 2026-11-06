@@ -25,6 +25,7 @@ use crate::store::{
 const ERROR_FILE_NOT_FOUND: i32 = Foundation::ERROR_FILE_NOT_FOUND as i32;
 const ERROR_PATH_NOT_FOUND: i32 = Foundation::ERROR_PATH_NOT_FOUND as i32;
 const ERROR_ACCESS_DENIED: i32 = Foundation::ERROR_ACCESS_DENIED as i32;
+const ERROR_NOT_READY: i32 = Foundation::ERROR_NOT_READY as i32;
 
 /// What a finished snapshot reports.
 #[derive(Clone, Debug)]
@@ -299,19 +300,26 @@ fn scan_folder(
 }
 
 /// The state of a folder that could not be opened: missing when it is not there but the
-/// nearest folder above it is (so its volume is), unavailable with the error otherwise.
+/// nearest folder above it is (so its volume is); on no drive when not even the root of
+/// its path is there, or its device holds no medium (TASK-25); unavailable with the error
+/// otherwise.
 fn absent(path: &Path, error: &io::Error) -> FolderState {
     let code = error.raw_os_error().unwrap_or(0);
     let not_found =
         |code: Option<i32>| matches!(code, Some(ERROR_FILE_NOT_FOUND | ERROR_PATH_NOT_FOUND));
+    if code == ERROR_NOT_READY {
+        return FolderState::Unavailable(Unavailable::NoDrive);
+    }
     if not_found(Some(code)) {
         for above in path.ancestors().skip(1) {
             match fs::metadata(above) {
                 Ok(_) => return FolderState::Missing,
                 Err(e) if not_found(e.raw_os_error()) => continue,
-                Err(_) => break,
+                Err(e) if e.raw_os_error() == Some(ERROR_NOT_READY) => break,
+                Err(_) => return FolderState::Unavailable(Unavailable::Error(code)),
             }
         }
+        return FolderState::Unavailable(Unavailable::NoDrive);
     }
     FolderState::Unavailable(Unavailable::Error(code))
 }
