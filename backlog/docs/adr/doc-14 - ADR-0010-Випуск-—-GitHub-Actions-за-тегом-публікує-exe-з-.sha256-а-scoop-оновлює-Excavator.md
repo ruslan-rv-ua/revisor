@@ -5,6 +5,7 @@ title: >-
   оновлює Excavator
 type: other
 created_date: '2026-11-01 19:42'
+updated_date: '2026-11-06 23:34'
 tags:
   - adr
 ---
@@ -29,7 +30,7 @@ Bucket уже оновлює маніфести інших застосункі�
 
 **Публікація й CI.** Репозиторій стає публічним на початку MVP, ще до CI, з LICENSE (MIT) і README англійською й українською; типова гілка — develop. GitHub Actions перевіряють кожен push і PR у develop: `cargo fmt --check`, `cargo test --workspace --locked` і `cargo clippy --workspace --all-targets --locked -- -D warnings`. Збірку закріплено: точна версія Rust у `rust-toolchain.toml`, раннер `windows-2025`, дії — повним SHA, `Cargo.lock` з `--locked`, мінімальні `permissions`. Версії оновлюємо руками, без Dependabot.
 
-**Реліз.** Тег vX.Y.Z із `git flow release finish` запускає релізний воркфлоу. Він бере текст релізу з розділу версії в CHANGELOG.md (Keep a Changelog), ще раз проганяє на тегу ті самі перевірки й звіряє версію тегу з Cargo.toml і VERSIONINFO. Потім збирає exe й перевіряє сам артефакт: таблицю імпорту (без DLL рантайму C), розмір до 10 МіБ і VERSIONINFO, прочитану з exe. Лише після цього він публікує в GitHub Releases окремий exe `revisor-vX.Y.Z-x64.exe` і `.sha256` до нього у форматі sha256sum. Тег із дефісом (`v0.1.0-rc.1`) стає pre-release. Exe не підписано: його ідентичність — VERSIONINFO та іконка, а ліцензії сторонніх компонентів (файл cargo-about) exe показує у вікні «Про revisor».
+**Реліз.** Тег vX.Y.Z із `git flow release finish` запускає релізний воркфлоу. Він бере текст релізу з розділу версії в CHANGELOG.md (Keep a Changelog), ще раз проганяє на тегу ті самі перевірки й звіряє версію тегу з Cargo.toml і VERSIONINFO. Потім збирає exe й перевіряє сам артефакт: таблицю імпорту (без DLL рантайму C), розмір до 10 МіБ і VERSIONINFO, прочитану з exe. Лише після цього він публікує в GitHub Releases окремий exe `revisor-vX.Y.Z-x64.exe` і `.sha256` до нього у форматі sha256sum. Тег із дефісом (`v0.1.0-rc.1`) стає pre-release. Суфікс після дефіса має лише тег: Cargo.toml, VERSIONINFO і CHANGELOG.md несуть 0.1.0, і з ними воркфлоу звіряє версію тегу без суфікса, бо числова версія VERSIONINFO має чотири числа й місця для rc у ній немає (вирішено 2026-11-07, TASK-19). Exe не підписано: його ідентичність — VERSIONINFO та іконка, а ліцензії сторонніх компонентів (файл cargo-about) exe показує у вікні «Про revisor». Порядок випуску описує документ «Випуск релізу».
 
 **scoop.** Маніфест `bucket/revisor.json` — за зразком `bucket/pathmaster.json`: адреса exe з `#/revisor.exe`, `persist: data`, `checkver: github` і `autoupdate` з хешем із `$url.sha256`. Перший маніфест засіваємо вручну після 0.1.0, бо Excavator лише оновлює наявні. Далі після кожного релізу Excavator запускаємо в bucket вручну, а щодобовий запуск його страхує. Репозиторій revisor не має токена до bucket.
 
