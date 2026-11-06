@@ -21,6 +21,7 @@ pub enum CommandId {
     DeleteSnapshots,
     CancelSnapshot,
     CancelCompaction,
+    CancelComment,
     CompareWithPrevious,
     CompareWith,
     CancelComparison,
@@ -109,6 +110,10 @@ pub enum Reason {
     SnapshotNotRunning,
     ComparisonNotRunning,
     CompactionNotRunning,
+    /// A comment waits for the database of its profile: only one goes at a time, and the
+    /// profile cannot change meanwhile (TASK-24).
+    CommentWaiting,
+    CommentNotWaiting,
     /// A profile's database is being compacted, and only one compaction goes at a time
     /// (TASK-9).
     CompactionRunning,
@@ -213,20 +218,27 @@ fn not_compacting(state: &AppState) -> Result<(), Reason> {
     )
 }
 
-/// The open profile can be changed or deleted unless it is being snapshotted (TASK-8) or
-/// its database is being compacted (TASK-9).
+/// No comment waits for the database of the open profile (TASK-24).
+fn not_commenting(state: &AppState) -> Result<(), Reason> {
+    require(!state.commenting_open_profile, Reason::CommentWaiting)
+}
+
+/// The open profile can be changed or deleted unless it is being snapshotted (TASK-8),
+/// its database is being compacted (TASK-9) or a comment waits for it (TASK-24).
 fn profile_free(state: &AppState) -> Result<(), Reason> {
     has_profile(state)?;
     require(
         !state.snapshotting_open_profile,
         Reason::SnapshotOfThisProfile,
     )?;
-    not_compacting(state)
+    not_compacting(state)?;
+    not_commenting(state)
 }
 
 /// Snapshots of the open profile can be deleted: there are selected ones, the profile is
-/// not being snapshotted, and no database is being compacted, since the deletion starts
-/// a compaction and only one goes at a time (TASK-9).
+/// not being snapshotted, no comment waits for it (TASK-24), and no database is being
+/// compacted, since the deletion starts a compaction and only one goes at a time
+/// (TASK-9).
 fn snapshots_deletable(state: &AppState) -> Result<(), Reason> {
     has_snapshots(state)?;
     require(
@@ -234,15 +246,18 @@ fn snapshots_deletable(state: &AppState) -> Result<(), Reason> {
         Reason::SnapshotOfThisProfile,
     )?;
     not_compacting(state)?;
+    not_commenting(state)?;
     require(!state.compaction_running, Reason::CompactionRunning)?;
     require(state.selected_snapshots > 0, Reason::NoSelection)
 }
 
 /// The current snapshot's comment can change: even while the profile is being
-/// snapshotted, but not while its database is being compacted (TASK-9).
+/// snapshotted, but not while its database is being compacted (TASK-9), nor while
+/// another comment waits for a database, as one goes at a time (TASK-24).
 fn comment_possible(state: &AppState) -> Result<(), Reason> {
     has_snapshots(state)?;
-    not_compacting(state)
+    not_compacting(state)?;
+    require(!state.comment_waiting, Reason::CommentWaiting)
 }
 
 fn no_snapshot_running(state: &AppState) -> Result<(), Reason> {
@@ -313,6 +328,10 @@ fn comparison_running(state: &AppState) -> Result<(), Reason> {
 
 fn compaction_running(state: &AppState) -> Result<(), Reason> {
     require(state.compaction_running, Reason::CompactionNotRunning)
+}
+
+fn comment_waiting(state: &AppState) -> Result<(), Reason> {
+    require(state.comment_waiting, Reason::CommentNotWaiting)
 }
 
 const fn place(menu: MenuId, group: u8) -> Place {
@@ -485,6 +504,15 @@ pub static COMMANDS: &[Command] = &[
             place(MenuId::Snapshot, 2),
             b'O',
             compaction_running,
+        )
+    },
+    Command {
+        shortcut: Some(key(Key::F(2)).shift()),
+        ..item(
+            CommandId::CancelComment,
+            place(MenuId::Snapshot, 2),
+            b'M',
+            comment_waiting,
         )
     },
     // Compare
@@ -784,6 +812,9 @@ mod tests {
                 CommandId::CancelComparison => {
                     assert_eq!(available, Err(Reason::ComparisonNotRunning));
                 }
+                CommandId::CancelComment => {
+                    assert_eq!(available, Err(Reason::CommentNotWaiting));
+                }
                 _ => assert_eq!(available, Ok(()), "{:?}", c.id),
             }
         }
@@ -895,6 +926,75 @@ mod tests {
         assert!(!checked(CommandId::SortByPath, &state));
         assert!(checked(CommandId::SortDescending, &state));
         assert!(!checked(CommandId::SortAscending, &state));
+    }
+
+    #[test]
+    fn a_comment_waiting_for_the_database_holds_its_profile_as_a_snapshot_does() {
+        let available = |id, state: &AppState| (command(id).available)(state);
+        let at_rest = AppState {
+            profile: Some("Дім".into()),
+            snapshots: 2,
+            selected_snapshots: 1,
+            current_snapshot: Some(1),
+            ..AppState::new()
+        };
+        // The comment waits for the open profile's database (TASK-24).
+        let waiting_here = AppState {
+            comment_waiting: true,
+            commenting_open_profile: true,
+            ..at_rest.clone()
+        };
+        for id in [
+            CommandId::Comment,
+            CommandId::DeleteSnapshots,
+            CommandId::EditProfile,
+            CommandId::DeleteProfile,
+        ] {
+            assert_eq!(
+                available(id, &waiting_here),
+                Err(Reason::CommentWaiting),
+                "{id:?}"
+            );
+        }
+        for id in [
+            CommandId::CancelComment,
+            CommandId::TakeSnapshot,
+            CommandId::SnapshotAndCompare,
+            CommandId::CompareWithPrevious,
+            CommandId::CompareWith,
+            CommandId::NewProfile,
+        ] {
+            assert_eq!(available(id, &waiting_here), Ok(()), "{id:?}");
+        }
+        // The comment waits for another profile's database: one comment at a time, the
+        // open profile is free.
+        let waiting_elsewhere = AppState {
+            comment_waiting: true,
+            ..at_rest.clone()
+        };
+        assert_eq!(
+            available(CommandId::Comment, &waiting_elsewhere),
+            Err(Reason::CommentWaiting)
+        );
+        for id in [
+            CommandId::CancelComment,
+            CommandId::DeleteSnapshots,
+            CommandId::EditProfile,
+            CommandId::DeleteProfile,
+        ] {
+            assert_eq!(available(id, &waiting_elsewhere), Ok(()), "{id:?}");
+        }
+        assert_eq!(
+            available(CommandId::CancelComment, &at_rest),
+            Err(Reason::CommentNotWaiting)
+        );
+    }
+
+    #[test]
+    fn cancel_comment_is_in_the_snapshot_menu_with_shift_f2() {
+        let c = command(CommandId::CancelComment);
+        assert_eq!((c.place.menu, c.access), (MenuId::Snapshot, b'M'));
+        assert_eq!(c.shortcut, Some(key(Key::F(2)).shift()));
     }
 
     #[test]

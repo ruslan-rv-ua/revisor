@@ -205,6 +205,17 @@ impl<W: Work> Job<W> {
         }
     }
 
+    /// The result of the work once it is over, waiting for it up to `timeout`: for a
+    /// work that is known to end soon, as a comment that waited for a snapshot's save
+    /// once the save is over (TASK-24). `None` when it still runs by then.
+    pub fn poll_within(&mut self, timeout: Duration) -> Option<Result<W::Output, Lost>> {
+        match self.result.recv_timeout(timeout) {
+            Ok(output) => Some(Ok(output)),
+            Err(RecvTimeoutError::Timeout) => None,
+            Err(RecvTimeoutError::Disconnected) => Some(Err(Lost)),
+        }
+    }
+
     /// Waits for the work to end and gives its result.
     pub fn wait(self) -> Result<W::Output, Lost> {
         let output = self.result.recv().map_err(|_| Lost);

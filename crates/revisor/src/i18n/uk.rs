@@ -80,6 +80,7 @@ impl Strings for Uk {
             CommandId::CompareWithPrevious => "Порівняти з попереднім",
             CommandId::CompareWith => "Порівняти з",
             CommandId::CancelComparison => "Скасувати порівняння",
+            CommandId::CancelComment => "Скасувати коментар",
             CommandId::Details => "Подробиці",
             CommandId::ShowInExplorer => "Показати в Провіднику",
             CommandId::FilterByText => "Фільтрувати за текстом",
@@ -127,6 +128,8 @@ impl Strings for Uk {
             Reason::SnapshotNotRunning => "знімок зараз не триває",
             Reason::ComparisonNotRunning => "порівняння зараз не триває",
             Reason::CompactionNotRunning => "стискання зараз не триває",
+            Reason::CommentWaiting => "коментар ще чекає на базу профілю",
+            Reason::CommentNotWaiting => "жоден коментар не чекає на базу профілю",
             Reason::CompactionRunning => "триває стискання бази, а водночас іде лише одне",
             Reason::CompactionOfThisProfile => "триває стискання бази цього профілю",
             Reason::NoSelection => "жодного знімка не виділено",
@@ -499,6 +502,10 @@ impl Strings for Uk {
         "Коментар прибрано."
     }
 
+    fn comment_cancelled(&self) -> &'static str {
+        "Коментар скасовано."
+    }
+
     fn comment_not_saved(&self, reason: &str) -> String {
         format!("Коментар не збережено: {reason}.")
     }
@@ -637,6 +644,10 @@ impl Strings for Uk {
 
     fn comparison_stopped(&self) -> &'static str {
         "порівняння несподівано зупинилося"
+    }
+
+    fn comment_stopped(&self) -> &'static str {
+        "запис коментаря несподівано зупинився"
     }
 
     fn compare_with_label(&self, snapshot: &str) -> String {

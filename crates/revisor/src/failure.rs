@@ -48,6 +48,8 @@ pub fn of_store(e: &StoreError) -> Failure {
         StoreError::Io(e) => of_io(e),
         StoreError::NewerSchema(_) => Failure::NewerVersion,
         StoreError::NotAProfile => Failure::NotAProfile,
+        // A busy database is what the store says it is, as for its waits (ADR-0012).
+        StoreError::Sqlite(_) if e.is_busy() => Failure::InUse,
         StoreError::Sqlite(e) => of_sqlite(
             e.sqlite_error().map(|error| error.extended_code),
             e.to_string(),

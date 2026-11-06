@@ -13,7 +13,7 @@ use std::fs::File;
 use std::io;
 use std::os::windows::ffi::{OsStrExt, OsStringExt};
 use std::path::{Path, PathBuf};
-use std::sync::atomic::{AtomicU64, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::thread;
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
@@ -872,15 +872,71 @@ impl Work for Compaction {
     }
 }
 
-/// Runs `access`, a read or write of a database another connection may hold, waiting
-/// for the database to be free (TASK-11 #16): when the database is busy, `waiting` is
-/// told so once, and the access is tried again every [`BUSY_RETRY`] until it goes
-/// through — then `waiting` is told the wait is over — or `cancel` is cancelled, which
-/// ends with [`StoreError::Cancelled`]. An access that waits so is best made on a
-/// connection without SQLite's own wait ([`Store::open_with_timeout`] with no time), as
-/// a cancel cannot end that one. A comparison waits so for a snapshot being saved, or
-/// for another revisor compacting the database; a busy database stays busy for seconds,
-/// so a wait that cannot be cancelled is better left to SQLite.
+/// Comments a snapshot as a background job (ADR-0011, TASK-24): the comment of the
+/// snapshot `id` in the database at `db` becomes `comment`, or goes with `None`. A
+/// database another connection holds — a snapshot being saved, another revisor
+/// compacting it — is waited for by [`retry_while_busy`], so the wait shows and can be
+/// cancelled; a cancelled comment is not written.
+pub struct CommentWork {
+    db: PathBuf,
+    id: i64,
+    comment: Option<String>,
+}
+
+impl CommentWork {
+    pub fn new(db: &Path, id: i64, comment: Option<String>) -> Self {
+        Self {
+            db: db.to_path_buf(),
+            id,
+            comment,
+        }
+    }
+}
+
+/// What a comment being written reports: whether it waits for the database.
+#[derive(Debug, Default)]
+pub struct CommentProgress {
+    waiting: AtomicBool,
+}
+
+impl CommentProgress {
+    /// Whether the comment waits for a database another connection holds.
+    pub fn is_waiting(&self) -> bool {
+        self.waiting.load(Ordering::Relaxed)
+    }
+}
+
+impl Work for CommentWork {
+    type Progress = CommentProgress;
+    type Output = Outcome<(), StoreError>;
+
+    fn run(self, progress: &CommentProgress, cancel: &Cancel) -> Self::Output {
+        let waiting = |w: bool| progress.waiting.store(w, Ordering::Relaxed);
+        let result = retry_while_busy(cancel, waiting, || {
+            write_comment(&self.db, self.id, self.comment.as_deref())
+        });
+        Outcome::of(result, |e| matches!(e, StoreError::Cancelled))
+    }
+}
+
+/// One try at the comment of the snapshot `id` in the database at `db`, without SQLite's
+/// own wait: a database another connection holds fails at once as busy
+/// ([`StoreError::is_busy`]), which [`retry_while_busy`] then waits for.
+pub fn write_comment(db: &Path, id: i64, comment: Option<&str>) -> Result<(), StoreError> {
+    Store::open_with_timeout(db, Duration::ZERO)?.set_comment(id, comment)
+}
+
+/// The one rule of revisor for a database another connection holds (ADR-0012): runs
+/// `access`, a read or write of the database, and while the database is busy, `waiting`
+/// is told so once, and the access is tried again every [`BUSY_RETRY`], with no limit of
+/// time, until it goes through — then `waiting` is told the wait is over — or `cancel` is
+/// cancelled, which ends with [`StoreError::Cancelled`]. The token is looked at before
+/// every new try too, so an access cancelled while it waited is never made. An access
+/// that waits so is best made on a connection without SQLite's own wait
+/// ([`Store::open_with_timeout`] with no time), as a cancel cannot end that one. A
+/// comparison (TASK-11 #16) and a comment (TASK-24) wait so for a snapshot being saved or
+/// for another revisor compacting the database, and so does the list of profiles at the
+/// start of revisor ([`crate::profiles::list_when_free`]).
 pub fn retry_while_busy<T>(
     cancel: &Cancel,
     mut waiting: impl FnMut(bool),
@@ -898,6 +954,9 @@ pub fn retry_while_busy<T>(
                     return Err(StoreError::Cancelled);
                 }
                 thread::sleep(BUSY_RETRY);
+                if cancel.is_cancelled() {
+                    return Err(StoreError::Cancelled);
+                }
             }
             result => {
                 if waited {
