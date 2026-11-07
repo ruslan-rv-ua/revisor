@@ -611,8 +611,16 @@ impl MainWindow {
             },
         );
         // Not an event: not skipped, so wxFrame does not put the item's help text in the
-        // status bar, where it would overwrite the last message.
-        self.frame.on_menu_highlighted(|event| event.skip(false));
+        // status bar, where it would overwrite the last message. A sort item highlighted
+        // while the difference is a tree says why it does not run, as its key would: it has
+        // none (TASK-33 #5, decided 2026-11-07).
+        let w = Rc::clone(self);
+        self.frame.on_menu_highlighted(move |event| {
+            event.skip(false);
+            if let Some(id) = event.get_menu_id().and_then(command_of) {
+                w.menu_item_highlighted(id);
+            }
+        });
 
         // Closing during a snapshot cancels it, so it asks first (TASK-8 #26); a close
         // that cannot be refused, as at a shutdown, stops the snapshot without asking. A
@@ -1006,6 +1014,16 @@ impl MainWindow {
     /// together with the command's own outcome at the event's end (TASK-21).
     fn run(&self, id: CommandId) {
         self.event(Source::Command(id), || self.run_command(id));
+    }
+
+    /// The menu item of `id` is highlighted: an item of «Сортувати за» while the difference
+    /// shows as a tree says why it is unavailable, in the status bar, which screen readers
+    /// read after the item (TASK-33 #5).
+    fn menu_item_highlighted(&self, id: CommandId) {
+        let available = (command(id).available)(&self.state.borrow());
+        if let Err(reason @ Reason::TreeSortedByName) = available {
+            self.refuse(id, reason);
+        }
     }
 
     /// Says why the command cannot run now, wherever it was asked for (ADR-0008): its name
