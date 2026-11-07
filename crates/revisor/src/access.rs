@@ -190,7 +190,7 @@ pub fn bind<T: Copy + 'static>(
         }
     });
     dialog.on_idle(move |data| {
-        if let Some(id) = dispatcher.ready(win32::alt_down()) {
+        if let Some(id) = dispatcher.ready(win32::focus::alt_down()) {
             act(id);
         }
         if let WindowEventData::Idle(event) = data {

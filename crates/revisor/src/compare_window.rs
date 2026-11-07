@@ -11,6 +11,8 @@ use crate::commands::CommandId;
 use crate::i18n::{En, Strings};
 use crate::snapshot_list::{Control, Native};
 use crate::win32;
+use crate::win32::format::Locale;
+use crate::win32::lists::EmptyTexts;
 
 /// The row the list starts on among the `count` other snapshots, when the current
 /// snapshot stands at `current` in the full list: the previous snapshot, or the next one
@@ -41,7 +43,7 @@ pub fn show(
         .build();
     // The label comes right before the list, so screen readers name the list after it.
     // It takes up the words of the command «Порівняти з…», and its letter.
-    let name = win32::format_date_time(snapshots[current].taken_at);
+    let name = win32::format::format_date_time(Locale::USER, snapshots[current].taken_at);
     let english = En.compare_with_label(&name);
     let label = StaticText::builder(&dialog)
         .with_label(&format!(
@@ -50,7 +52,9 @@ pub fn show(
         ))
         .build();
     // The rows of the snapshot list, as its control shows them (TASK-27 #7).
-    let rows = Native::new(&dialog, s, true);
+    // The list is never empty here, but a snapshot list's parent answers for its text.
+    let empty_texts = EmptyTexts::subclass(dialog.get_handle());
+    let rows = Native::new(&dialog, &empty_texts, s, true);
     for (i, row) in others.iter().enumerate() {
         rows.insert(i, row);
     }

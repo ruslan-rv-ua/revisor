@@ -18,6 +18,8 @@ use crate::commands::{CommandId, Pane, command};
 use crate::i18n::Strings;
 use crate::snapshots::Arrival;
 use crate::win32;
+use crate::win32::format::Locale;
+use crate::win32::lists::EmptyTexts;
 
 /// The widths of the snapshot list's columns, in both windows: the name is fixed, the
 /// comment takes the rest.
@@ -60,11 +62,19 @@ pub trait Control {
 /// «Дата й час» and «Коментар», which selects whole rows and does not sort.
 pub struct Native {
     list: ListCtrl,
+    /// The empty texts of the list's parent, which shows the list's own.
+    empty_texts: EmptyTexts,
 }
 
 impl Native {
-    /// Makes the list in `parent`; `single` lets one row at most be selected.
-    pub fn new(parent: &dyn WxWidget, s: &dyn Strings, single: bool) -> Self {
+    /// Makes the list in `parent`, whose `empty_texts` show what the list says while it
+    /// is empty; `single` lets one row at most be selected.
+    pub fn new(
+        parent: &dyn WxWidget,
+        empty_texts: &EmptyTexts,
+        s: &dyn Strings,
+        single: bool,
+    ) -> Self {
         let style = if single {
             ListCtrlStyle::Report | ListCtrlStyle::SingleSel
         } else {
@@ -78,8 +88,11 @@ impl Native {
             DATE_TIME_WIDTH,
         );
         list.insert_column(1, s.column_comment(), ListColumnFormat::Left, COMMENT_WIDTH);
-        win32::full_row_select_no_sort(list.get_handle());
-        Self { list }
+        win32::lists::full_row_select_no_sort(list.get_handle());
+        Self {
+            list,
+            empty_texts: empty_texts.clone(),
+        }
     }
 
     /// The control, for the window's sizers and events.
@@ -94,7 +107,7 @@ impl Native {
     /// Where a context menu opened from the keyboard goes: by the row with the focus
     /// rectangle.
     pub fn context_menu_point(&self) -> (i32, i32) {
-        win32::context_menu_point(self.hwnd())
+        win32::lists::context_menu_point(self.hwnd())
     }
 
     /// Calls `changed` whenever a row is selected, deselected or gets the focus
@@ -117,7 +130,7 @@ impl Control for Native {
     fn insert(&self, index: usize, snapshot: &SnapshotInfo) {
         self.list.insert_item(
             index as i64,
-            &win32::format_date_time(snapshot.taken_at),
+            &win32::format::format_date_time(Locale::USER, snapshot.taken_at),
             None,
         );
         if let Some(comment) = &snapshot.comment {
@@ -134,35 +147,35 @@ impl Control for Native {
     }
 
     fn select_only(&self, row: usize) {
-        win32::select_only(self.hwnd(), row);
+        win32::lists::select_only(self.hwnd(), row);
     }
 
     fn select_all(&self) {
-        win32::select_all(self.hwnd());
+        win32::lists::select_all(self.hwnd());
     }
 
     fn focused_row(&self) -> Option<usize> {
-        win32::focused_row(self.hwnd())
+        win32::lists::focused_row(self.hwnd())
     }
 
     fn selected_rows(&self) -> Vec<usize> {
-        win32::selected_rows(self.hwnd())
+        win32::lists::selected_rows(self.hwnd())
     }
 
     fn selected_count(&self) -> usize {
-        win32::selected_count(self.hwnd())
+        win32::lists::selected_count(self.hwnd())
     }
 
     fn unfocus_rows(&self) {
-        win32::unfocus_rows(self.hwnd());
+        win32::lists::unfocus_rows(self.hwnd());
     }
 
     fn focus_row(&self, row: usize) {
-        win32::focus_row(self.hwnd(), row);
+        win32::lists::focus_row(self.hwnd(), row);
     }
 
     fn has_focus(&self) -> bool {
-        win32::focused_window() == self.hwnd()
+        win32::focus::focused_window() == self.hwnd()
     }
 
     fn set_focus(&self) {
@@ -170,8 +183,8 @@ impl Control for Native {
     }
 
     fn set_hint(&self, name: &str, empty_text: &str) {
-        win32::set_accessible_name(self.hwnd(), name);
-        win32::set_empty_text(self.hwnd(), empty_text);
+        win32::accessibility::set_accessible_name(self.hwnd(), name);
+        self.empty_texts.set(self.hwnd(), empty_text);
     }
 }
 

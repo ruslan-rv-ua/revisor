@@ -54,6 +54,9 @@ use crate::state::{AppState, ChangeType, SortColumn, Sources};
 use crate::status::Announcer;
 use crate::text_window;
 use crate::win32;
+use crate::win32::format::{Locale, RegionalFormat};
+use crate::win32::frame::MainFrame;
+use crate::win32::lists::EmptyTexts;
 
 /// The commands that show or hide the types of the difference list's rows, in the order
 /// of [`ChangeType::ALL`] (TASK-13 #22).
@@ -173,6 +176,8 @@ fn command_of(wx_id: i32) -> Option<CommandId> {
 
 pub struct MainWindow {
     frame: Frame,
+    /// The frame's subclass, through which its context menus open (TASK-32).
+    main_frame: MainFrame,
     s: &'static dyn Strings,
     /// What the commands decide from; built afresh at the end of every event (ADR-0013).
     state: RefCell<AppState>,
@@ -209,6 +214,8 @@ pub struct MainWindow {
     /// The panel the difference lists take turns in: the one shown fills it, the other is
     /// disabled and has no size (TASK-13).
     difference_holder: Panel,
+    /// The texts the holder shows for the difference lists while they are empty.
+    difference_empty_texts: EmptyTexts,
     /// The difference lists: two virtual lists over `difference_list`, which they ask for
     /// the text of the rows they show (TASK-11 #5), one of them shown at a time. A new
     /// difference goes into the other list, which then takes the shown one's place: the
@@ -281,14 +288,14 @@ impl MainWindow {
             .iter()
             .position(|&m| m == MenuId::File)
             .expect("File is a menu") as i32;
-        win32::mark_with_shield(
+        win32::shell::mark_with_shield(
             frame.get_handle(),
             file_menu,
             wx_id(CommandId::RestartAsAdmin),
         );
         let status = StatusBar::builder(&frame).build();
         frame.set_existing_status_bar(Some(&status));
-        win32::make_live_region(status.get_handle());
+        win32::accessibility::make_live_region(status.get_handle());
 
         let settings_path = data_dir.join(SETTINGS_FILE);
         let settings = Settings::open(&settings_path).map_err(|e| reason(s, &e));
@@ -306,7 +313,7 @@ impl MainWindow {
             .ok()
             .and_then(|settings| settings.size_format().ok())
             .unwrap_or_default();
-        let mut list = List::new(s, Box::new(win32::RegionalFormat), view, size_format);
+        let mut list = List::new(s, Box::new(RegionalFormat(Locale::USER)), view, size_format);
         // How the details write attributes, as kept (TASK-14 #7).
         list.set_attribute_format(
             settings
@@ -334,7 +341,9 @@ impl MainWindow {
         let cancel_button = Button::builder(&panel)
             .with_label(&cancel_label(s, Kind::Snapshot))
             .build();
-        let snapshots = SnapshotList::new(Native::new(&panel, s, false), s);
+        // The panel answers for the snapshot list's text while it is empty.
+        let snapshot_empty_texts = EmptyTexts::subclass(panel.get_handle());
+        let snapshots = SnapshotList::new(Native::new(&panel, &snapshot_empty_texts, s, false), s);
         let comparison_label = StaticText::builder(&panel)
             .with_label(&field_label(s, |s| s.comparison_field()))
             .build();
@@ -363,7 +372,7 @@ impl MainWindow {
                 list.insert_column(i as i64, s.column(column), format, COLUMN_WIDTHS[i]);
             }
             // The headers sort the list (TASK-13 #21).
-            win32::full_row_select(list.get_handle());
+            win32::lists::full_row_select(list.get_handle());
             let model = Rc::clone(&difference_list);
             list.set_virtual_text_callback(move |row, column| {
                 let row = usize::try_from(row).unwrap_or(usize::MAX);
@@ -376,7 +385,7 @@ impl MainWindow {
         });
         differences[1].enable(false);
         // The holder answers for the difference lists' text while they are empty.
-        win32::subclass_list_parent(difference_holder.get_handle());
+        let difference_empty_texts = EmptyTexts::subclass(difference_holder.get_handle());
         let filter_label = StaticText::builder(&panel)
             .with_label(&field_label(s, |s| s.filter_field()))
             .build();
@@ -386,8 +395,6 @@ impl MainWindow {
                 .with_label(&compose(s, En.type_box(kind), s.type_box(kind)))
                 .build()
         });
-        // The panel answers for the snapshot list's text while it is empty.
-        win32::subclass_list_parent(panel.get_handle());
 
         let profile_row = BoxSizer::builder(Orientation::Horizontal).build();
         profile_row.add(
@@ -450,8 +457,11 @@ impl MainWindow {
         let timer = Timer::new(&frame);
         let showing_timer = Timer::new(&frame);
 
+        let main_frame = win32::frame::subclass(frame.get_handle());
+
         let window = Rc::new(Self {
             frame,
+            main_frame,
             s,
             state: RefCell::new(AppState::new()),
             elevated,
@@ -470,6 +480,7 @@ impl MainWindow {
             snapshots,
             comparison_field,
             difference_holder,
+            difference_empty_texts,
             differences,
             shown_difference: Cell::new(0),
             difference_list,
@@ -488,7 +499,6 @@ impl MainWindow {
             open_index: Cell::new(None),
         });
         window.bind_events();
-        win32::subclass_main_window(window.frame.get_handle());
         // Opening the window is an event too (ADR-0013).
         window.event(Source::Navigation, || {
             window.refresh_progress_row();
@@ -545,7 +555,7 @@ impl MainWindow {
             if focus_pending.replace(false) {
                 w.snapshots.set_focus();
             }
-            if let Some(label) = w.access_keys.ready(win32::alt_down()) {
+            if let Some(label) = w.access_keys.ready(win32::focus::alt_down()) {
                 w.event(Source::Navigation, || w.act_on(label));
             }
             if let WindowEventData::Idle(event) = data {
@@ -806,7 +816,7 @@ impl MainWindow {
     /// Reads where the keyboard focus is now, with the window it is on: on the progress
     /// row or not, where it was when the comparison started or not.
     fn read_focus(&self) -> (Focus, *mut c_void) {
-        let focused = win32::focused_window();
+        let focused = win32::focus::focused_window();
         let focus = if self.snapshots.has_focus() {
             Focus::new(Some(Pane::Snapshots), Control::MainList)
         } else if self.is_difference(focused) {
@@ -819,7 +829,7 @@ impl MainWindow {
             Focus::new(Some(Pane::Difference), Control::TextEntry)
         } else if self.type_boxes.iter().any(|b| b.get_handle() == focused) {
             Focus::new(Some(Pane::Difference), Control::Other)
-        } else if !focused.is_null() && win32::is_text_field(focused) {
+        } else if !focused.is_null() && win32::focus::is_text_field(focused) {
             Focus::new(None, Control::TextEntry)
         } else {
             Focus::new(None, Control::Other)
@@ -869,7 +879,9 @@ impl MainWindow {
             Route::ClearFilter => self.clear_filter(),
             Route::ContextMenu(pane) => self.show_context_menu(pane, None),
             Route::SelectAll(Pane::Snapshots) => self.snapshots.select_all(),
-            Route::SelectAll(Pane::Difference) => win32::select_all(self.difference().get_handle()),
+            Route::SelectAll(Pane::Difference) => {
+                win32::lists::select_all(self.difference().get_handle())
+            }
             Route::Pass => {}
         }
     }
@@ -910,7 +922,7 @@ impl MainWindow {
 
     fn show(&self, text: &str) {
         self.status.set_status_text(text, 0);
-        win32::announce_status(self.status.get_handle());
+        win32::accessibility::announce_status(self.status.get_handle());
     }
 
     /// Runs a command, the source of its event (ADR-0013): a job that ended meanwhile,
@@ -986,7 +998,7 @@ impl MainWindow {
     fn fill_profile_box(&self, open: Option<&Path>) {
         let s = self.s;
         let (mut found, unreadable) = self.list_profiles();
-        found.sort_by(|a, b| win32::compare_names(&a.name, &b.name));
+        found.sort_by(|a, b| win32::language::compare_names(&a.name, &b.name));
         let last = self
             .settings
             .as_ref()
@@ -1315,7 +1327,7 @@ impl MainWindow {
         self.refresh_difference(current);
         // «Same as Windows» is read now, not at the start: the language of Windows may
         // have changed meanwhile, and the next start would take the new one.
-        let next = crate::language_of(values.language, win32::ui_language);
+        let next = crate::language_of(values.language, win32::language::ui_language);
         if next == s.lang() {
             return;
         }
@@ -1361,7 +1373,7 @@ impl MainWindow {
         else {
             return;
         };
-        let name = win32::format_date_time(info.taken_at);
+        let name = win32::format::format_date_time(Locale::USER, info.taken_at);
         let asked = ask_text(
             &self.frame,
             s,
@@ -1446,7 +1458,7 @@ impl MainWindow {
             if self.confirm_deletion() {
                 let question = match chosen {
                     [one] => s.delete_snapshot_question(
-                        &win32::format_date_time(one.taken_at),
+                        &win32::format::format_date_time(Locale::USER, one.taken_at),
                         one.comment.as_deref(),
                     ),
                     many => s.delete_snapshots_question(many.len()),
@@ -1497,7 +1509,8 @@ impl MainWindow {
         let name = &ended.profile.name;
         match ended.outcome {
             Ok(Outcome::Done(compacted)) => {
-                let freed = win32::format_size(compacted.before.saturating_sub(compacted.after));
+                let freed =
+                    win32::format::format_size(compacted.before.saturating_sub(compacted.after));
                 self.say(&s.compaction_done(name, &freed));
             }
             Ok(Outcome::Cancelled) => self.say(&s.compaction_cancelled(name)),
@@ -1629,7 +1642,7 @@ impl MainWindow {
         let new = &self.differences[next];
         new.set_item_count(count as i64);
         if let Some(row) = current {
-            win32::select_only(new.get_handle(), row);
+            win32::lists::select_only(new.get_handle(), row);
         }
         new.enable(true);
         self.shown_difference.set(next);
@@ -1670,8 +1683,8 @@ impl MainWindow {
         }
         self.difference_list.borrow_mut().focus(index);
         let hwnd = self.differences[list].get_handle();
-        if !win32::is_selected(hwnd, index) {
-            win32::select_only(hwnd, index);
+        if !win32::lists::is_selected(hwnd, index) {
+            win32::lists::select_only(hwnd, index);
         }
     }
 
@@ -1683,7 +1696,7 @@ impl MainWindow {
         let count = self.difference_list.borrow().len();
         list.set_item_count(count as i64);
         if let Some(row) = current {
-            win32::select_only(list.get_handle(), row);
+            win32::lists::select_only(list.get_handle(), row);
         }
         if count > 0 {
             list.refresh_items(0, count as i64 - 1);
@@ -1714,8 +1727,8 @@ impl MainWindow {
             )
         });
         let list = self.difference().get_handle();
-        win32::set_accessible_name(list, &name);
-        win32::set_empty_text(list, &name);
+        win32::accessibility::set_accessible_name(list, &name);
+        self.difference_empty_texts.set(list, &name);
         // The caret stays where it is while the text does.
         if self.comparison_field.get_value() != text {
             self.comparison_field.change_value(&text);
@@ -1730,7 +1743,7 @@ impl MainWindow {
             .iter()
             .position(|column| column.sort() == view.sort.column)
             .map(|i| (i, view.sort.descending));
-        win32::set_sort_arrow(list, arrow);
+        win32::lists::set_sort_arrow(list, arrow);
     }
 
     /// Brings the line of the pair in line with the profile and the snapshots of the
@@ -1915,7 +1928,7 @@ impl MainWindow {
             return;
         };
         let shown = match explorer::reveal(&path, explorer::on_disk) {
-            Reveal::Select(entry) => win32::select_in_explorer(&entry),
+            Reveal::Select(entry) => win32::shell::select_in_explorer(&entry),
             Reveal::Open(folder) => {
                 if self.warn_missing_entry() {
                     let question = s.entry_gone_question();
@@ -1923,7 +1936,7 @@ impl MainWindow {
                         return;
                     }
                 }
-                win32::open_in_explorer(&folder)
+                win32::shell::open_in_explorer(&folder)
             }
             Reveal::Nowhere => {
                 let reason = s.no_folder_on_disk(&path.to_string_lossy());
@@ -2196,7 +2209,7 @@ impl MainWindow {
         let text = match self.jobs.borrow().shown() {
             Some(Shown::Snapshot(progress)) => {
                 let entries = progress.entries();
-                let entries_text = win32::format_count(entries);
+                let entries_text = win32::format::format_count(Locale::USER, entries);
                 match progress.phase() {
                     Phase::Scanning => {
                         let folder = progress.folder();
@@ -2261,7 +2274,7 @@ impl MainWindow {
         let shown = match self.jobs.borrow().shown() {
             Some(Shown::Snapshot(_)) => Some((
                 Kind::Snapshot,
-                s.snapshot_progress(0, &win32::format_count(0), ""),
+                s.snapshot_progress(0, &win32::format::format_count(Locale::USER, 0), ""),
             )),
             Some(Shown::Comparison { progress, elapsed }) => Some((
                 Kind::Comparison,
@@ -2281,7 +2294,7 @@ impl MainWindow {
         }
         match &shown {
             None => {
-                let focused = win32::focused_window();
+                let focused = win32::focus::focused_window();
                 if focused == self.progress_text.get_handle()
                     || focused == self.cancel_button.get_handle()
                 {
@@ -2342,7 +2355,7 @@ impl MainWindow {
     /// What a saved snapshot says (TASK-8): how many entries it holds, how many of them
     /// are inaccessible, and which folders it did not find.
     fn snapshot_report(&self, report: &Report) -> String {
-        let entries = win32::format_count(report.entries);
+        let entries = win32::format::format_count(Locale::USER, report.entries);
         self.snapshot_report_after(self.s.snapshot_saved(report.entries, &entries), report)
     }
 
@@ -2353,7 +2366,10 @@ impl MainWindow {
         let mut text = first;
         if report.inaccessible > 0 {
             text.push(' ');
-            text.push_str(&s.entries_inaccessible(&win32::format_count(report.inaccessible)));
+            text.push_str(&s.entries_inaccessible(&win32::format::format_count(
+                Locale::USER,
+                report.inaccessible,
+            )));
         }
         let not_found: Vec<(String, String)> = report
             .not_found()
@@ -2378,7 +2394,8 @@ impl MainWindow {
     fn offer_restart(&self, profile: &ProfileFile, report: &Report, command: CommandId) {
         let s = self.s;
         if report.denied > 0 && !self.elevated {
-            let question = s.restart_question(&win32::format_count(report.denied));
+            let question =
+                s.restart_question(&win32::format::format_count(Locale::USER, report.denied));
             let title = plain(s.command(command));
             if confirm(&self.frame, s, &title, &question, |s| s.restart(), true) {
                 // On the snapshotted profile, whichever is open by now.
@@ -2460,7 +2477,8 @@ impl MainWindow {
         let args = profile
             .map(|p| format!("--profile \"{}\"", p.path.display()))
             .unwrap_or_default();
-        let started = std::env::current_exe().and_then(|exe| win32::run_as_admin(&exe, &args));
+        let started =
+            std::env::current_exe().and_then(|exe| win32::shell::run_as_admin(&exe, &args));
         match started {
             Ok(()) => self.frame.close(true),
             Err(e) => self.fail(&s.restart_failed(&reason(s, &e))),
@@ -2525,11 +2543,11 @@ impl MainWindow {
         }
         let (x, y) = at.unwrap_or_else(|| match pane {
             Pane::Snapshots => self.snapshots.control().context_menu_point(),
-            Pane::Difference => win32::context_menu_point(self.difference().get_handle()),
+            Pane::Difference => win32::lists::context_menu_point(self.difference().get_handle()),
         });
-        win32::bold_first_item_of_next_popup(menu_items.default.is_some());
-        self.frame.popup_menu(&mut menu, Some(Point::new(x, y)));
-        win32::bold_first_item_of_next_popup(false);
+        self.main_frame.popup(menu_items.default.is_some(), || {
+            self.frame.popup_menu(&mut menu, Some(Point::new(x, y)))
+        });
     }
 }
 
