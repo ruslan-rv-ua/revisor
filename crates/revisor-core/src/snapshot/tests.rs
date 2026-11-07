@@ -267,10 +267,11 @@ fn a_folder_whose_drive_is_not_there_is_on_no_drive() {
         FolderState::Unavailable(Unavailable::NoDrive)
     );
     // Any other error stays as it is.
-    let denied = io::Error::from_raw_os_error(ERROR_ACCESS_DENIED);
+    let access_denied = Foundation::ERROR_ACCESS_DENIED as i32;
+    let denied = io::Error::from_raw_os_error(access_denied);
     assert_eq!(
         absent(&nowhere, &denied),
-        FolderState::Unavailable(Unavailable::Error(ERROR_ACCESS_DENIED))
+        FolderState::Unavailable(Unavailable::Error(access_denied))
     );
 }
 

@@ -18,6 +18,7 @@ use windows_sys::Win32::Storage::FileSystem::{
 };
 
 use crate::path::{self, Folded};
+use crate::store::Unavailable;
 
 /// Where a folder really is on disk: its path on its volume, with the volume named by its
 /// GUID where it has one. Every path that leads to the folder — in another case, with a
@@ -49,11 +50,9 @@ impl ProfileFolder {
 
 #[derive(Debug)]
 pub enum LocateError {
-    /// The folder is on a volume other than NTFS; holds the file system's name, such as
-    /// "FAT32".
-    NotNtfs(String),
-    /// The folder is on a network share.
-    Network,
+    /// revisor does not support the folder's volume: [`Unavailable::NotNtfs`] or
+    /// [`Unavailable::Network`], the only reasons [`locate`] gives.
+    Unavailable(Unavailable),
     /// The folder could not be opened or examined.
     Io(io::Error),
 }
@@ -61,8 +60,13 @@ pub enum LocateError {
 impl fmt::Display for LocateError {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
-            LocateError::NotNtfs(fs) => write!(f, "the folder is on a {fs} volume, not NTFS"),
-            LocateError::Network => f.write_str("the folder is on a network share"),
+            LocateError::Unavailable(Unavailable::NotNtfs(fs)) => {
+                write!(f, "the folder is on a {fs} volume, not NTFS")
+            }
+            LocateError::Unavailable(Unavailable::Network) => {
+                f.write_str("the folder is on a network share")
+            }
+            LocateError::Unavailable(reason) => write!(f, "the folder is unavailable: {reason:?}"),
             LocateError::Io(e) => write!(f, "cannot examine the folder: {e}"),
         }
     }
@@ -93,11 +97,11 @@ pub fn locate(path: &Path) -> Result<Location, LocateError> {
     };
     let examined = examined.to_string_lossy();
     if is_network(&examined) {
-        return Err(LocateError::Network);
+        return Err(LocateError::Unavailable(Unavailable::Network));
     }
     let fs = file_system(&file).map_err(LocateError::Io)?;
-    if let Some(e) = volume_error(&examined, &fs) {
-        return Err(e);
+    if let Some(reason) = volume_error(&examined, &fs) {
+        return Err(LocateError::Unavailable(reason));
     }
     // A volume the Mount Manager does not know has no GUID name, only a DOS or NT one.
     let real = final_path(&file, VOLUME_NAME_GUID)
@@ -154,12 +158,12 @@ pub fn real_path(path: &Path) -> io::Result<PathBuf> {
 
 /// Why revisor does not support a folder whose final path and file system are these, if
 /// it does not.
-fn volume_error(final_path: &str, file_system: &str) -> Option<LocateError> {
+fn volume_error(final_path: &str, file_system: &str) -> Option<Unavailable> {
     if is_network(final_path) {
-        return Some(LocateError::Network);
+        return Some(Unavailable::Network);
     }
     (!file_system.eq_ignore_ascii_case("NTFS"))
-        .then(|| LocateError::NotNtfs(file_system.to_string()))
+        .then(|| Unavailable::NotNtfs(file_system.to_string()))
 }
 
 /// Whether a final path names a network share; such a share reports the file system of

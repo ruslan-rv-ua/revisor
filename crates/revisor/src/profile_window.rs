@@ -10,7 +10,7 @@ use std::rc::Rc;
 use revisor_core::exclude::parse_lines;
 use revisor_core::folders::{Addition, LocateError, ProfileFolder, check_addition, locate};
 use revisor_core::profiles::ProfileFile;
-use revisor_core::store::{ProfileSettings, Scope};
+use revisor_core::store::{ProfileSettings, Scope, Unavailable};
 use wxdragon::prelude::*;
 
 use crate::access::{self, Act, Name, Target, field_label, plain};
@@ -281,8 +281,13 @@ impl Window {
             Ok(location) => location,
             Err(e) => {
                 let text = match e {
-                    LocateError::NotNtfs(fs) => s.folder_not_ntfs(&shown, &fs),
-                    LocateError::Network => s.folder_on_network(&shown),
+                    LocateError::Unavailable(Unavailable::NotNtfs(fs)) => {
+                        s.folder_not_ntfs(&shown, &fs)
+                    }
+                    LocateError::Unavailable(Unavailable::Network) => s.folder_on_network(&shown),
+                    LocateError::Unavailable(reason) => {
+                        unreachable!("locate gives only NotNtfs and Network: {reason:?}")
+                    }
                     LocateError::Io(e) => s.folder_not_examined(&shown, &failure::reason(s, &e)),
                 };
                 tell(&self.dialog, s, &self.title, &text);
