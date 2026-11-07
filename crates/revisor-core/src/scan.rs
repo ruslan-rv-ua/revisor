@@ -7,6 +7,8 @@
 
 mod sys;
 
+pub use sys::is_access_denied;
+
 use std::ffi::{OsStr, OsString};
 use std::fmt;
 use std::io;

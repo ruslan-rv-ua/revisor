@@ -147,14 +147,14 @@ fn only_local_ntfs_volumes_are_supported() {
     assert!(volume_error(r"\\?\C:\Data", "NTFS").is_none());
     for fs in ["FAT32", "exFAT", "ReFS"] {
         assert!(
-            matches!(volume_error(r"\\?\E:\", fs), Some(LocateError::NotNtfs(name)) if name == fs),
+            matches!(volume_error(r"\\?\E:\", fs), Some(Unavailable::NotNtfs(name)) if name == fs),
             "{fs}"
         );
     }
     // A network share reports the file system of the server's disk.
     for path in [r"\\?\UNC\server\share\x", r"\Device\Mup\server\share"] {
         assert!(
-            matches!(volume_error(path, "NTFS"), Some(LocateError::Network)),
+            matches!(volume_error(path, "NTFS"), Some(Unavailable::Network)),
             "{path}"
         );
     }

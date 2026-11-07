@@ -5,6 +5,7 @@
 use std::io;
 
 use revisor_core::compare::CompareError;
+use revisor_core::scan::is_access_denied;
 use revisor_core::settings::SettingsError;
 use revisor_core::store::StoreError;
 
@@ -46,8 +47,7 @@ pub fn reason(s: &dyn Strings, e: &dyn Cause) -> String {
     s.failure(&e.failure())
 }
 
-// Win32 error codes.
-const ERROR_ACCESS_DENIED: i32 = 5;
+// Win32 error codes; access denied is told by the core (`scan::is_access_denied`).
 const ERROR_SHARING_VIOLATION: i32 = 32;
 const ERROR_LOCK_VIOLATION: i32 = 33;
 const ERROR_HANDLE_DISK_FULL: i32 = 39;
@@ -62,8 +62,10 @@ const SQLITE_FULL: i32 = 13;
 const SQLITE_NOTADB: i32 = 26;
 
 pub fn of_io(e: &io::Error) -> Failure {
+    if is_access_denied(e) {
+        return Failure::AccessDenied;
+    }
     match e.raw_os_error() {
-        Some(ERROR_ACCESS_DENIED) => Failure::AccessDenied,
         Some(ERROR_SHARING_VIOLATION | ERROR_LOCK_VIOLATION) => Failure::InUse,
         Some(ERROR_DISK_FULL | ERROR_HANDLE_DISK_FULL) => Failure::DiskFull,
         Some(ERROR_CANCELLED) => Failure::Cancelled,

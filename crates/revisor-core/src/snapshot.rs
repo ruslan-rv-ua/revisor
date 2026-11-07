@@ -24,7 +24,6 @@ use crate::store::{
 // Windows error codes as `io::Error::raw_os_error` gives them.
 const ERROR_FILE_NOT_FOUND: i32 = Foundation::ERROR_FILE_NOT_FOUND as i32;
 const ERROR_PATH_NOT_FOUND: i32 = Foundation::ERROR_PATH_NOT_FOUND as i32;
-const ERROR_ACCESS_DENIED: i32 = Foundation::ERROR_ACCESS_DENIED as i32;
 const ERROR_NOT_READY: i32 = Foundation::ERROR_NOT_READY as i32;
 
 /// What a finished snapshot reports.
@@ -262,20 +261,15 @@ fn scan_folder(
     };
     // A folder that even the attributes of cannot be read is closed by rights too.
     let mut not_opened = |e: &io::Error| {
-        if e.raw_os_error() == Some(ERROR_ACCESS_DENIED) {
+        if scan::is_access_denied(e) {
             totals.denied += 1;
         }
         without_tree(absent(path, e))
     };
     match folders::locate(path) {
         Ok(_) => {}
-        Err(LocateError::NotNtfs(fs)) => {
-            return Ok(without_tree(FolderState::Unavailable(
-                Unavailable::NotNtfs(fs),
-            )));
-        }
-        Err(LocateError::Network) => {
-            return Ok(without_tree(FolderState::Unavailable(Unavailable::Network)));
+        Err(LocateError::Unavailable(reason)) => {
+            return Ok(without_tree(FolderState::Unavailable(reason)));
         }
         Err(LocateError::Io(e)) => return Ok(not_opened(&e)),
     }
