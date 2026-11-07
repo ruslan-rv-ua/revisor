@@ -48,9 +48,8 @@ use crate::menus::{
 use crate::message_box::{ask_text, choose, confirm, tell};
 use crate::profile_window::{self, Purpose};
 use crate::settings_window::{self, Values};
-use crate::snapshots::{
-    Arrival, FocusPlace, arrival, arrival_after_comparison, row_after_deletion,
-};
+use crate::snapshot_list::{Native, SnapshotList};
+use crate::snapshots::{Arrival, FocusPlace, arrival, arrival_after_comparison};
 use crate::state::{AppState, ChangeType, SortColumn};
 use crate::status::Announcer;
 use crate::text_window;
@@ -81,11 +80,6 @@ const HOLD_RETRY: Duration = Duration::from_millis(50);
 
 /// The file of the application's settings in the data folder (ADR-0007).
 pub const SETTINGS_FILE: &str = "settings.db";
-
-/// The widths of the snapshot list's columns, which the «Порівняти з…» window takes too:
-/// the name is fixed, the comment takes the rest.
-pub const DATE_TIME_WIDTH: i32 = 190;
-pub const COMMENT_WIDTH: i32 = 420;
 
 /// The widths of the difference list's columns, in the order of [`Column::ALL`]: the
 /// folder, the longest, comes last (TASK-13 #12).
@@ -203,7 +197,8 @@ pub struct MainWindow {
     gauge: Gauge,
     /// Cancels the job the progress row shows.
     cancel_button: Button,
-    snapshots: ListCtrl,
+    /// The snapshot list of the open profile, with its rows (TASK-27).
+    snapshots: SnapshotList<Native>,
     /// The field «Порівняння» above the difference list: the pair of snapshots, the
     /// summary and the warnings, or, before the first comparison, how to compare
     /// (TASK-13 #1, #11).
@@ -257,8 +252,6 @@ pub struct MainWindow {
     profiles: RefCell<Vec<ProfileFile>>,
     /// The open profile: its position in `profiles`.
     open_index: Cell<Option<usize>>,
-    /// The open profile's snapshots, in the order of the snapshot list: oldest first.
-    rows: RefCell<Vec<SnapshotInfo>>,
 }
 
 impl MainWindow {
@@ -342,18 +335,7 @@ impl MainWindow {
                 false,
             ))
             .build();
-        let snapshots = ListCtrl::builder(&panel)
-            .with_style(ListCtrlStyle::Report)
-            .build();
-        snapshots.insert_column(
-            0,
-            s.column_date_time(),
-            ListColumnFormat::Left,
-            DATE_TIME_WIDTH,
-        );
-        snapshots.insert_column(1, s.column_comment(), ListColumnFormat::Left, COMMENT_WIDTH);
-        win32::full_row_select_no_sort(snapshots.get_handle());
-        win32::set_accessible_name(snapshots.get_handle(), s.pane(Pane::Snapshots));
+        let snapshots = SnapshotList::new(Native::new(&panel, s, false), s);
         let comparison_label = StaticText::builder(&panel)
             .with_label(&field_label(s, s.comparison_field(), COMPARISON_ACCESS))
             .build();
@@ -451,7 +433,12 @@ impl MainWindow {
         let sizer = BoxSizer::builder(Orientation::Vertical).build();
         sizer.add_sizer(&profile_row, 0, SizerFlag::Expand, 0);
         sizer.add_sizer(&progress_row, 0, SizerFlag::Expand, 0);
-        sizer.add(&snapshots, 1, SizerFlag::Expand | SizerFlag::All, 5);
+        sizer.add(
+            snapshots.control().list(),
+            1,
+            SizerFlag::Expand | SizerFlag::All,
+            5,
+        );
         sizer.add(
             &comparison_label,
             0,
@@ -496,7 +483,6 @@ impl MainWindow {
             settings,
             profiles: RefCell::new(Vec::new()),
             open_index: Cell::new(None),
-            rows: RefCell::new(Vec::new()),
         });
         window.refresh_progress_row();
         window.bind_events();
@@ -605,12 +591,9 @@ impl MainWindow {
         // Deletion acts on the selected snapshots, and a comparison on the current one, so
         // the commands know how many there are and which is current.
         let w = Rc::clone(self);
-        self.snapshots.on_item_selected(move |_| w.sync_selection());
-        let w = Rc::clone(self);
         self.snapshots
-            .on_item_deselected(move |_| w.sync_selection());
-        let w = Rc::clone(self);
-        self.snapshots.on_item_focused(move |_| w.sync_selection());
+            .control()
+            .on_change(move || w.sync_snapshot_list());
 
         // The list shown fills the panel of the difference lists.
         let w = Rc::clone(self);
@@ -689,7 +672,7 @@ impl MainWindow {
     /// Where the keyboard focus is, in the terms of `keyboard::route`.
     fn focus(&self) -> Focus {
         let focused = win32::focused_window();
-        if focused == self.snapshots.get_handle() {
+        if self.snapshots.has_focus() {
             Focus {
                 part: Some(Pane::Snapshots),
                 control: Control::MainList,
@@ -735,7 +718,7 @@ impl MainWindow {
     /// Where the keyboard focus is, as far as a snapshot's arrival cares.
     fn focus_place(&self) -> FocusPlace {
         let focused = win32::focused_window();
-        if focused == self.snapshots.get_handle() {
+        if self.snapshots.has_focus() {
             FocusPlace::SnapshotList
         } else if focused == self.progress_text.get_handle()
             || focused == self.cancel_button.get_handle()
@@ -764,10 +747,11 @@ impl MainWindow {
         }
     }
 
-    fn list(&self, pane: Pane) -> &ListCtrl {
+    /// Moves the keyboard focus to the list of `pane`.
+    fn focus_list(&self, pane: Pane) {
         match pane {
-            Pane::Snapshots => &self.snapshots,
-            Pane::Difference => self.difference(),
+            Pane::Snapshots => self.snapshots.set_focus(),
+            Pane::Difference => self.difference().set_focus(),
         }
     }
 
@@ -789,7 +773,7 @@ impl MainWindow {
             Route::Run(id) => self.run(id),
             Route::Refuse(id, reason) => self.refuse(id, reason),
             Route::OnlyIn(key, pane) => self.say(&s.key_only_in(&key.name(s), pane)),
-            Route::FocusPane(pane) => self.list(pane).set_focus(),
+            Route::FocusPane(pane) => self.focus_list(pane),
             Route::FocusLabel(LABEL_PROFILE) => self.profile.set_focus(),
             Route::FocusLabel(LABEL_PROGRESS) => self.progress_text.set_focus(),
             Route::FocusLabel(LABEL_CANCEL) => {
@@ -811,7 +795,11 @@ impl MainWindow {
             Route::FocusLabel(_) => {}
             Route::ClearFilter => self.speaking(|| self.clear_filter()),
             Route::ContextMenu(pane) => self.show_context_menu(pane, None),
-            Route::SelectAll(pane) => win32::select_all(self.list(pane).get_handle()),
+            Route::SelectAll(Pane::Snapshots) => {
+                self.snapshots.select_all();
+                self.sync_snapshot_list();
+            }
+            Route::SelectAll(Pane::Difference) => win32::select_all(self.difference().get_handle()),
             Route::Pass => {}
         }
     }
@@ -1031,22 +1019,11 @@ impl MainWindow {
                 }
             }
         };
-        self.snapshots.delete_all_items();
-        for (i, row) in rows.iter().enumerate() {
-            self.insert_row(i, row);
-        }
-        if let Some(newest) = rows.len().checked_sub(1) {
-            win32::select_only(self.snapshots.get_handle(), newest);
-        }
-        {
-            let mut state = self.state.borrow_mut();
-            state.profile = open.as_ref().map(|p| p.name.clone());
-            state.snapshots = rows.len();
-        }
+        let any_profiles = !self.profiles.borrow().is_empty();
+        self.snapshots.show(rows, any_profiles);
+        self.state.borrow_mut().profile = open.as_ref().map(|p| p.name.clone());
         self.sync_job_flags();
-        *self.rows.borrow_mut() = rows;
-        self.sync_selection();
-        self.update_empty_text();
+        self.sync_snapshot_list();
         self.refresh_menus();
     }
 
@@ -1305,75 +1282,17 @@ impl MainWindow {
 
     // --- The snapshot list (TASK-9) ---------------------------------------------------
 
-    /// Puts a snapshot in the list at `index`: its name, then its comment.
-    fn insert_row(&self, index: usize, row: &SnapshotInfo) {
-        self.snapshots
-            .insert_item(index as i64, &win32::format_date_time(row.taken_at), None);
-        if let Some(comment) = &row.comment {
-            self.snapshots
-                .set_item_text_by_column(index as i64, 1, comment);
-        }
+    /// The one place the state learns what the snapshot list holds: how many snapshots,
+    /// how many selected, which is current (TASK-27).
+    fn sync_snapshot_list(&self) {
+        let summary = self.snapshots.summary();
+        self.state.borrow_mut().set_snapshot_list(summary);
     }
 
-    /// The current snapshot: the row with the focus rectangle, or the newest one when no
-    /// row has it.
-    fn current_row(&self) -> Option<usize> {
-        let count = self.rows.borrow().len();
-        win32::focused_row(self.snapshots.get_handle())
-            .filter(|&row| row < count)
-            .or_else(|| count.checked_sub(1))
-    }
-
-    /// Keeps the state's count of selected snapshots and its current snapshot as the list
-    /// has them.
-    fn sync_selection(&self) {
-        let selected = win32::selected_count(self.snapshots.get_handle());
-        let current = self.current_row();
-        let mut state = self.state.borrow_mut();
-        state.selected_snapshots = selected;
-        state.current_snapshot = current;
-    }
-
-    /// What the empty snapshot list says, in its area and in its name for screen readers:
-    /// that there are no profiles, or no snapshots, and which key makes the first one.
-    fn update_empty_text(&self) {
-        let s = self.s;
-        let key = |id| command(id).shortcut.map(|k| k.name(s)).unwrap_or_default();
-        let hint = if self.profiles.borrow().is_empty() {
-            Some(s.no_profiles_yet(&key(CommandId::NewProfile)))
-        } else if self.rows.borrow().is_empty() {
-            Some(s.no_snapshots_yet(&key(CommandId::TakeSnapshot)))
-        } else {
-            None
-        };
-        let list = self.snapshots.get_handle();
-        let name = match &hint {
-            Some(hint) => format!("{}. {hint}", s.pane(Pane::Snapshots)),
-            None => s.pane(Pane::Snapshots).to_string(),
-        };
-        win32::set_accessible_name(list, &name);
-        win32::set_empty_text(list, hint.as_deref().unwrap_or_default());
-    }
-
-    /// Adds a saved snapshot of the open profile to the end of the list, as its `arrival`
-    /// says: as a row, as the current snapshot, or as the current snapshot with the
-    /// keyboard focus.
-    fn append_row(&self, row: SnapshotInfo, arrival: Arrival) {
-        let index = {
-            let mut rows = self.rows.borrow_mut();
-            rows.push(row);
-            rows.len() - 1
-        };
-        self.insert_row(index, &self.rows.borrow()[index]);
-        self.state.borrow_mut().snapshots = index + 1;
-        if matches!(arrival, Arrival::Current | Arrival::Focus) {
-            win32::select_only(self.snapshots.get_handle(), index);
-        }
-        if arrival == Arrival::Focus {
-            self.snapshots.set_focus();
-        }
-        self.sync_selection();
-        self.update_empty_text();
+    /// Adds a saved snapshot of the open profile to the list as its `arrival` says.
+    fn arrive(&self, row: SnapshotInfo, arrival: Arrival) {
+        self.snapshots.arrive(row, arrival);
+        self.sync_snapshot_list();
     }
 
     /// Runs `dialog` with the jobs' timer at rest, so a snapshot that ends meanwhile does
@@ -1397,10 +1316,13 @@ impl MainWindow {
         let Some(open) = self.open_profile() else {
             return;
         };
-        let Some(row) = self.current_row() else {
+        let Some(info) = self
+            .snapshots
+            .current()
+            .and_then(|row| self.snapshots.row(row))
+        else {
             return;
         };
-        let info = self.rows.borrow()[row].clone();
         let name = win32::format_date_time(info.taken_at);
         let asked = self.with_jobs_paused(|| {
             ask_text(
@@ -1435,18 +1357,9 @@ impl MainWindow {
     fn comment_saved(&self, profile: &ProfileFile, comment: Comment) {
         let s = self.s;
         let removed = comment.comment.is_none();
-        if self.is_open(profile) {
-            let row = self.rows.borrow().iter().position(|r| r.id == comment.id);
-            if let Some(row) = row {
-                self.snapshots.set_item_text_by_column(
-                    row as i64,
-                    1,
-                    comment.comment.as_deref().unwrap_or_default(),
-                );
-                self.rows.borrow_mut()[row].comment = comment.comment;
-                self.refresh_pair();
-                self.describe_difference();
-            }
+        if self.is_open(profile) && self.snapshots.set_comment(comment.id, comment.comment) {
+            self.refresh_pair();
+            self.describe_difference();
         }
         self.say(if removed {
             s.comment_removed()
@@ -1492,72 +1405,48 @@ impl MainWindow {
         let Some(open) = self.open_profile() else {
             return;
         };
-        let list = self.snapshots.get_handle();
-        let selected = win32::selected_rows(list);
-        let chosen: Vec<SnapshotInfo> = {
-            let rows = self.rows.borrow();
-            selected
-                .iter()
-                .filter_map(|&i| rows.get(i).cloned())
-                .collect()
-        };
-        if chosen.is_empty() {
-            return;
-        }
-        // No row keeps the focus rectangle from here on: when the question closes, the
-        // focus comes back to the list, and a screen reader would announce the focused
-        // row just as it is deleted. A refusal puts the rectangle back.
-        let focused = win32::focused_row(list);
-        win32::unfocus_rows(list);
-        if self.confirm_deletion() {
-            let question = match chosen.as_slice() {
-                [one] => s.delete_snapshot_question(
-                    &win32::format_date_time(one.taken_at),
-                    one.comment.as_deref(),
-                ),
-                many => s.delete_snapshots_question(many.len()),
-            };
-            let delete = (s.delete(), DELETE_ACCESS);
-            let agreed =
-                self.with_jobs_paused(|| confirm(&self.frame, s, title, &question, delete, true));
-            if !agreed {
-                if let Some(row) = focused {
-                    win32::focus_row(list, row);
+        // The list keeps the focus rectangle off its rows while this asks and deletes,
+        // and puts it back on a refusal or a failure.
+        let mut store = None;
+        let deleted = self.snapshots.delete(|chosen| {
+            if self.confirm_deletion() {
+                let question = match chosen {
+                    [one] => s.delete_snapshot_question(
+                        &win32::format_date_time(one.taken_at),
+                        one.comment.as_deref(),
+                    ),
+                    many => s.delete_snapshots_question(many.len()),
+                };
+                let delete = (s.delete(), DELETE_ACCESS);
+                let agreed = self
+                    .with_jobs_paused(|| confirm(&self.frame, s, title, &question, delete, true));
+                if !agreed {
+                    return false;
                 }
-                return;
             }
-        }
-        let ids: Vec<i64> = chosen.iter().map(|row| row.id).collect();
-        self.wait_for_comparison_to_load(&open.path);
-        let deleted = Store::open(&open.path).and_then(|mut store| {
-            store.delete_many(&ids)?;
-            Ok(store)
+            let ids: Vec<i64> = chosen.iter().map(|row| row.id).collect();
+            self.wait_for_comparison_to_load(&open.path);
+            let deleted = Store::open(&open.path).and_then(|mut store| {
+                store.delete_many(&ids)?;
+                Ok(store)
+            });
+            match deleted {
+                Ok(deleted) => {
+                    store = Some(deleted);
+                    true
+                }
+                Err(e) => {
+                    let reason = s.failure(&failure::of_store(&e));
+                    tell(&self.frame, s, title, &s.snapshots_not_deleted(&reason));
+                    false
+                }
+            }
         });
-        let store = match deleted {
-            Ok(store) => store,
-            Err(e) => {
-                let reason = s.failure(&failure::of_store(&e));
-                tell(&self.frame, s, title, &s.snapshots_not_deleted(&reason));
-                if let Some(row) = focused {
-                    win32::focus_row(list, row);
-                }
-                return;
-            }
+        let (Some(chosen), Some(store)) = (deleted, store) else {
+            return;
         };
-        // The rows go at once, from the bottom up so the positions hold; then the focus
-        // goes to the row that followed them (#26).
-        let count = self.rows.borrow().len();
-        for &i in selected.iter().rev() {
-            self.snapshots.delete_item(i as i64);
-            self.rows.borrow_mut().remove(i);
-        }
-        if let Some(next) = row_after_deletion(&selected, count) {
-            win32::select_only(list, next);
-        }
-        let rows = self.rows.borrow().clone();
-        self.state.borrow_mut().snapshots = rows.len();
-        self.sync_selection();
-        self.update_empty_text();
+        let rows = self.snapshots.rows();
+        self.sync_snapshot_list();
         self.refresh_pair();
         self.describe_difference();
         self.jobs
@@ -1598,13 +1487,11 @@ impl MainWindow {
         let Some(open) = self.open_profile() else {
             return;
         };
-        let Some(row) = self.current_row().filter(|&row| row > 0) else {
+        let Some(row) = self.snapshots.current().filter(|&row| row > 0) else {
             return;
         };
-        let (current, previous) = {
-            let rows = self.rows.borrow();
-            (rows[row].id, rows[row - 1].id)
-        };
+        let rows = self.snapshots.rows();
+        let (current, previous) = (rows[row].id, rows[row - 1].id);
         self.start_comparison(open, current, previous);
     }
 
@@ -1616,15 +1503,15 @@ impl MainWindow {
         let Some(open) = self.open_profile() else {
             return;
         };
-        let Some(row) = self.current_row() else {
+        let Some(row) = self.snapshots.current() else {
             return;
         };
-        let rows = self.rows.borrow().clone();
+        let rows = self.snapshots.rows();
         let chosen = self.with_jobs_paused(|| compare_window::show(&self.frame, s, &rows, row));
         let Some(other) = chosen else {
             return;
         };
-        if win32::focused_window() != self.snapshots.get_handle() {
+        if !self.snapshots.has_focus() {
             self.snapshots.set_focus();
         }
         self.start_comparison(open, rows[row].id, other.id);
@@ -1857,7 +1744,7 @@ impl MainWindow {
     /// it can be read at once.
     fn snapshots_now(&self, profile: &ProfileFile) -> Option<Vec<SnapshotInfo>> {
         if self.is_open(profile) {
-            return Some(self.rows.borrow().clone());
+            return Some(self.snapshots.rows());
         }
         if let Some((_, rows)) = self.jobs.borrow().closed_profile(&profile.path) {
             return Some(rows.to_vec());
@@ -2093,7 +1980,7 @@ impl MainWindow {
         let Some(open) = self.open_profile() else {
             return;
         };
-        let with = self.rows.borrow().last().map(|row| row.id);
+        let with = self.snapshots.newest().map(|row| row.id);
         self.comparison_focus.set(win32::focused_window());
         let superseded = self
             .jobs
@@ -2123,7 +2010,7 @@ impl MainWindow {
         let of_open_profile = self.is_open(&profile);
         let Some(with) = with else {
             if of_open_profile {
-                self.append_row(
+                self.arrive(
                     snapshot_row(&report),
                     arrival_after_comparison(focus, false),
                 );
@@ -2139,7 +2026,7 @@ impl MainWindow {
             return;
         };
         if of_open_profile {
-            self.append_row(snapshot_row(&report), Arrival::Append);
+            self.arrive(snapshot_row(&report), Arrival::Append);
         }
         self.jobs
             .borrow_mut()
@@ -2213,17 +2100,10 @@ impl MainWindow {
     /// the list as it is. Nothing changes while another profile is open, or when the
     /// snapshot has been deleted meanwhile.
     fn place_snapshot(&self, profile: &ProfileFile, id: i64, arrival: Arrival) {
-        if !self.is_open(profile) || !matches!(arrival, Arrival::Current | Arrival::Focus) {
-            return;
+        if self.is_open(profile) {
+            self.snapshots.place(id, arrival);
+            self.sync_snapshot_list();
         }
-        let Some(index) = self.rows.borrow().iter().position(|row| row.id == id) else {
-            return;
-        };
-        win32::select_only(self.snapshots.get_handle(), index);
-        if arrival == Arrival::Focus {
-            self.snapshots.set_focus();
-        }
-        self.sync_selection();
     }
 
     /// Says the report of the snapshot of «Знімок + порівняння» whose comparison another
@@ -2456,14 +2336,12 @@ impl MainWindow {
     ) {
         match arrival(self.focus_after_snapshot(), focus, self.is_open(profile)) {
             Arrival::Nothing => {}
-            how @ (Arrival::Append | Arrival::Current | Arrival::Focus) => {
-                self.append_row(snapshot_row(report), how);
-            }
             Arrival::OpenProfileAndFocus => {
                 if self.open_profile_at(&profile.path) {
-                    self.snapshots.set_focus();
+                    self.arrive(snapshot_row(report), Arrival::OpenProfileAndFocus);
                 }
             }
+            how => self.arrive(snapshot_row(report), how),
         }
         self.refresh_menus();
         self.say(&self.snapshot_report(report));
@@ -2656,7 +2534,10 @@ impl MainWindow {
                 );
             }
         }
-        let (x, y) = at.unwrap_or_else(|| win32::context_menu_point(self.list(pane).get_handle()));
+        let (x, y) = at.unwrap_or_else(|| match pane {
+            Pane::Snapshots => self.snapshots.control().context_menu_point(),
+            Pane::Difference => win32::context_menu_point(self.difference().get_handle()),
+        });
         win32::bold_first_item_of_next_popup(menu_items.default.is_some());
         self.frame.popup_menu(&mut menu, Some(Point::new(x, y)));
         win32::bold_first_item_of_next_popup(false);
