@@ -190,7 +190,7 @@ pub fn take(
         .zip(&expanded)
         .map(|(pattern, expanded)| SnapshotExclusion {
             pattern: pattern.clone(),
-            applied: expanded.applied().map(String::from),
+            applied: expanded.applied(),
         })
         .collect();
 

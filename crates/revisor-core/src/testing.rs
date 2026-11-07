@@ -11,7 +11,8 @@ use std::time::{Duration, Instant};
 
 use crate::diff::{self, Fields};
 use crate::job::{Cancel, Job, Lost, Work};
-use crate::scan::{Entry, EntryKind, FileId, VersionInfo, verbatim};
+use crate::path::verbatim;
+use crate::scan::{Entry, EntryKind, FileId, VersionInfo};
 
 const FILE_ATTRIBUTE_ARCHIVE: u32 = 0x20;
 const FILE_ATTRIBUTE_DIRECTORY: u32 = 0x10;
@@ -65,7 +66,7 @@ impl TempDir {
 
 impl Drop for TempDir {
     fn drop(&mut self) {
-        let _ = fs::remove_dir_all(verbatim(&self.0).unwrap());
+        let _ = fs::remove_dir_all(verbatim(&self.0));
     }
 }
 

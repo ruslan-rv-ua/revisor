@@ -344,7 +344,7 @@ fn a_root_closed_by_rights_is_its_own_inaccessible_entry() {
 fn scans_paths_longer_than_max_path() {
     let tmp = TempDir::new("scan");
     let segment = "d".repeat(60);
-    let mut deep = verbatim(tmp.path()).unwrap();
+    let mut deep = verbatim(tmp.path());
     for _ in 0..5 {
         deep.push(&segment);
     }
@@ -437,33 +437,6 @@ fn missing_root_is_an_error() {
         &Progress::default(),
     );
     assert!(matches!(result, Err(ScanError::Root(_))));
-}
-
-#[test]
-fn verbatim_paths() {
-    assert_eq!(verbatim(Path::new(r"C:\")).unwrap(), Path::new(r"\\?\C:\"));
-    assert_eq!(
-        verbatim(Path::new(r"C:\a\..\b")).unwrap(),
-        Path::new(r"\\?\C:\b")
-    );
-    assert_eq!(
-        verbatim(Path::new(r"\\server\share\x")).unwrap(),
-        Path::new(r"\\?\UNC\server\share\x")
-    );
-    assert_eq!(
-        verbatim(Path::new(r"\\?\C:\x")).unwrap(),
-        Path::new(r"\\?\C:\x")
-    );
-}
-
-#[test]
-fn plain_paths_drop_the_verbatim_prefix() {
-    assert_eq!(plain(Path::new(r"\\?\C:\a\b")), Path::new(r"C:\a\b"));
-    assert_eq!(
-        plain(Path::new(r"\\?\UNC\server\share\x")),
-        Path::new(r"\\server\share\x")
-    );
-    assert_eq!(plain(Path::new(r"C:\a")), Path::new(r"C:\a"));
 }
 
 #[test]

@@ -5,7 +5,7 @@ use std::ffi::{OsStr, OsString};
 use std::os::windows::ffi::OsStrExt;
 use std::path::{Path, PathBuf};
 
-use crate::names::upcase;
+use crate::path::{self, Folded, fold};
 
 const STAR: u32 = '*' as u32;
 const QUESTION: u32 = '?' as u32;
@@ -199,8 +199,9 @@ impl Environment for RecordedEnvironment {
 pub enum Expanded {
     /// A name pattern, as written: it matches a name at any depth.
     Name(String),
-    /// A path pattern: the full path it stands for.
-    Path(String),
+    /// A path pattern: the full path it stands for. A variable or a real location may
+    /// bring in a name that is not valid Unicode, and it stays as it is.
+    Path(OsString),
     /// The pattern starts with a variable the computer does not have, so it leaves
     /// nothing out.
     Inactive,
@@ -208,10 +209,12 @@ pub enum Expanded {
 
 impl Expanded {
     /// The pattern as it applied, or `None` when it did not. [`Exclusions::new`] with
-    /// [`RecordedEnvironment`] takes these back as they are.
-    pub fn applied(&self) -> Option<&str> {
+    /// [`RecordedEnvironment`] takes these back as they are; a name in a path that is not
+    /// valid Unicode is recorded with U+FFFD in place of what is not.
+    pub fn applied(&self) -> Option<String> {
         match self {
-            Expanded::Name(text) | Expanded::Path(text) => Some(text),
+            Expanded::Name(text) => Some(text.clone()),
+            Expanded::Path(path) => Some(path.to_string_lossy().into_owned()),
             Expanded::Inactive => None,
         }
     }
@@ -230,7 +233,7 @@ pub fn expand(pattern: &str, env: &dyn Environment) -> Expanded {
         None => pattern.contains('\\').then(|| OsString::from(pattern)),
     };
     match path {
-        Some(path) => Expanded::Path(pattern_parts(&path, env).join("\\")),
+        Some(path) => Expanded::Path(pattern_parts(&path, env).join(OsStr::new(r"\"))),
         None => Expanded::Name(pattern.to_string()),
     }
 }
@@ -239,11 +242,12 @@ pub fn expand(pattern: &str, env: &dyn Environment) -> Expanded {
 #[derive(Clone, Debug, Default)]
 pub struct Exclusions {
     /// Name patterns without wildcards, folded.
-    names: HashSet<Vec<u32>>,
+    names: HashSet<Folded>,
     /// Name patterns with `*` or `?`, folded.
-    wild_names: Vec<Vec<u32>>,
-    /// Path patterns, each a list of folded parts; the first part is the drive.
-    paths: Vec<Vec<Vec<u32>>>,
+    wild_names: Vec<Folded>,
+    /// Path patterns, each a list of folded parts ([`path::parts`]); the first part is the
+    /// drive.
+    paths: Vec<Vec<Folded>>,
 }
 
 /// Where a walk stands in the tree.
@@ -272,15 +276,10 @@ impl Exclusions {
         let mut ex = Exclusions::default();
         for pattern in expanded {
             match pattern {
-                Expanded::Path(path) => ex.paths.push(
-                    split_path(OsStr::new(path))
-                        .iter()
-                        .map(|part| fold(OsStr::new(part)))
-                        .collect(),
-                ),
+                Expanded::Path(path) => ex.paths.push(path::parts(path)),
                 Expanded::Name(name) => {
                     let folded = fold(OsStr::new(name));
-                    if folded.iter().any(|&c| c == STAR || c == QUESTION) {
+                    if folded.chars().iter().any(|&c| c == STAR || c == QUESTION) {
                         ex.wild_names.push(folded);
                     } else {
                         ex.names.insert(folded);
@@ -294,10 +293,7 @@ impl Exclusions {
 
     /// Where a walk of the tree under `root` starts. The root itself is never excluded.
     pub fn branch(&self, root: &Path) -> Branch {
-        let root: Vec<Vec<u32>> = split_path(root.as_os_str())
-            .iter()
-            .map(|part| fold(OsStr::new(part)))
-            .collect();
+        let root = path::parts(root.as_os_str());
         let matching = self
             .paths
             .iter()
@@ -350,20 +346,21 @@ fn leading_variable(pattern: &str) -> Option<(&str, &str)> {
 /// The parts of a path pattern. The longest part of it without wildcards that exists is
 /// taken at its real location, the way the scanner sees it: Windows keeps TEMP in the 8.3
 /// form, and a folder may be reached through a junction or a `subst` drive.
-fn pattern_parts(path: &OsStr, env: &dyn Environment) -> Vec<String> {
-    let mut parts = split_path(path);
+fn pattern_parts(path: &OsStr, env: &dyn Environment) -> Vec<OsString> {
+    let mut parts = path::split(path);
+    let wild = |unit: u16| u32::from(unit) == STAR || u32::from(unit) == QUESTION;
     let literal = parts
         .iter()
-        .take_while(|part| !part.contains(['*', '?']))
+        .take_while(|part| !part.encode_wide().any(wild))
         .count();
     for len in (1..=literal).rev() {
-        let mut prefix = parts[..len].join("\\");
+        let mut prefix = parts[..len].join(OsStr::new(r"\"));
         if len == 1 {
             // "C:" alone would name the current folder of drive C.
-            prefix.push('\\');
+            prefix.push(r"\");
         }
         if let Some(real) = env.real_path(Path::new(&prefix)) {
-            let mut resolved = split_path(real.as_os_str());
+            let mut resolved = path::split(real.as_os_str());
             resolved.extend(parts.drain(len..));
             parts = resolved;
             break;
@@ -372,19 +369,10 @@ fn pattern_parts(path: &OsStr, env: &dyn Environment) -> Vec<String> {
     parts
 }
 
-/// The parts of a path, without a `\\?\` prefix and without empty parts.
-fn split_path(path: &OsStr) -> Vec<String> {
-    let path = path.to_string_lossy();
-    let path = path.strip_prefix(r"\\?\").unwrap_or(&path);
-    path.split('\\')
-        .filter(|part| !part.is_empty())
-        .map(str::to_string)
-        .collect()
-}
-
 /// Whether a folded name matches a folded pattern, where `*` stands for any run of
 /// characters and `?` for one character.
-fn glob(pattern: &[u32], name: &[u32]) -> bool {
+fn glob(pattern: &Folded, name: &Folded) -> bool {
+    let (pattern, name) = (pattern.chars(), name.chars());
     let (mut p, mut n) = (0, 0);
     // Where the last `*` was, and the part of the name it has taken so far.
     let mut star = None;
@@ -410,21 +398,6 @@ fn glob(pattern: &[u32], name: &[u32]) -> bool {
         }
     }
     pattern[p..].iter().all(|&c| c == STAR)
-}
-
-/// A name as code points upper-cased the way NTFS compares names; unpaired surrogates
-/// stay as they are.
-fn fold(name: &OsStr) -> Vec<u32> {
-    char::decode_utf16(name.encode_wide())
-        .map(|unit| match unit {
-            Ok(c) => c as u32,
-            Err(e) => e.unpaired_surrogate().into(),
-        })
-        .map(|c| match u16::try_from(c) {
-            Ok(unit) => upcase(unit).into(),
-            Err(_) => c,
-        })
-        .collect()
 }
 
 #[cfg(test)]
