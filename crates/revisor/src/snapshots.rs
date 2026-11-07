@@ -1,6 +1,7 @@
 //! What the snapshot list decides on its own, apart from the window (TASK-9): where the
 //! focus and the current snapshot go when a snapshot taken in the background ends — on
-//! its own or as part of «Знімок + порівняння» (TASK-12) — and after rows are deleted.
+//! its own or as part of «Знімок + порівняння» (TASK-12). The list itself is
+//! [`crate::snapshot_list`] (TASK-27).
 
 use revisor_core::settings::FocusAfterSnapshot;
 
@@ -69,21 +70,6 @@ pub fn arrival_after_comparison(focus: FocusPlace, to_difference: bool) -> Arriv
     }
 }
 
-/// The row that takes the focus once the rows `deleted` (in ascending order) are gone
-/// from a list of `len` rows: the one that stood right after the last deleted row, or
-/// the new last row; `None` when no row is left.
-pub fn row_after_deletion(deleted: &[usize], len: usize) -> Option<usize> {
-    let remaining = len.checked_sub(deleted.len())?;
-    if remaining == 0 {
-        return None;
-    }
-    let last_deleted = *deleted.last()?;
-    // The rows before the last deleted one that stay: that many stand before the row
-    // that followed it.
-    let after = last_deleted + 1 - deleted.len();
-    Some(after.min(remaining - 1))
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -129,23 +115,5 @@ mod tests {
             Arrival::Focus
         );
         assert_eq!(arrival_after_comparison(Elsewhere, false), Arrival::Current);
-    }
-
-    #[test]
-    fn after_a_deletion_the_focus_goes_to_the_row_that_followed() {
-        // Five rows; the row after the last deleted one, at its new position.
-        assert_eq!(row_after_deletion(&[1, 3], 5), Some(2));
-        assert_eq!(row_after_deletion(&[0], 5), Some(0));
-        assert_eq!(row_after_deletion(&[0, 1, 2], 5), Some(0));
-        assert_eq!(row_after_deletion(&[2], 5), Some(2));
-        // The last row deleted: the new last row.
-        assert_eq!(row_after_deletion(&[4], 5), Some(3));
-        assert_eq!(row_after_deletion(&[2, 4], 5), Some(2));
-        assert_eq!(row_after_deletion(&[3, 4], 5), Some(2));
-        // Nothing left.
-        assert_eq!(row_after_deletion(&[0, 1, 2, 3, 4], 5), None);
-        assert_eq!(row_after_deletion(&[0], 1), None);
-        assert_eq!(row_after_deletion(&[], 0), None);
-        assert_eq!(row_after_deletion(&[], 3), None);
     }
 }

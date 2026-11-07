@@ -5,6 +5,7 @@ use revisor_core::settings::DifferenceSort;
 pub use revisor_core::settings::{ChangeType, SortColumn};
 
 use crate::jobs::Flags;
+use crate::snapshot_list::Summary;
 
 #[derive(Clone, Debug, Default)]
 pub struct AppState {
@@ -74,6 +75,19 @@ impl AppState {
         self.compacting_open_profile = compacting_open_profile;
         self.comment_waiting = comment_waiting;
         self.commenting_open_profile = commenting_open_profile;
+    }
+
+    /// Takes what the snapshot list says of itself, all at once (TASK-27): how many
+    /// snapshots it shows, how many are selected and which is current.
+    pub fn set_snapshot_list(&mut self, summary: Summary) {
+        let Summary {
+            snapshots,
+            selected,
+            current,
+        } = summary;
+        self.snapshots = snapshots;
+        self.selected_snapshots = selected;
+        self.current_snapshot = current;
     }
 
     pub fn shows(&self, change: ChangeType) -> bool {

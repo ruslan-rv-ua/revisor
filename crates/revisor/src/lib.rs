@@ -17,6 +17,7 @@ mod menus;
 mod message_box;
 mod profile_window;
 mod settings_window;
+mod snapshot_list;
 mod snapshots;
 mod state;
 mod status;

@@ -9,8 +9,8 @@ use wxdragon::prelude::*;
 use crate::commands::{CommandId, command};
 use crate::i18n::Strings;
 use crate::keys::Shortcut;
-use crate::main_window::{COMMENT_WIDTH, DATE_TIME_WIDTH};
 use crate::menus::field_label;
+use crate::snapshot_list::{Control, Native};
 use crate::win32;
 
 /// The access key of the list's label: that of the command «Порівняти з…», whose words
@@ -51,24 +51,13 @@ pub fn show(
     let label = StaticText::builder(&dialog)
         .with_label(&field_label(s, &s.compare_with_label(&name), access()))
         .build();
-    let list = ListCtrl::builder(&dialog)
-        .with_style(ListCtrlStyle::Report | ListCtrlStyle::SingleSel)
-        .build();
-    list.insert_column(
-        0,
-        s.column_date_time(),
-        ListColumnFormat::Left,
-        DATE_TIME_WIDTH,
-    );
-    list.insert_column(1, s.column_comment(), ListColumnFormat::Left, COMMENT_WIDTH);
-    win32::full_row_select_no_sort(list.get_handle());
+    // The rows of the snapshot list, as its control shows them (TASK-27 #7).
+    let rows = Native::new(&dialog, s, true);
     for (i, row) in others.iter().enumerate() {
-        list.insert_item(i as i64, &win32::format_date_time(row.taken_at), None);
-        if let Some(comment) = &row.comment {
-            list.set_item_text_by_column(i as i64, 1, comment);
-        }
+        rows.insert(i, row);
     }
-    win32::select_only(list.get_handle(), start);
+    rows.select_only(start);
+    let list = *rows.list();
     let compare = Button::builder(&dialog)
         .with_id(ID_OK)
         .with_label(s.compare())
@@ -110,8 +99,9 @@ pub fn show(
     dialog.centre();
     list.set_focus();
     let confirmed = dialog.show_modal() == ID_OK;
-    let chosen = win32::focused_row(list.get_handle())
-        .or_else(|| usize::try_from(list.get_first_selected_item()).ok())
+    let chosen = rows
+        .focused_row()
+        .or_else(|| rows.selected_rows().first().copied())
         .unwrap_or(start);
     // A plain wxDragon Dialog is not destroyed when dropped; its handlers go with it.
     dialog.destroy();
