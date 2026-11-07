@@ -15,6 +15,11 @@ release that section becomes the version's own, and the release page publishes i
   Before, they were said only in the status bar; now, like the failures of the other
   commands, they open a window that names the command. So does a failure to restart revisor
   after the interface language was changed in the settings.
+- **A button or check box pressed with Alt and its letter acts once Alt is released.**
+  This now holds in every window: the main window's Cancel and type check boxes, the
+  profile window's Add folder and Remove folder, and the check boxes of the settings. Before,
+  only the buttons of questions waited for it. The keys pressed next are no longer lost in
+  the window menu. A field or list still takes the focus at once.
 
 ### Fixed
 

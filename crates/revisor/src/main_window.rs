@@ -29,21 +29,21 @@ use revisor_core::store::{
 };
 use wxdragon::prelude::*;
 
+use crate::access::{Dispatcher, Name, Target, compose, field_label, plain};
 use crate::commands::{COMMANDS, CommandId, CommandKind, MenuId, Pane, Reason, command};
 use crate::compare_window;
 use crate::difference::{self, Column, List, View};
 use crate::explorer::{self, Reveal};
 use crate::failure::reason;
 use crate::help;
-use crate::i18n::Strings;
+use crate::i18n::{En, Strings};
 use crate::jobs::{
     COMPARISON_SHOWN_AFTER, Comment, Ended, Event, Jobs, Kind, Shown, Superseded, ThenCompare,
 };
-use crate::keyboard::{Control, Focus, Route, route};
+use crate::keyboard::{Control, Focus, Label, Route, route};
 use crate::keys::Shortcut;
 use crate::menus::{
-    button_label, context_label, context_menu, field_label, menu_label, submenu_label,
-    top_menu_label, window_title,
+    context_label, context_menu, menu_label, submenu_label, top_menu_label, window_title,
 };
 use crate::message_box::{ask_text, choose, confirm, tell};
 use crate::profile_window::{self, Purpose};
@@ -94,35 +94,6 @@ const COMPARISON_HEIGHT: i32 = 64;
 /// would cut off the screen reader's echo of the typing.
 const SHOWING_PAUSE: i32 = 1000;
 
-/// The access keys of the labels of the main window. They do not take the letters of the
-/// menus, which would no longer open while the focus is in the panel.
-const PROFILE_ACCESS: u8 = b'R';
-const PROGRESS_ACCESS: u8 = b'P';
-/// The field «Порівняння», the field «Фільтр:» and the check boxes of the types under the
-/// difference list, in the order of [`ChangeType::ALL`] (TASK-13).
-const COMPARISON_ACCESS: u8 = b'M';
-const FILTER_ACCESS: u8 = b'L';
-const TYPE_ACCESS: [u8; 4] = *b"ATEB";
-
-/// The access key of the comment field in the «Коментар» window.
-const COMMENT_ACCESS: u8 = b'C';
-
-/// «Скасувати (N)» next to the progress presses the command «Скасувати знімок» or, for
-/// a comparison, «Скасувати порівняння», and «Скасувати стискання (O)» the command
-/// «Скасувати стискання»: the button takes the letter of the command of the job it
-/// shows.
-fn cancel_snapshot_access() -> u8 {
-    command(CommandId::CancelSnapshot).access
-}
-
-fn cancel_comparison_access() -> u8 {
-    command(CommandId::CancelComparison).access
-}
-
-fn cancel_compaction_access() -> u8 {
-    command(CommandId::CancelCompaction).access
-}
-
 /// The command that cancels a job of `kind`: what the progress row's button presses.
 fn cancel_command(kind: Kind) -> CommandId {
     match kind {
@@ -133,38 +104,45 @@ fn cancel_command(kind: Kind) -> CommandId {
     }
 }
 
-/// The access key of the progress row's button while it shows a job of `kind`: the
-/// letter of the command it presses, but for a comment waiting for the database
-/// (TASK-24), whose button is «Скасувати (N)» like that of a snapshot: no letter of
-/// «Cancel comment» is free in the main window, where M is the field «Порівняння».
-fn cancel_access(kind: Kind) -> u8 {
+/// The English of the progress row's button while it shows a job of `kind`: «Скасувати
+/// (N)» for a snapshot, a comparison and a comment waiting for the database (TASK-24), so
+/// that the button keeps its label from the snapshot of «Знімок + порівняння» to its
+/// comparison (TASK-12 #9) — no letter of «Cancel comment» is free in the main window,
+/// where M is the field «Порівняння» —, and the command's own name for a compaction.
+fn cancel_english(kind: Kind) -> &'static str {
     match kind {
-        Kind::Comment => cancel_snapshot_access(),
-        kind => command(cancel_command(kind)).access,
+        Kind::Compaction => En.command(CommandId::CancelCompaction),
+        Kind::Snapshot | Kind::Comparison | Kind::Comment => En.cancel_job(),
     }
 }
 
-/// The positions of the labels and buttons in [`MainWindow::labels`], which
-/// `Route::FocusLabel` names them by; the check boxes of the types follow
-/// `LABEL_TYPES`, one after another.
-const LABEL_PROFILE: usize = 0;
-const LABEL_PROGRESS: usize = 1;
-const LABEL_CANCEL: usize = 2;
-const LABEL_COMPARISON: usize = 3;
-const LABEL_FILTER: usize = 4;
-const LABEL_TYPES: usize = 5;
+/// The label of the progress row's button while it shows a job of `kind`.
+fn cancel_label(s: &dyn Strings, kind: Kind) -> String {
+    let words = match kind {
+        Kind::Compaction => s.command(CommandId::CancelCompaction),
+        Kind::Snapshot | Kind::Comparison | Kind::Comment => s.cancel_job(),
+    };
+    compose(s, cancel_english(kind), words)
+}
 
-/// The access keys of the action buttons of questions: «Видалити», «Перезапустити» and
-/// «Закрити».
-const DELETE_ACCESS: u8 = b'D';
-const RESTART_ACCESS: u8 = b'R';
-const CLOSE_ACCESS: u8 = b'C';
-/// The buttons of the question after the interface language changed (TASK-16).
-const RESTART_NOW_ACCESS: u8 = b'R';
-const LATER_ACCESS: u8 = b'L';
-/// The action button of the question before File Explorer opens the folder of an entry no
-/// longer on disk (TASK-14 #13).
-const OPEN_ACCESS: u8 = b'O';
+/// The labelled controls of the main window that Alt with a letter reaches while the
+/// progress row shows a job of `shown`, if any: the row's field and button only then.
+/// Their letters are no letters of the menu bar, which would no longer open while the
+/// focus is in the panel.
+pub(crate) fn targets(shown: Option<Kind>) -> Vec<Target<Label>> {
+    let target = |english: &str, label: Label| Target::new(english, label.act(), label);
+    let mut targets = vec![target(En.profile(), Label::Profile)];
+    if let Some(kind) = shown {
+        targets.push(target(En.progress(), Label::Progress));
+        targets.push(target(cancel_english(kind), Label::Cancel));
+    }
+    targets.push(target(En.comparison_field(), Label::Comparison));
+    targets.push(target(En.filter_field(), Label::Filter));
+    for kind in ChangeType::ALL {
+        targets.push(target(En.type_box(kind), Label::Type(kind)));
+    }
+    targets
+}
 
 /// Where a window event came from, which decides where its failures go (ADR-0013).
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -260,6 +238,8 @@ pub struct MainWindow {
     /// The kind of the job the progress row showed when it was last refreshed, so a
     /// change of the job shown — a comparison that has run for a second — is noticed.
     shown_kind: Cell<Option<Kind>>,
+    /// The press of a button or check box by its access key, until Alt is up (TASK-30).
+    access_keys: Dispatcher<Label>,
     /// Whether the progress row has said, in the status bar, that the comparison shown
     /// waits for the database (`Some(true)`) or compares (`Some(false)`) (TASK-11 #7,
     /// #16); `None` while the row shows no comparison.
@@ -341,27 +321,22 @@ impl MainWindow {
         // Made in tab order. Each label comes right before its control, so screen readers
         // name the control after it.
         let profile_label = StaticText::builder(&panel)
-            .with_label(&field_label(s, s.profile(), PROFILE_ACCESS))
+            .with_label(&field_label(s, |s| s.profile()))
             .build();
         let profile = Choice::builder(&panel).build();
         let progress_label = StaticText::builder(&panel)
-            .with_label(&field_label(s, s.progress(), PROGRESS_ACCESS))
+            .with_label(&field_label(s, |s| s.progress()))
             .build();
         let progress_text = TextCtrl::builder(&panel)
             .with_style(TextCtrlStyle::ReadOnly)
             .build();
         let gauge = Gauge::builder(&panel).with_range(100).build();
         let cancel_button = Button::builder(&panel)
-            .with_label(&button_label(
-                s,
-                s.cancel(),
-                cancel_snapshot_access(),
-                false,
-            ))
+            .with_label(&cancel_label(s, Kind::Snapshot))
             .build();
         let snapshots = SnapshotList::new(Native::new(&panel, s, false), s);
         let comparison_label = StaticText::builder(&panel)
-            .with_label(&field_label(s, s.comparison_field(), COMPARISON_ACCESS))
+            .with_label(&field_label(s, |s| s.comparison_field()))
             .build();
         // Read with the arrows a line at a time, so the lines do not wrap (TASK-13 #1).
         let comparison_field = TextCtrl::builder(&panel)
@@ -403,13 +378,12 @@ impl MainWindow {
         // The holder answers for the difference lists' text while they are empty.
         win32::subclass_list_parent(difference_holder.get_handle());
         let filter_label = StaticText::builder(&panel)
-            .with_label(&field_label(s, s.filter_field(), FILTER_ACCESS))
+            .with_label(&field_label(s, |s| s.filter_field()))
             .build();
         let filter_field = TextCtrl::builder(&panel).build();
         let type_boxes = ChangeType::ALL.map(|kind| {
-            let name = s.command(TYPE_COMMANDS[kind as usize]);
             CheckBox::builder(&panel)
-                .with_label(&button_label(s, name, TYPE_ACCESS[kind as usize], false))
+                .with_label(&compose(s, En.type_box(kind), s.type_box(kind)))
                 .build()
         });
         // The panel answers for the snapshot list's text while it is empty.
@@ -505,6 +479,7 @@ impl MainWindow {
             timer,
             jobs: RefCell::new(Jobs::default()),
             shown_kind: Cell::new(None),
+            access_keys: Dispatcher::default(),
             said_waiting: Cell::new(None),
             comparison_focus: Cell::new(ptr::null_mut()),
             profiles_dir: data_dir.join("profiles"),
@@ -547,7 +522,8 @@ impl MainWindow {
             if let WindowEventData::Keyboard(key) = data {
                 let shortcut = Shortcut::from_event(&key);
                 let focus = w.read_focus().0;
-                let routed = route(shortcut, focus, &w.state.borrow(), &w.labels());
+                let labels = targets(w.shown_kind());
+                let routed = route(shortcut, focus, &w.state.borrow(), &labels);
                 if routed == Route::Pass {
                     key.event.skip(true);
                 } else {
@@ -561,11 +537,16 @@ impl MainWindow {
         // frame ends up with the focus on itself once Windows has activated it; the
         // snapshot list should have it. The first idle event comes after that. Later
         // activations are left to wx, which restores whatever had the focus last.
+        // A button or check box pressed by its access key acts once Alt is up, in an event
+        // of its own (TASK-30).
         let w = Rc::clone(self);
         let focus_pending = Cell::new(true);
         self.frame.on_idle(move |data| {
             if focus_pending.replace(false) {
                 w.snapshots.set_focus();
+            }
+            if let Some(label) = w.access_keys.ready(win32::alt_down()) {
+                w.event(Source::Navigation, || w.act_on(label));
             }
             if let WindowEventData::Idle(event) = data {
                 event.event.skip(true);
@@ -609,9 +590,9 @@ impl MainWindow {
                     let can_veto = event.can_veto();
                     let may_close = if can_veto {
                         w.stop_snapshot_if_agreed(
-                            s.command(CommandId::Exit),
+                            &plain(s.command(CommandId::Exit)),
                             s.close_during_snapshot(),
-                            (s.close(), CLOSE_ACCESS),
+                            |s| s.close(),
                         )
                     } else {
                         w.stop_snapshot();
@@ -792,7 +773,9 @@ impl MainWindow {
     /// window titled after the explicit command, else in the status bar.
     fn fail(&self, text: &str) {
         match self.source.get() {
-            Some(Source::Command(id)) => tell(&self.frame, self.s, self.s.command(id), text),
+            Some(Source::Command(id)) => {
+                tell(&self.frame, self.s, &plain(self.s.command(id)), text)
+            }
             _ => self.say(text),
         }
     }
@@ -813,26 +796,6 @@ impl MainWindow {
             self.event_focus.set(Some(read));
         }
         read
-    }
-
-    /// The access keys of the main window's labels and buttons, for `keyboard::route`, at
-    /// the positions `LABEL_*`: those of the progress row only while it is shown, with
-    /// the Cancel button's letter being that of the command of the job shown; a place
-    /// left empty holds 0, which is no letter.
-    fn labels(&self) -> Vec<u8> {
-        let (progress, cancel) = match self.shown_kind() {
-            Some(kind) => (PROGRESS_ACCESS, cancel_access(kind)),
-            None => (0, 0),
-        };
-        let mut labels = vec![
-            PROFILE_ACCESS,
-            progress,
-            cancel,
-            COMPARISON_ACCESS,
-            FILTER_ACCESS,
-        ];
-        labels.extend(TYPE_ACCESS);
-        labels
     }
 
     /// The kind of the job the progress row shows, if it shows one.
@@ -898,30 +861,41 @@ impl MainWindow {
             Route::Refuse(id, reason) => self.refuse(id, reason),
             Route::OnlyIn(key, pane) => self.say(&s.key_only_in(&key.name(s), pane)),
             Route::FocusPane(pane) => self.focus_list(pane),
-            Route::FocusLabel(LABEL_PROFILE) => self.profile.set_focus(),
-            Route::FocusLabel(LABEL_PROGRESS) => self.progress_text.set_focus(),
-            Route::FocusLabel(LABEL_CANCEL) => {
-                if let Some(kind) = self.shown_kind() {
-                    self.run(cancel_command(kind));
+            Route::FocusLabel(label) => {
+                if let Some(label) = self.access_keys.dispatch(label.act(), label) {
+                    self.act_on(label);
                 }
             }
-            Route::FocusLabel(LABEL_COMPARISON) => self.comparison_field.set_focus(),
-            // The filter's controls work once there is a difference; before that their
-            // letters say why not, as the commands do.
-            Route::FocusLabel(LABEL_FILTER) => self.run(CommandId::FilterByText),
-            Route::FocusLabel(label) if (LABEL_TYPES..LABEL_TYPES + 4).contains(&label) => {
-                let i = label - LABEL_TYPES;
-                self.run(TYPE_COMMANDS[i]);
-                if self.type_boxes[i].is_enabled() {
-                    self.type_boxes[i].set_focus();
-                }
-            }
-            Route::FocusLabel(_) => {}
             Route::ClearFilter => self.clear_filter(),
             Route::ContextMenu(pane) => self.show_context_menu(pane, None),
             Route::SelectAll(Pane::Snapshots) => self.snapshots.select_all(),
             Route::SelectAll(Pane::Difference) => win32::select_all(self.difference().get_handle()),
             Route::Pass => {}
+        }
+    }
+
+    /// Acts on the control `label` names, whose access key was pressed: a field or a box
+    /// takes the focus; the Cancel button and a check box are pressed (TASK-30).
+    fn act_on(&self, label: Label) {
+        match label {
+            Label::Profile => self.profile.set_focus(),
+            Label::Progress => self.progress_text.set_focus(),
+            Label::Cancel => {
+                if let Some(kind) = self.shown_kind() {
+                    self.run(cancel_command(kind));
+                }
+            }
+            Label::Comparison => self.comparison_field.set_focus(),
+            // The filter's controls work once there is a difference; before that their
+            // letters say why not, as the commands do.
+            Label::Filter => self.run(CommandId::FilterByText),
+            Label::Type(kind) => {
+                let i = kind as usize;
+                self.run(TYPE_COMMANDS[i]);
+                if self.type_boxes[i].is_enabled() {
+                    self.type_boxes[i].set_focus();
+                }
+            }
         }
     }
 
@@ -1229,13 +1203,12 @@ impl MainWindow {
     /// Deletes the open profile with all its snapshots, but only once the user confirms.
     fn delete_profile(&self) {
         let s = self.s;
-        let title = s.command(CommandId::DeleteProfile);
+        let title = &plain(s.command(CommandId::DeleteProfile));
         let Some((open, snapshots)) = self.read_open(profiles::snapshot_count) else {
             return;
         };
         let question = s.delete_profile_question(&open.name, snapshots);
-        let delete = (s.delete(), DELETE_ACCESS);
-        if !confirm(&self.frame, s, title, &question, delete, true) {
+        if !confirm(&self.frame, s, title, &question, |s| s.delete(), true) {
             return;
         }
         self.wait_for_comparison_to_load(&open.path);
@@ -1297,7 +1270,7 @@ impl MainWindow {
     /// (TASK-16 #3).
     fn settings(&self) {
         let s = self.s;
-        let title = s.command(CommandId::Settings);
+        let title = &plain(s.command(CommandId::Settings));
         let initial = Values {
             language: self.language(),
             focus_after_snapshot: self.focus_after_snapshot(),
@@ -1351,8 +1324,8 @@ impl MainWindow {
             s,
             title,
             s.language_changes_after_restart(),
-            (s.restart_now(), RESTART_NOW_ACCESS),
-            Some((s.later(), LATER_ACCESS)),
+            |s| s.restart_now(),
+            Some(|s| s.later()),
             false,
         );
         if !restart_now {
@@ -1360,9 +1333,9 @@ impl MainWindow {
         }
         // During a snapshot, the same question as closing revisor asks (TASK-16 #4).
         let agreed = self.stop_snapshot_if_agreed(
-            s.command(CommandId::Exit),
+            &plain(s.command(CommandId::Exit)),
             s.close_during_snapshot(),
-            (s.close(), CLOSE_ACCESS),
+            |s| s.close(),
         );
         if agreed {
             self.restart_with_same_rights(self.open_profile().as_ref());
@@ -1377,7 +1350,7 @@ impl MainWindow {
     /// «Скасувати коментар» cancels (TASK-24).
     fn comment(&self) {
         let s = self.s;
-        let title = s.command(CommandId::Comment);
+        let title = &plain(s.command(CommandId::Comment));
         let Some(open) = self.open_profile() else {
             return;
         };
@@ -1393,8 +1366,7 @@ impl MainWindow {
             &self.frame,
             s,
             title,
-            &s.comment_of(&name),
-            COMMENT_ACCESS,
+            &|s| s.comment_of(&name),
             info.comment.as_deref().unwrap_or_default(),
         );
         let Some(text) = asked else {
@@ -1462,7 +1434,7 @@ impl MainWindow {
     /// compacts the profile's database in the background (TASK-9 #24–#27).
     fn delete_snapshots(&self) {
         let s = self.s;
-        let title = s.command(CommandId::DeleteSnapshots);
+        let title = &plain(s.command(CommandId::DeleteSnapshots));
         let Some(open) = self.open_profile() else {
             return;
         };
@@ -1479,8 +1451,7 @@ impl MainWindow {
                     ),
                     many => s.delete_snapshots_question(many.len()),
                 };
-                let delete = (s.delete(), DELETE_ACCESS);
-                if !confirm(&self.frame, s, title, &question, delete, true) {
+                if !confirm(&self.frame, s, title, &question, |s| s.delete(), true) {
                     return false;
                 }
             }
@@ -1923,7 +1894,7 @@ impl MainWindow {
         let Some(details) = details else {
             return;
         };
-        let title = format!("{}: {}", s.command(CommandId::Details), details.name);
+        let title = format!("{}: {}", plain(s.command(CommandId::Details)), details.name);
         text_window::show(&self.frame, s, &title, &details.text);
     }
 
@@ -1935,7 +1906,7 @@ impl MainWindow {
     /// shell fails, a window says so, as for the failure of any command (ADR-0013).
     fn show_in_explorer(&self) {
         let s = self.s;
-        let command = s.command(CommandId::ShowInExplorer);
+        let command = &plain(s.command(CommandId::ShowInExplorer));
         let path = {
             let list = self.difference_list.borrow();
             list.current().and_then(|row| list.entry_path(row))
@@ -1947,9 +1918,8 @@ impl MainWindow {
             Reveal::Select(entry) => win32::select_in_explorer(&entry),
             Reveal::Open(folder) => {
                 if self.warn_missing_entry() {
-                    let open = (s.open(), OPEN_ACCESS);
                     let question = s.entry_gone_question();
-                    if !confirm(&self.frame, s, command, question, open, false) {
+                    if !confirm(&self.frame, s, command, question, |s| s.open(), false) {
                         return;
                     }
                 }
@@ -2286,37 +2256,24 @@ impl MainWindow {
     /// (TASK-11 #7).
     fn refresh_progress_row(&self) {
         let s = self.s;
-        // The button is «Скасувати (N)» for a snapshot and a comparison and, so that its
-        // letter is in its English name as everywhere, the command's own name for a
-        // compaction.
+        // The button is «Скасувати (N)» for a snapshot, a comparison and a comment, and
+        // the command's own name for a compaction.
         let shown = match self.jobs.borrow().shown() {
             Some(Shown::Snapshot(_)) => Some((
                 Kind::Snapshot,
                 s.snapshot_progress(0, &win32::format_count(0), ""),
-                button_label(s, s.cancel(), cancel_snapshot_access(), false),
             )),
             Some(Shown::Comparison { progress, elapsed }) => Some((
                 Kind::Comparison,
                 self.comparison_progress_text(progress, elapsed),
-                button_label(s, s.cancel(), cancel_comparison_access(), false),
             )),
-            Some(Shown::Comment) => Some((
-                Kind::Comment,
-                s.waiting_for_database().to_string(),
-                button_label(s, s.cancel(), cancel_access(Kind::Comment), false),
-            )),
-            Some(Shown::Compaction(profile)) => Some((
-                Kind::Compaction,
-                s.compacting(&profile.name),
-                button_label(
-                    s,
-                    s.command(CommandId::CancelCompaction),
-                    cancel_compaction_access(),
-                    false,
-                ),
-            )),
+            Some(Shown::Comment) => Some((Kind::Comment, s.waiting_for_database().to_string())),
+            Some(Shown::Compaction(profile)) => {
+                Some((Kind::Compaction, s.compacting(&profile.name)))
+            }
             None => None,
-        };
+        }
+        .map(|(kind, text)| (kind, text, cancel_label(s, kind)));
         let kind = shown.as_ref().map(|(kind, ..)| *kind);
         if kind != Some(Kind::Comparison) {
             self.said_waiting.set(None);
@@ -2422,8 +2379,8 @@ impl MainWindow {
         let s = self.s;
         if report.denied > 0 && !self.elevated {
             let question = s.restart_question(&win32::format_count(report.denied));
-            let restart = (s.restart(), RESTART_ACCESS);
-            if confirm(&self.frame, s, s.command(command), &question, restart, true) {
+            let title = plain(s.command(command));
+            if confirm(&self.frame, s, &title, &question, |s| s.restart(), true) {
                 // On the snapshotted profile, whichever is open by now.
                 self.event(Source::Command(CommandId::RestartAsAdmin), || {
                     self.restart_now(Some(profile));
@@ -2459,7 +2416,7 @@ impl MainWindow {
     /// `question`; returns whether there is nothing in the way any more. The timer rests
     /// while the question is up, as all through an event, so the snapshot's end does not
     /// answer it.
-    fn stop_snapshot_if_agreed(&self, title: &str, question: &str, action: (&str, u8)) -> bool {
+    fn stop_snapshot_if_agreed(&self, title: &str, question: &str, action: Name) -> bool {
         if !self.jobs.borrow().runs(Kind::Snapshot) {
             return true;
         }
@@ -2488,9 +2445,9 @@ impl MainWindow {
     fn restart_as_admin(&self) {
         let s = self.s;
         let agreed = self.stop_snapshot_if_agreed(
-            s.command(CommandId::RestartAsAdmin),
+            &plain(s.command(CommandId::RestartAsAdmin)),
             s.restart_during_snapshot(),
-            (s.restart(), RESTART_ACCESS),
+            |s| s.restart(),
         );
         if agreed {
             self.restart_now(self.open_profile().as_ref());
@@ -2676,70 +2633,18 @@ mod tests {
     use crate::i18n::En;
 
     #[test]
-    fn the_labels_of_the_main_window_take_no_menu_letter_and_differ() {
-        for cancel in [
-            cancel_snapshot_access(),
-            cancel_comparison_access(),
-            cancel_compaction_access(),
-        ] {
-            let mut labels = vec![
-                PROFILE_ACCESS,
-                PROGRESS_ACCESS,
-                cancel,
-                COMPARISON_ACCESS,
-                FILTER_ACCESS,
-            ];
-            labels.extend(TYPE_ACCESS);
-            for (i, &label) in labels.iter().enumerate() {
-                assert!(MenuId::ALL.iter().all(|m| m.access() != label));
-                assert!(!labels[..i].contains(&label), "{}", char::from(label));
-            }
-            assert_eq!(labels[LABEL_PROFILE], PROFILE_ACCESS);
-            assert_eq!(labels[LABEL_PROGRESS], PROGRESS_ACCESS);
-            assert_eq!(labels[LABEL_COMPARISON], COMPARISON_ACCESS);
-            assert_eq!(labels[LABEL_FILTER], FILTER_ACCESS);
-            assert_eq!(labels[LABEL_TYPES..], TYPE_ACCESS);
-        }
-        assert_ne!(cancel_snapshot_access(), cancel_compaction_access());
-        // The letters are in the English names, as everywhere.
-        let has = |name: &str, letter: u8| name.to_ascii_uppercase().contains(char::from(letter));
-        assert!(has(En.profile(), PROFILE_ACCESS));
-        assert!(has(En.progress(), PROGRESS_ACCESS));
-        assert!(has(En.comparison_field(), COMPARISON_ACCESS));
-        assert!(has(En.filter_field(), FILTER_ACCESS));
-        for kind in ChangeType::ALL {
-            let i = kind as usize;
-            assert!(
-                has(En.command(TYPE_COMMANDS[i]), TYPE_ACCESS[i]),
-                "{kind:?}"
-            );
-        }
-        assert!(has(En.cancel(), cancel_snapshot_access()));
-        assert!(has(En.cancel(), cancel_comparison_access()));
-        assert!(has(
-            En.command(CommandId::CancelCompaction),
-            cancel_compaction_access()
-        ));
-        assert!(has(En.restart(), RESTART_ACCESS));
-        assert!(has(En.restart_now(), RESTART_NOW_ACCESS));
-        assert!(has(En.later(), LATER_ACCESS));
-        assert_ne!(RESTART_NOW_ACCESS, LATER_ACCESS);
-        assert!(has(En.close(), CLOSE_ACCESS));
-        assert!(has(En.delete(), DELETE_ACCESS));
-        assert!(has(En.open(), OPEN_ACCESS));
-        assert!(has(&En.comment_of("x"), COMMENT_ACCESS));
-    }
-
-    #[test]
     fn the_cancel_button_keeps_its_label_from_a_snapshot_to_its_comparison() {
         // «Знімок + порівняння» goes from its snapshot to its comparison under one Cancel
         // button, whose label does not change under the focus (TASK-12 #9).
-        assert_eq!(cancel_snapshot_access(), cancel_comparison_access());
         for s in [&En as &dyn Strings, &crate::i18n::Uk] {
             assert_eq!(
-                button_label(s, s.cancel(), cancel_snapshot_access(), false),
-                button_label(s, s.cancel(), cancel_comparison_access(), false)
+                cancel_label(s, Kind::Snapshot),
+                cancel_label(s, Kind::Comparison)
             );
         }
+        assert_eq!(cancel_label(&En, Kind::Comment), "Ca&ncel");
+        assert_eq!(cancel_label(&En, Kind::Compaction), "Cancel c&ompaction");
+        let uk = &crate::i18n::Uk;
+        assert_eq!(cancel_label(uk, Kind::Comment), "Скасувати (&N)");
     }
 }

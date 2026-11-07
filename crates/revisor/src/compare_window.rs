@@ -6,18 +6,11 @@
 use revisor_core::store::SnapshotInfo;
 use wxdragon::prelude::*;
 
-use crate::commands::{CommandId, command};
-use crate::i18n::Strings;
-use crate::keys::Shortcut;
-use crate::menus::field_label;
+use crate::access::{self, Act, Target, compose, plain};
+use crate::commands::CommandId;
+use crate::i18n::{En, Strings};
 use crate::snapshot_list::{Control, Native};
 use crate::win32;
-
-/// The access key of the list's label: that of the command «Порівняти з…», whose words
-/// the label takes up.
-fn access() -> u8 {
-    command(CommandId::CompareWith).access
-}
 
 /// The row the list starts on among the `count` other snapshots, when the current
 /// snapshot stands at `current` in the full list: the previous snapshot, or the next one
@@ -42,14 +35,19 @@ pub fn show(
         .map(|(_, row)| row)
         .collect();
     let start = initial_row(current, others.len())?;
-    let dialog = Dialog::builder(parent, s.command(CommandId::CompareWith))
+    let dialog = Dialog::builder(parent, &plain(s.command(CommandId::CompareWith)))
         .with_style(DialogStyle::DefaultDialogStyle | DialogStyle::ResizeBorder)
         .with_size(680, 420)
         .build();
     // The label comes right before the list, so screen readers name the list after it.
+    // It takes up the words of the command «Порівняти з…», and its letter.
     let name = win32::format_date_time(snapshots[current].taken_at);
+    let english = En.compare_with_label(&name);
     let label = StaticText::builder(&dialog)
-        .with_label(&field_label(s, &s.compare_with_label(&name), access()))
+        .with_label(&format!(
+            "{}:",
+            compose(s, &english, &s.compare_with_label(&name))
+        ))
         .build();
     // The rows of the snapshot list, as its control shows them (TASK-27 #7).
     let rows = Native::new(&dialog, s, true);
@@ -72,15 +70,13 @@ pub fn show(
     // pressing the default button; it compares too, as a double click does.
     list.on_item_activated(move |_| dialog.end_modal(ID_OK));
     // Alt with the label's letter, by the key's position, puts the focus in the list.
-    dialog.on_char_hook(move |data| {
-        if let WindowEventData::Keyboard(key) = data {
-            let hit = Shortcut::from_event(&key).access_letter() == Some(access());
-            key.event.skip(!hit);
-            if hit {
-                list.set_focus();
-            }
-        }
-    });
+    access::bind(
+        &dialog,
+        vec![Target::new(english, Act::Focus, ())],
+        move |()| {
+            list.set_focus();
+        },
+    );
 
     let sizer = BoxSizer::builder(Orientation::Vertical).build();
     let side = SizerFlag::Left | SizerFlag::Right;
@@ -113,7 +109,6 @@ pub fn show(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::i18n::En;
 
     #[test]
     fn the_list_starts_on_the_previous_snapshot_or_else_the_next() {
@@ -130,11 +125,8 @@ mod tests {
 
     #[test]
     fn the_label_takes_the_letter_of_the_command() {
-        assert_eq!(access(), b'W');
-        assert!(
-            En.compare_with_label("x")
-                .to_ascii_uppercase()
-                .contains(char::from(access()))
-        );
+        let command = access::letter(En.command(CommandId::CompareWith));
+        assert_eq!(command, Some(b'W'));
+        assert_eq!(access::letter(&En.compare_with_label("x")), command);
     }
 }
