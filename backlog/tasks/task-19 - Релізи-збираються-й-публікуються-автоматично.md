@@ -5,7 +5,7 @@ status: In Progress
 assignee:
   - '@claude'
 created_date: '2026-10-30 17:04'
-updated_date: '2026-11-06 23:57'
+updated_date: '2026-11-07 00:33'
 labels: []
 milestone: m-1
 dependencies:
@@ -169,4 +169,16 @@ revisor встановлюється через scoop із bucket ruslan-rv-ua/s
 Пробний прогін `tools/nvda/release_pass.py` за згодою автора на локальній release-збірці (SHA-256 789ce4bf2da1fa1c94d690fc10bb02c459e35743b47f6f9c0d890879a1713f51), NVDA 2026.2: `uk` і `en` — `all heard`, код 0. Профіль через вікно й вибір теки (шлях і Enter: тека закривається першим Enter), підсумок «5 змін: додано 3, видалено 1, змінено 1. Розмір збільшився на 37 байтів.» / «5 changes: 3 added, 1 deleted, 1 modified. …», подробиці, «Показано 4 із 5.», «Показано 1 із 5.», F6, F1. Клавіатура вільна, тимчасову теку прибрано.
 
 Відкладене дрібне: у doc-18 пастка 2 каже «перший термінове виправлення» — виправити на «перше термінове виправлення» з наступним оновленням документа.
+
+2026-11-07, пробний реліз (за словом автора). `git flow feature finish` → develop 9ca2379 (merge --no-ff із трейлером; дерево = 09fe337), push origin/develop 2cef881..9ca2379; CI 42316183849 зелений. `git flow release start 0.1.0` → release/0.1.0 на 9ca2379; дата [0.1.0] у CHANGELOG уже 2026-11-07, тож коміту Р2 не було. Анотований тег v0.1.0-rc.1 на 9ca2379, push тегу після зеленого CI.
+
+Запуск «Release» 42316561864 для v0.1.0-rc.1: зелений, 682 с (холодна збірка без кешу). Усі 18 кроків: «Releasing v0.1.0-rc.1 as version 0.1.0 (pre-release: True)», fmt, тести на тегу (147 + 178 + 6 + 3, `--release --target`), clippy, файл ліцензій, збірка; імпорт без VCRUNTIME, MSVCP і api-ms-win-crt (лише api-ms-win-core-synch); 6 090 240 байтів (5,81 МіБ); VERSIONINFO з exe — Ruslan Iskov, revisor, 0.1.0 / 0.1.0; `.sha256` «dc3c738572d22c3140c52abdc80259e746911172f22b7dd19b84c5691d65e089 *revisor-v0.1.0-rc.1-x64.exe» (93 байти). Сторінка: pre-release «revisor v0.1.0-rc.1», не чернетка, рівно два файли, текст — розділ [0.1.0] без рядків-посилань. PDB — артефакт revisor-v0.1.0-rc.1-x64-pdb (12,8 МБ у zip), зберігається до 2027-02-05.
+
+checkver і rc (#4): API «latest release» (`gh api repos/ruslan-rv-ua/revisor/releases/latest`), який читає Excavator (він ставить SCOOP_GH_TOKEN = GITHUB_TOKEN, src/Action/Scheduled.psm1), відповідає 404 — pre-release не бачить. Але локальний checkver без токена читає HTML: поки повного релізу немає, `github.com/…/releases/latest` переадресовує (302) на `/releases`, і регулярний вираз знаходить там тег rc: «revisor: 0.1.0- (scoop version is 0.1.0) autoupdate available». На Excavator це не впливає (API, а маніфесту в bucket до 0.1.0 і так немає); після 0.1.0 `/releases/latest` веде на справжній реліз — перевірити ще раз після публікації 0.1.0. Записано в пастку 5 документа «Випуск релізу».
+
+Завантаження (за словом автора): `gh release download v0.1.0-rc.1` у порожню теку скретчпаду; перевірка з README дослівно — «MATCHES the published fingerprint»; `sha256sum -c` — OK; VERSIONINFO завантаженого exe 0.1.0. SmartScreen на чистій машині: автор вирішив пропустити («пропустимо», 2026-11-07) — у #8 цієї частини не перевірено.
+
+scoop install з локального маніфесту (за словом автора; version 0.1.0-rc.1, url файлу rc із #/revisor.exe, hash із .sha256): «Checking hash … OK», current → 0.1.0-rc.1, «Making C:\scoop\shims\revisor.exe a GUI binary», ярлик «Scoop Apps\revisor.lnk» у меню «Пуск» → C:\scoop\apps\revisor\current\revisor.exe, `data` — junction на C:\scoop\persist\revisor\data; хеш exe = опублікованому, потоку Zone.Identifier немає (лише :$DATA), тож SmartScreen для копії через scoop не спрацьовує. Перед встановленням scoop сам оновив себе й списки bucket-ів (звичайна поведінка `scoop install`). Підготовка persist (скрипт у скретчпаді, за згодою автора): профіль «Перевірка persist» на теці скретчпаду, F5 у поставленому revisor — 1 знімок, 3 записи; revisor сам створив settings.db у persist.
+
+Прохід NVDA (Р5) на поставленому rc.1 (SHA-256 dc3c7385…e089), NVDA 2026.2, за згодою автора: `release_pass.py uk` і `en` — `all heard`, код 0 (ті самі фрази, що й на локальній збірці). Клавіатура вільна.
 <!-- SECTION:NOTES:END -->
