@@ -61,7 +61,7 @@ fn interface_language(data_dir: &Path) -> Lang {
     let chosen = Settings::open(&data_dir.join(main_window::SETTINGS_FILE))
         .and_then(|settings| settings.language())
         .unwrap_or_default();
-    language_of(chosen, win32::ui_language)
+    language_of(chosen, win32::language::ui_language)
 }
 
 /// The language a value of the setting stands for; `windows` is read only when it is
