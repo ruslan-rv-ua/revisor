@@ -283,13 +283,13 @@ fn a_pattern_expands_to_how_it_applies_on_the_computer() {
     assert_eq!(expand("%TEMP%", &env), Expanded::Path(long.into()));
     assert_eq!(
         expand(r"%TEMP%\gone\*.dmp", &env),
-        Expanded::Path(format!(r"{long}\gone\*.dmp"))
+        Expanded::Path(format!(r"{long}\gone\*.dmp").into())
     );
     assert_eq!(expand(r"D:\Logs\", &env), Expanded::Path(r"D:\Logs".into()));
     assert_eq!(expand("*.tmp", &env), Expanded::Name("*.tmp".into()));
     assert_eq!(expand(r"%Missing%\x", &env), Expanded::Inactive);
     assert_eq!(Expanded::Inactive.applied(), None);
-    assert_eq!(Expanded::Name("x".into()).applied(), Some("x"));
+    assert_eq!(Expanded::Name("x".into()).applied(), Some("x".into()));
     // Expanded once, the patterns match as `new` would have them.
     let ex = Exclusions::from_expanded(&[
         expand("%TEMP%", &env),
@@ -306,7 +306,7 @@ fn recorded_patterns_apply_as_they_did_without_expanding_again() {
     let env = FakeEnv::with(&[("TEMP", r"C:\Users\R\AppData\Local\Temp")]);
     let recorded: Vec<String> = ["%TEMP%", "*.tmp", r"%Missing%\x"]
         .iter()
-        .filter_map(|p| expand(p, &env).applied().map(String::from))
+        .filter_map(|p| expand(p, &env).applied())
         .collect();
     assert_eq!(recorded, [r"C:\Users\R\AppData\Local\Temp", "*.tmp"]);
     // Later, whatever the variables are then, the recorded patterns mean what they did.
@@ -324,4 +324,101 @@ fn a_profile_folder_itself_is_never_excluded() {
     assert!(!excluded(&ex, r"C:\Data\Code Cache", "x.bin"));
     assert!(!excluded(&ex, r"C:\Windows\Temp", "x.log"));
     assert!(!excluded(&ex, r"C:\Windows", "System32"));
+}
+
+/// A computer whose variable `ODD` holds `value`, and where `C:\Data` is really at
+/// `real`.
+struct OddEnv {
+    value: OsString,
+    real: PathBuf,
+}
+
+impl Environment for OddEnv {
+    fn var(&self, name: &str) -> Option<OsString> {
+        name.eq_ignore_ascii_case("ODD").then(|| self.value.clone())
+    }
+
+    fn real_path(&self, path: &Path) -> Option<PathBuf> {
+        path.as_os_str()
+            .eq_ignore_ascii_case(r"C:\Data")
+            .then(|| self.real.clone())
+    }
+}
+
+/// `before`, then the UTF-16 unit `unit`, then `after`: a name that need not be valid
+/// Unicode.
+fn with_unit(before: &str, unit: u16, after: &str) -> OsString {
+    use std::os::windows::ffi::OsStringExt;
+    let wide: Vec<u16> = before
+        .encode_utf16()
+        .chain([unit])
+        .chain(after.encode_utf16())
+        .collect();
+    OsString::from_wide(&wide)
+}
+
+/// [`excluded`] for names that need not be valid Unicode.
+fn excluded_os(ex: &Exclusions, root: &OsStr, rel: &[&OsStr]) -> bool {
+    let mut branch = ex.branch(Path::new(root));
+    for name in rel {
+        match ex.child(&branch, name) {
+            Some(next) => branch = next,
+            None => return true,
+        }
+    }
+    false
+}
+
+#[test]
+fn a_path_pattern_keeps_a_name_that_is_not_valid_unicode() {
+    // Before TASK-29 the expanded path went through `to_string_lossy`: the unpaired
+    // surrogate became U+FFFD, and the folder it named was never left out.
+    let odd = with_unit("T", 0xD800, "mp");
+    let other = with_unit("T", 0xDC00, "mp");
+    let mut value = OsString::from(r"C:\");
+    value.push(&odd);
+    let env = OddEnv {
+        value,
+        real: PathBuf::from(r"C:\Data"),
+    };
+    let ex = Exclusions::new(&[r"%ODD%\Logs"], &env);
+    let c = OsStr::new(r"C:\");
+    assert!(excluded_os(&ex, c, &[&odd, OsStr::new("logs")]));
+    assert!(!excluded_os(&ex, c, &[&other, OsStr::new("Logs")]));
+    assert!(!excluded_os(
+        &ex,
+        c,
+        &[OsStr::new("T\u{FFFD}mp"), OsStr::new("Logs")]
+    ));
+    // The same from a real location, and from a profile folder with such a name.
+    let mut real = OsString::from(r"C:\");
+    real.push(&odd);
+    let env = OddEnv {
+        value: OsString::new(),
+        real: PathBuf::from(&real),
+    };
+    let ex = Exclusions::new(&[r"C:\Data\Logs"], &env);
+    assert!(excluded_os(&ex, &real, &[OsStr::new("Logs")]));
+    let mut other_root = OsString::from(r"C:\");
+    other_root.push(&other);
+    assert!(!excluded_os(&ex, &other_root, &[OsStr::new("Logs")]));
+    // The snapshot records the pattern as text.
+    assert_eq!(
+        expand(r"C:\Data\Logs", &env).applied(),
+        Some("C:\\T\u{FFFD}mp\\Logs".to_string())
+    );
+}
+
+#[test]
+fn a_path_pattern_at_a_network_location_matches_with_or_without_the_prefix() {
+    // Before TASK-29 `\\?\UNC\server\share` had the parts UNC, server, share, and
+    // `\\server\share` only server, share.
+    let env = OddEnv {
+        value: OsString::new(),
+        real: PathBuf::from(r"\\?\UNC\server\share\Data"),
+    };
+    let ex = Exclusions::new(&[r"C:\Data\Logs"], &env);
+    assert!(excluded(&ex, r"\\server\share", r"Data\Logs"));
+    assert!(excluded(&ex, r"\\?\unc\server\share\data", "LOGS"));
+    assert!(!excluded(&ex, r"\\server\share", "Logs"));
 }

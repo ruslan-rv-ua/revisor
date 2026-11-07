@@ -5,7 +5,7 @@ use std::ffi::OsString;
 use std::fmt;
 use std::fs::{File, OpenOptions};
 use std::io;
-use std::os::windows::ffi::{OsStrExt, OsStringExt};
+use std::os::windows::ffi::OsStringExt;
 use std::os::windows::fs::OpenOptionsExt;
 use std::os::windows::io::AsRawHandle;
 use std::path::{Path, PathBuf};
@@ -17,19 +17,18 @@ use windows_sys::Win32::Storage::FileSystem::{
     VOLUME_NAME_DOS, VOLUME_NAME_GUID, VOLUME_NAME_NT,
 };
 
-use crate::names::upcase;
-use crate::scan::verbatim;
+use crate::path::{self, Folded};
 
 /// Where a folder really is on disk: its path on its volume, with the volume named by its
 /// GUID where it has one. Every path that leads to the folder — in another case, with a
 /// `\` at the end, through a junction or a `subst` drive — gives the same location.
 #[derive(Clone, Debug)]
 pub struct Location {
-    /// The parts of the real path, upper-cased the way NTFS compares names.
-    parts: Vec<Vec<u16>>,
+    /// The parts of the real path ([`path::parts`]).
+    parts: Vec<Folded>,
     /// The path as it was given and as it really is with a drive letter, in the same form:
     /// a profile folder no longer on the disk is compared with these.
-    written: Vec<Vec<Vec<u16>>>,
+    written: Vec<Vec<Folded>>,
 }
 
 /// A folder of a profile, and where it really is while it is on the disk.
@@ -106,10 +105,10 @@ pub fn locate(path: &Path) -> Result<Location, LocateError> {
         .or_else(|_| final_path(&file, VOLUME_NAME_NT))
         .map_err(LocateError::Io)?;
     let given = std::path::absolute(path).map_err(LocateError::Io)?;
-    let mut written = vec![parts(&given)];
-    written.extend(dos.ok().map(|dos| parts(&dos)));
+    let mut written = vec![path::parts(given.as_os_str())];
+    written.extend(dos.ok().map(|dos| path::parts(dos.as_os_str())));
     Ok(Location {
-        parts: parts(&real),
+        parts: path::parts(real.as_os_str()),
         written,
     })
 }
@@ -126,10 +125,10 @@ pub fn check_addition(existing: &[ProfileFolder], new: &Location) -> Addition {
             // A folder that is not on the disk any more is compared by its path, with the
             // new folder's path as given and as it really is.
             None => {
-                let path = parts(&folder.path);
+                let parts = path::parts(folder.path.as_os_str());
                 (
-                    new.written.iter().any(|w| w.starts_with(&path)),
-                    new.written.iter().any(|w| path.starts_with(w)),
+                    new.written.iter().any(|w| w.starts_with(&parts)),
+                    new.written.iter().any(|w| parts.starts_with(w)),
                 )
             }
         };
@@ -150,13 +149,7 @@ pub fn check_addition(existing: &[ProfileFolder], new: &Location) -> Addition {
 /// The real location of an existing file or folder as a plain path with a drive letter:
 /// junctions, symbolic links, `subst` drives and 8.3 names are resolved.
 pub fn real_path(path: &Path) -> io::Result<PathBuf> {
-    let real = final_path(&open(path)?, VOLUME_NAME_DOS)?;
-    let wide: Vec<u16> = real.as_os_str().encode_wide().collect();
-    let plain = match strip(&wide, r"\\?\UNC\") {
-        Some(rest) => r"\\".encode_utf16().chain(rest.iter().copied()).collect(),
-        None => strip(&wide, r"\\?\").unwrap_or(&wide).to_vec(),
-    };
-    Ok(PathBuf::from(OsString::from_wide(&plain)))
+    Ok(path::plain(&final_path(&open(path)?, VOLUME_NAME_DOS)?))
 }
 
 /// Why revisor does not support a folder whose final path and file system are these, if
@@ -182,7 +175,7 @@ fn open(path: &Path) -> io::Result<File> {
         .access_mode(0)
         .share_mode(FILE_SHARE_READ | FILE_SHARE_WRITE | FILE_SHARE_DELETE)
         .custom_flags(FILE_FLAG_BACKUP_SEMANTICS)
-        .open(verbatim(path)?)
+        .open(path::verbatim(&std::path::absolute(path)?))
 }
 
 fn final_path(file: &File, flags: GETFINALPATHNAMEBYHANDLE_FLAGS) -> io::Result<PathBuf> {
@@ -229,26 +222,6 @@ fn file_system(file: &File) -> io::Result<String> {
     }
     let len = name.iter().position(|&c| c == 0).unwrap_or(name.len());
     Ok(String::from_utf16_lossy(&name[..len]))
-}
-
-/// The parts of a path, without its `\\?\` prefix and empty parts, upper-cased the way
-/// NTFS compares names: two paths name the same folder when their parts are equal.
-pub(crate) fn parts(path: &Path) -> Vec<Vec<u16>> {
-    let wide: Vec<u16> = path.as_os_str().encode_wide().collect();
-    let wide = strip(&wide, r"\\?\").unwrap_or(&wide);
-    wide.split(|&c| c == u16::from(b'\\'))
-        .filter(|part| !part.is_empty())
-        .map(|part| part.iter().map(|&c| upcase(c)).collect())
-        .collect()
-}
-
-fn strip<'a>(wide: &'a [u16], prefix: &str) -> Option<&'a [u16]> {
-    let prefix: Vec<u16> = prefix.encode_utf16().collect();
-    let head = wide.get(..prefix.len())?;
-    head.iter()
-        .zip(&prefix)
-        .all(|(&a, &b)| upcase(a) == b)
-        .then(|| &wide[prefix.len()..])
 }
 
 #[cfg(test)]

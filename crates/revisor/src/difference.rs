@@ -20,7 +20,7 @@ use std::thread;
 
 use revisor_core::compare::{Difference, Side, Warning};
 use revisor_core::diff::{self, Change, ChangeKind, Fields, Inaccessible};
-use revisor_core::names::upcase;
+use revisor_core::path::upcase;
 use revisor_core::profiles::ProfileFile;
 use revisor_core::scan::{Entry, EntryKind, VersionInfo};
 use revisor_core::settings::{

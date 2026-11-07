@@ -16,6 +16,16 @@ release that section becomes the version's own, and the release page publishes i
   commands, they open a window that names the command. So does a failure to restart revisor
   after the interface language was changed in the settings.
 
+### Fixed
+
+- **A path exclusion with a name that is not valid Unicode leaves that folder out.** When
+  the variable a pattern starts with, or the real location of its folder, held a name with
+  an unpaired surrogate, the name was spoiled on the way and the exclusion left nothing
+  out. Such names are rare: Windows allows them, but programs seldom make them.
+- **A path exclusion whose folder is really on a network share matches.** A real location
+  written with the `\\?\UNC\` prefix had an extra part, so it never matched the folder it
+  named. revisor still takes snapshots of local NTFS folders only.
+
 ## [0.1.0] - 2026-11-07
 
 The first release. revisor takes snapshots of chosen folders and shows what changed between
