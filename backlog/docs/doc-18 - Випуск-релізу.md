@@ -3,7 +3,7 @@ id: doc-18
 title: Випуск релізу
 type: guide
 created_date: '2026-11-06 23:28'
-updated_date: '2026-11-07 00:34'
+updated_date: '2026-11-07 01:35'
 ---
 # Випуск релізу
 
@@ -49,7 +49,7 @@ Windows:         ______ (збірка)
   *Очікується:* пробний реліз пройшов увесь шлях.
 - [ ] **Р5. Прохід головного сценарію з NVDA обома мовами** — щоразу, за розділом «Прохід з NVDA».
   *Очікується:* скрипт закінчився рядком `all heard` для `uk` і для `en`, або ручний прохід дав те, що каже таблиця. SHA-256 exe — у шапці копії.
-- [ ] **Р6. Завершення гілки релізу.** `git flow release finish X.Y.Z`. Тоді **до push** прочитати ім'я тегу: `git tag --points-at main`. Лише коли це `vX.Y.Z`: `git push origin main develop vX.Y.Z`.
+- [ ] **Р6. Завершення гілки релізу.** `git flow release finish X.Y.Z --no-ff --no-push -m "revisor vX.Y.Z"` (з `GIT_MERGE_AUTOEDIT=no`; `-M` і `--update-message` задають повідомлення двох злиттів, `--no-ff` дає окремий коміт злиття в main). Тоді **до push** прочитати ім'я тегу: `git tag --points-at main`. Лише коли це `vX.Y.Z`: `git push origin main develop vX.Y.Z`.
   *Очікується:* main має коміт злиття з тегом `vX.Y.Z`, develop — злиття гілки релізу, гілку релізу видалено. Тег без «v» нічого не запустить (пастка 1), а тег не на main лишив би hotfix без бази (пастка 2).
 - [ ] **Р7. Релізний воркфлоу.** `gh run watch` на запуску «Release» цього тегу, тоді `gh release view vX.Y.Z`.
   *Очікується:* зелені всі кроки: тег і версії, розділ CHANGELOG, fmt, тести, clippy, файл ліцензій, таблиця імпорту без VCRUNTIME, MSVCP і api-ms-win-crt, розмір до 10 МіБ і VERSIONINFO з exe. На сторінці рівно два файли, `revisor-vX.Y.Z-x64.exe` і `revisor-vX.Y.Z-x64.exe.sha256`, текст сторінки — розділ версії з CHANGELOG.md, а реліз — «Latest», не pre-release. PDB лежить в артефактах запуску, а не на сторінці (пастка 8).
