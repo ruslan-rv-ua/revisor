@@ -1,0 +1,270 @@
+# Release (ADR-0010, TASK-19): a pushed `v*` tag builds the one file revisor is distributed as,
+# gates that very file and publishes it with its SHA-256 sidecar on a GitHub Release. The
+# procedure around it is the Backlog document «Випуск релізу».
+#
+# Gate the artifact, not the build config: a build that quietly lost `+crt-static` is green
+# everywhere except in the linked exe's import table, so every gate below reads the file that
+# is about to be uploaded. The gates run cheapest first, so a wrong tag or a missing changelog
+# section fails in seconds rather than after a wxWidgets build, and nothing is published until
+# all of them have passed.
+#
+# Nothing here talks to the scoop bucket: its own Excavator finds the release through
+# `checkver` and `autoupdate` in bucket/revisor.json and takes the hash from the sidecar, so no
+# token crosses between the two repositories.
+#
+# No cache, deliberately: releases are rare, a build from a clean tree is part of what a
+# release proves, and a release-profile cache would push the develop CI cache out of the
+# repository's cache quota.
+name: Release
+
+on:
+  push:
+    tags: ["v*"]
+
+permissions:
+  contents: write # gh release create
+
+defaults:
+  run:
+    shell: pwsh
+
+jobs:
+  release:
+    # Pinned image, not windows-latest, as in ci.yml. The label pins the image family, not the
+    # versions of VS, LLVM and CMake in it; the artifact gates guard against those moving.
+    runs-on: windows-2025
+    timeout-minutes: 90
+    env:
+      # The tag reaches the scripts through the environment, never spliced into their text.
+      TAG: ${{ github.ref_name }}
+      # bindgen in wxdragon-sys does not find libclang.dll without this; build.rs takes
+      # llvm-rc from the same folder, and llvm-rc is what puts the icon and VERSIONINFO in.
+      LIBCLANG_PATH: C:\Program Files\LLVM\bin
+      # A deep build path breaks the wxWidgets build on MAX_PATH, so the build tree sits at
+      # the drive root.
+      CARGO_TARGET_DIR: C:\t
+      CARGO_TERM_COLOR: always
+    steps:
+      # Actions are pinned by commit, with the tag in the comment: this job holds
+      # `contents: write` and publishes what people download, so a moved tag would hand the
+      # release to someone else's code.
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          # Nothing here pushes; the release step gets its token explicitly.
+          persist-credentials: false
+
+      # The tag is the one version statement a release adds, and the one no test can check
+      # before it exists. A pre-release suffix (`v0.1.0-rc.1`) belongs to the tag alone:
+      # Cargo.toml, app.rc and the changelog carry 0.1.0 throughout, because VERSIONINFO's
+      # numeric version has four numbers and no room for `rc`. A tag with a suffix becomes a
+      # pre-release, which neither `releases/latest` nor scoop's checkver sees.
+      - name: The tag names the version Cargo.toml and app.rc carry
+        run: |
+          if ($env:TAG -notmatch '^v(\d+\.\d+\.\d+)(-[0-9A-Za-z.-]+)?$') {
+            throw "tag '$env:TAG' is not v<major>.<minor>.<patch> with an optional -suffix"
+          }
+          $version = $Matches[1]
+          $prerelease = [bool]$Matches[2]
+
+          # The workspace version, read from its own section so no other `version` key can
+          # stand in for it.
+          $section = ''
+          $cargo = $null
+          foreach ($line in Get-Content Cargo.toml) {
+            if ($line -match '^\s*\[(.+)\]\s*$') { $section = $Matches[1]; continue }
+            if ($section -eq 'workspace.package' -and $line -match '^\s*version\s*=\s*"([^"]+)"') {
+              $cargo = $Matches[1]
+              break
+            }
+          }
+          if (-not $cargo) { throw 'Cargo.toml has no [workspace.package] version' }
+          if ($cargo -cne $version) { throw "Cargo.toml version '$cargo' does not match tag '$env:TAG'" }
+
+          # The numeric FILEVERSION and PRODUCTVERSION are held to Cargo.toml by
+          # crates/revisor-core/tests/versioninfo.rs, which the Test step runs.
+          $rc = Get-Content crates/revisor/resources/app.rc -Raw
+          foreach ($field in 'FileVersion', 'ProductVersion') {
+            if ($rc -notmatch ('VALUE\s+"' + $field + '",\s*"' + [regex]::Escape($version) + '"')) {
+              throw "app.rc's $field does not match tag '$env:TAG'"
+            }
+          }
+
+          "VERSION=$version" >> $env:GITHUB_ENV
+          "PRERELEASE=$prerelease" >> $env:GITHUB_ENV
+          "ASSET=revisor-$env:TAG-x64.exe" >> $env:GITHUB_ENV
+          "Releasing $env:TAG as version $version (pre-release: $prerelease)"
+
+      # The release page says what changed, in the words of that version's CHANGELOG.md
+      # section; GitHub's generated notes list merged pull requests, and git flow makes none.
+      # A version heading is a line beginning `## [`, and its section runs to the next such
+      # line or to the end of the file, less the link references at the foot, which follow
+      # the oldest section. crates/revisor-core/tests/changelog.rs reads the same grammar. A
+      # missing or blank section fails the run: a red run is noticed, an empty page is not.
+      - name: The release notes are the version's CHANGELOG.md section
+        run: |
+          # @() because Get-Content hands back a bare string for a one-line file.
+          $body = @()
+          $found = $false
+          foreach ($line in @(Get-Content CHANGELOG.md -Encoding utf8)) {
+            if ($line.StartsWith('## [')) {
+              if ($found) { break }
+              $found = $line.StartsWith("## [$env:VERSION]")
+              continue
+            }
+            if ($found) { $body += $line }
+          }
+          if (-not $found) { throw "CHANGELOG.md has no '## [$env:VERSION]' section" }
+          $end = $body.Count
+          while ($end -gt 0 -and ($body[$end - 1].Trim() -eq '' -or $body[$end - 1] -match '^\[[^\]]+\]: ')) {
+            $end--
+          }
+          $notes = (($body | Select-Object -First $end) -join "`n").Trim()
+          if (-not $notes) { throw "CHANGELOG.md's [$env:VERSION] section is empty" }
+          $file = Join-Path $env:RUNNER_TEMP 'release-notes.md'
+          Set-Content -Path $file -Value $notes -Encoding utf8
+          "NOTES=$file" >> $env:GITHUB_ENV
+          $notes
+
+      - name: The build environment is complete
+        run: |
+          # Either variable switches wxdragon-sys to generating bindings only.
+          if ($env:DOCS_RS -or $env:RUST_ANALYZER) { throw 'DOCS_RS or RUST_ANALYZER is set' }
+          if (-not (Test-Path "$env:LIBCLANG_PATH\libclang.dll")) {
+            throw "libclang.dll is not in LIBCLANG_PATH ($env:LIBCLANG_PATH)"
+          }
+          if (-not (Test-Path "$env:LIBCLANG_PATH\llvm-rc.exe")) {
+            throw 'llvm-rc.exe is not beside libclang.dll: the exe would have no icon and no VERSIONINFO'
+          }
+
+      # wxdragon-sys requires the Ninja CMake generator for x64 MSVC. Pinned as in ci.yml.
+      - name: Install Ninja 1.13.2
+        run: |
+          choco upgrade ninja --version 1.13.2 --allow-downgrade --no-progress -y
+          if ($LASTEXITCODE) { exit $LASTEXITCODE }
+          $version = ninja --version
+          if ($version -ne '1.13.2') { throw "expected Ninja 1.13.2, got $version" }
+
+      - name: Install the pinned Rust toolchain
+        run: rustup toolchain install
+
+      # The commit `git flow release finish` makes on main is one the develop CI never saw, so
+      # the tag runs the same four checks itself. Formatting first: it fails in seconds.
+      - name: Format
+        run: cargo fmt --all -- --check
+
+      # Tests and clippy take the profile and target of the Build step below, so wxWidgets is
+      # compiled once for the whole job rather than once per profile. With --target given,
+      # the target's rustflags (`+crt-static`, .cargo/config.toml) apply to revisor and its
+      # libraries but not to build scripts and proc macros, which is what the import-table
+      # gate below expects.
+      - name: Test
+        run: cargo test --workspace --locked --release --target x86_64-pc-windows-msvc
+
+      - name: Clippy
+        run: cargo clippy --workspace --all-targets --locked --release --target x86_64-pc-windows-msvc -- -D warnings
+
+      # The same pinned archive as in ci.yml: the exe shows this file in About revisor, so a
+      # stale one would ship the wrong licences.
+      - name: Install cargo-about 0.9.3
+        run: |
+          $archive = Join-Path $env:RUNNER_TEMP 'cargo-about.tar.gz'
+          Invoke-WebRequest 'https://github.com/EmbarkStudios/cargo-about/releases/download/0.9.3/cargo-about-0.9.3-x86_64-pc-windows-msvc.tar.gz' -OutFile $archive
+          $hash = (Get-FileHash $archive -Algorithm SHA256).Hash.ToLowerInvariant()
+          if ($hash -ne '9e2942533ef1c592c4a70bdb384cae1550a3f5fc9ae40379b6662e3d2f16fe02') {
+            throw "cargo-about archive SHA-256 mismatch: $hash"
+          }
+          tar -xzf $archive -C $env:RUNNER_TEMP
+          if ($LASTEXITCODE) { exit $LASTEXITCODE }
+          Add-Content $env:GITHUB_PATH (Join-Path $env:RUNNER_TEMP 'cargo-about-0.9.3-x86_64-pc-windows-msvc')
+
+      - name: Licences are up to date
+        run: |
+          cargo fetch --locked
+          if ($LASTEXITCODE) { exit $LASTEXITCODE }
+          cargo about generate --frozen --fail -m crates/revisor/Cargo.toml -c crates/revisor/about.toml crates/revisor/about.hbs -o crates/revisor/THIRD-PARTY-LICENSES.txt
+          if ($LASTEXITCODE) { exit $LASTEXITCODE }
+          git diff --exit-code -- crates/revisor/THIRD-PARTY-LICENSES.txt
+
+      - name: Build
+        run: cargo build --release --locked --target x86_64-pc-windows-msvc
+
+      # Everything below gates and publishes this copy. This is also the one place the release
+      # file is named; packaging/scoop/revisor.json is written against the same shape.
+      - name: Stage the exe
+        run: |
+          New-Item -ItemType Directory -Force dist | Out-Null
+          Copy-Item "$env:CARGO_TARGET_DIR\x86_64-pc-windows-msvc\release\revisor.exe" "dist\$env:ASSET"
+          Get-Item "dist\$env:ASSET" | Format-List Name, Length
+
+      # One exe without DLLs (brief, section 5): a lost `+crt-static` is invisible in a green
+      # build and visible here.
+      - name: The exe imports no C runtime DLL
+        run: |
+          $vswhere = "${env:ProgramFiles(x86)}\Microsoft Visual Studio\Installer\vswhere.exe"
+          $dumpbin = & $vswhere -latest -products * -find '**\Hostx64\x64\dumpbin.exe' | Select-Object -First 1
+          if (-not $dumpbin) { throw 'dumpbin.exe not found through vswhere' }
+          $imports = (& $dumpbin /NOLOGO /DEPENDENTS "dist\$env:ASSET") -join "`n"
+          if ($LASTEXITCODE) { exit $LASTEXITCODE }
+          $imports
+          # Without this, output that was never parsed would pass as "no C runtime".
+          if ($imports -notmatch 'KERNEL32\.dll') { throw 'the import table was not read: no KERNEL32.dll in it' }
+          if ($imports -match 'VCRUNTIME|MSVCP|api-ms-win-crt') {
+            throw 'the exe imports a C runtime DLL: +crt-static was lost'
+          }
+
+      - name: The exe is at most 10 MiB
+        run: |
+          $exe = Get-Item "dist\$env:ASSET"
+          $limit = 10MB
+          '{0}: {1:N0} bytes ({2:N2} MiB), limit {3:N0}' -f $exe.Name, $exe.Length, ($exe.Length / 1MB), $limit
+          if ($exe.Length -gt $limit) { throw "the exe is $($exe.Length) bytes, over $limit" }
+
+      # The exe is unsigned (ADR-0010), so VERSIONINFO is all it says about itself. Read back
+      # from the linked file, not trusted from app.rc: a resource that failed to link leaves a
+      # working exe with no identity.
+      - name: The exe names itself and this version
+        run: |
+          $info = (Get-Item "dist\$env:ASSET").VersionInfo
+          $info | Format-List CompanyName, ProductName, FileDescription, FileVersion, ProductVersion
+          if ($info.CompanyName -cne 'Ruslan Iskov') { throw "CompanyName is '$($info.CompanyName)'" }
+          if ($info.ProductName -cne 'revisor') { throw "ProductName is '$($info.ProductName)'" }
+          if ($info.FileVersion -cne $env:VERSION) { throw "FileVersion '$($info.FileVersion)' is not '$env:VERSION'" }
+          if ($info.ProductVersion -cne $env:VERSION) { throw "ProductVersion '$($info.ProductVersion)' is not '$env:VERSION'" }
+
+      # Written only once every gate has passed, so a failed run leaves no hash for a file
+      # nobody should install. `<hex64> *<name>` is sha256sum's own line: Get-FileHash users
+      # compare the hex, `sha256sum -c` checks the line, and scoop's autoupdate reads it.
+      - name: Write the SHA-256 sidecar
+        run: |
+          $exe = "dist\$env:ASSET"
+          $hash = (Get-FileHash $exe -Algorithm SHA256).Hash.ToLowerInvariant()
+          "$hash *$env:ASSET" | Out-File -FilePath "$exe.sha256" -Encoding ascii -NoNewline
+          Get-Content "$exe.sha256"
+
+      # Only the PDB can turn a crash report from someone's machine into a call stack, so it
+      # stays with the run for 90 days. It is never on the release: that holds the exe alone.
+      - name: Keep the PDB with the run
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: revisor-${{ github.ref_name }}-x64-pdb
+          path: ${{ env.CARGO_TARGET_DIR }}\x86_64-pc-windows-msvc\release\revisor.pdb
+          if-no-files-found: error
+          retention-days: 90
+
+      # Exactly two files: the bare exe and its sidecar. No zip: a screen reader user should not
+      # have to unpack an archive to reach the one file revisor is.
+      - name: Publish the GitHub release
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          $arguments = @(
+            'release', 'create', $env:TAG,
+            "dist\$env:ASSET", "dist\$env:ASSET.sha256",
+            '--verify-tag',
+            '--title', "revisor $env:TAG",
+            '--notes-file', $env:NOTES
+          )
+          if ($env:PRERELEASE -eq 'True') { $arguments += '--prerelease' }
+          gh @arguments
+          if ($LASTEXITCODE) { exit $LASTEXITCODE }
+          gh release view $env:TAG --json name,isPrerelease,assets --jq '{name, isPrerelease, assets: [.assets[].name]}'
