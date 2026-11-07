@@ -4,8 +4,24 @@
 use revisor_core::settings::DifferenceSort;
 pub use revisor_core::settings::{ChangeType, SortColumn};
 
+use crate::difference::ListState;
 use crate::jobs::Flags;
 use crate::snapshot_list::Summary;
+
+/// What the state is built from (ADR-0013): the sources of truth of the window.
+#[derive(Clone, Debug, Default)]
+pub struct Sources {
+    /// The name of the open profile; none while there are no profiles.
+    pub profile: Option<String>,
+    /// What the snapshot list says of itself (TASK-27).
+    pub snapshot_list: Summary,
+    /// The flags of the background jobs for the open profile (ADR-0011).
+    pub jobs: Flags,
+    /// What the difference list says of itself (TASK-13).
+    pub difference: ListState,
+    /// Whether revisor runs as administrator (TASK-8).
+    pub elevated: bool,
+}
 
 #[derive(Clone, Debug, Default)]
 pub struct AppState {
@@ -25,7 +41,7 @@ pub struct AppState {
     /// How many rows the difference list shows: the details and File Explorer act on the
     /// one with the focus (TASK-14).
     pub difference_rows: usize,
-    // The flags of the background jobs: the window sets them all at once, with `set_jobs`.
+    // The flags of the background jobs, as `Jobs` gives them (ADR-0011).
     pub snapshot_running: bool,
     /// Whether the snapshot being taken is of the open profile, which then cannot be
     /// changed or deleted (TASK-8).
@@ -56,9 +72,16 @@ impl AppState {
         }
     }
 
-    /// Takes the flags of the background jobs, all at once, as the jobs give them
-    /// for the open profile (ADR-0011).
-    pub fn set_jobs(&mut self, flags: Flags) {
+    /// The state as its sources say it now, built afresh at the end of every window
+    /// event (ADR-0013): no one changes it by hand.
+    pub fn of(sources: Sources) -> Self {
+        let Sources {
+            profile,
+            snapshot_list,
+            jobs,
+            difference,
+            elevated,
+        } = sources;
         let Flags {
             snapshot_running,
             snapshotting_open_profile,
@@ -67,30 +90,102 @@ impl AppState {
             compacting_open_profile,
             comment_waiting,
             commenting_open_profile,
-        } = flags;
-        self.snapshot_running = snapshot_running;
-        self.snapshotting_open_profile = snapshotting_open_profile;
-        self.comparison_running = comparison_running;
-        self.compaction_running = compaction_running;
-        self.compacting_open_profile = compacting_open_profile;
-        self.comment_waiting = comment_waiting;
-        self.commenting_open_profile = commenting_open_profile;
-    }
-
-    /// Takes what the snapshot list says of itself, all at once (TASK-27): how many
-    /// snapshots it shows, how many are selected and which is current.
-    pub fn set_snapshot_list(&mut self, summary: Summary) {
-        let Summary {
-            snapshots,
-            selected,
-            current,
-        } = summary;
-        self.snapshots = snapshots;
-        self.selected_snapshots = selected;
-        self.current_snapshot = current;
+        } = jobs;
+        Self {
+            profile,
+            snapshots: snapshot_list.snapshots,
+            selected_snapshots: snapshot_list.selected,
+            current_snapshot: snapshot_list.current,
+            has_difference: difference.has_difference,
+            difference_rows: difference.rows,
+            snapshot_running,
+            snapshotting_open_profile,
+            comparison_running,
+            compaction_running,
+            compacting_open_profile,
+            comment_waiting,
+            commenting_open_profile,
+            elevated,
+            shown_types: difference.view.types,
+            sort: difference.view.sort,
+        }
     }
 
     pub fn shows(&self, change: ChangeType) -> bool {
         self.shown_types[change as usize]
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::difference::View;
+    use revisor_core::settings::DifferenceSort;
+
+    #[test]
+    fn the_state_is_what_its_sources_say() {
+        let sources = Sources {
+            profile: Some("Документи".into()),
+            snapshot_list: Summary {
+                snapshots: 5,
+                selected: 2,
+                current: Some(3),
+            },
+            jobs: Flags {
+                snapshot_running: true,
+                snapshotting_open_profile: true,
+                comparison_running: true,
+                compaction_running: true,
+                compacting_open_profile: false,
+                comment_waiting: true,
+                commenting_open_profile: false,
+            },
+            difference: ListState {
+                has_difference: true,
+                rows: 42,
+                view: View {
+                    types: [true, false, true, false],
+                    sort: DifferenceSort {
+                        column: SortColumn::Size,
+                        descending: true,
+                    },
+                },
+            },
+            elevated: true,
+        };
+        let state = AppState::of(sources.clone());
+        assert_eq!(state.profile.as_deref(), Some("Документи"));
+        assert_eq!(
+            (
+                state.snapshots,
+                state.selected_snapshots,
+                state.current_snapshot
+            ),
+            (5, 2, Some(3))
+        );
+        assert!(state.snapshot_running && state.snapshotting_open_profile);
+        assert!(state.comparison_running && state.compaction_running);
+        assert!(!state.compacting_open_profile);
+        assert!(state.comment_waiting && !state.commenting_open_profile);
+        assert!(state.has_difference);
+        assert_eq!(state.difference_rows, 42);
+        assert_eq!(state.shown_types, [true, false, true, false]);
+        assert!(state.shows(ChangeType::Added) && !state.shows(ChangeType::Deleted));
+        assert_eq!(state.sort.column, SortColumn::Size);
+        assert!(state.sort.descending);
+        assert!(state.elevated);
+    }
+
+    #[test]
+    fn nothing_open_and_nothing_running_is_the_state_of_a_new_window() {
+        let state = AppState::of(Sources::default());
+        let new = AppState::new();
+        assert_eq!(state.profile, new.profile);
+        assert_eq!(state.snapshots, 0);
+        assert_eq!(state.current_snapshot, None);
+        assert!(!state.has_difference && !state.snapshot_running && !state.elevated);
+        // No difference yet: every type shown, by path, as a new window has it.
+        assert_eq!(state.shown_types, new.shown_types);
+        assert_eq!(state.sort, new.sort);
     }
 }

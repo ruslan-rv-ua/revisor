@@ -9,6 +9,13 @@ release that section becomes the version's own, and the release page publishes i
 
 ## [Unreleased]
 
+### Changed
+
+- **Failures of «Show in File Explorer» and «Restart as administrator» open a window.**
+  Before, they were said only in the status bar; now, like the failures of the other
+  commands, they open a window that names the command. So does a failure to restart revisor
+  after the interface language was changed in the settings.
+
 ## [0.1.0] - 2026-11-07
 
 The first release. revisor takes snapshots of chosen folders and shows what changed between

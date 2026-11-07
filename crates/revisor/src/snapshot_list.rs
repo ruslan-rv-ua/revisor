@@ -175,7 +175,7 @@ impl Control for Native {
     }
 }
 
-/// What the window's state knows of the list (`AppState::set_snapshot_list`).
+/// What the window's state knows of the list (`AppState::of`).
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub struct Summary {
     /// How many snapshots the list shows.

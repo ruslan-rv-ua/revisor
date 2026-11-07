@@ -31,7 +31,6 @@ use i18n::{En, Lang, Strings, Uk};
 use main_window::MainWindow;
 use revisor_core::elevation;
 use revisor_core::settings::{Language, Settings};
-use state::AppState;
 
 pub use i18n::catalog::catalog;
 
@@ -45,14 +44,11 @@ pub fn run() {
     // An administrator reads with the backup privilege (TASK-8); a standard user has no
     // such privilege, and nothing changes for them.
     let _ = elevation::enable_backup_privilege();
-    let state = AppState {
-        elevated: elevation::is_elevated(),
-        ..AppState::new()
-    };
+    let elevated = elevation::is_elevated();
     let open = profile_argument();
     wxdragon::main(move |_| {
         // The frame's event handlers hold the window, so it lives as long as the frame.
-        MainWindow::open(strings, state, data_dir, open);
+        MainWindow::open(strings, elevated, data_dir, open);
     })
     .expect("failed to start the GUI");
 }

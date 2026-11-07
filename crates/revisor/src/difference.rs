@@ -28,8 +28,10 @@ use revisor_core::settings::{
 };
 use revisor_core::store::{SnapshotInfo, Unavailable};
 
+use crate::commands::Pane;
 use crate::details::{self, Formats, Inaccessibility, Unreadable};
 use crate::i18n::Strings;
+use crate::keyboard::Focus;
 
 /// The user's regional formats, in which the model writes numbers and moments: those of
 /// Windows in the window, plain ones in the tests.
@@ -208,6 +210,15 @@ impl Default for View {
             sort: DifferenceSort::default(),
         }
     }
+}
+
+/// What the window's state knows of the difference list (`AppState::of`, ADR-0013):
+/// whether it shows a difference, how many rows it shows and its view.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct ListState {
+    pub has_difference: bool,
+    pub rows: usize,
+    pub view: View,
 }
 
 /// `bytes` as `format` writes them (#17): as File Explorer does — `StrFormatByteSize`,
@@ -762,6 +773,15 @@ impl List {
         self.filter()
     }
 
+    /// What the window's state knows of the list.
+    pub fn state(&self) -> ListState {
+        ListState {
+            has_difference: self.has_difference(),
+            rows: self.len(),
+            view: self.view,
+        }
+    }
+
     /// How many rows the list shows.
     pub fn len(&self) -> usize {
         self.shown.as_ref().map_or(0, |shown| shown.visible.len())
@@ -1282,7 +1302,7 @@ pub fn unavailable_reason(s: &dyn Strings, reason: &Unavailable) -> String {
         Unavailable::NotAFolder => s.folder_is_a_file().into(),
         Unavailable::Error(code) => {
             let error = std::io::Error::from_raw_os_error(*code);
-            s.failure(&crate::failure::of_io(&error))
+            crate::failure::reason(s, &error)
         }
     }
 }
@@ -1406,18 +1426,6 @@ fn count(rows: &[Row], difference: &Difference) -> Counts {
     counts
 }
 
-/// Where the keyboard focus is when a comparison ends.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub enum FocusPlace {
-    /// Where it was when the comparison started.
-    Unmoved,
-    /// On the comparison's progress field or its Cancel button, which go away with it.
-    Progress,
-    /// In the difference list.
-    DifferenceList,
-    Elsewhere,
-}
-
 /// What the window does with a difference that has just arrived.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Arrival {
@@ -1435,15 +1443,15 @@ pub enum Arrival {
 
 /// What happens when a comparison ends under the setting «Фокус після порівняння», with
 /// the focus at `focus` (TASK-11 #12, #13, #21).
-pub fn arrival(setting: FocusAfterComparison, focus: FocusPlace) -> Arrival {
-    match (setting, focus) {
-        (_, FocusPlace::DifferenceList) => Arrival::Focus,
-        (FocusAfterComparison::Always, _) => Arrival::Focus,
-        (FocusAfterComparison::Never, _) => Arrival::Replace,
-        (FocusAfterComparison::IfNotMoved, FocusPlace::Unmoved | FocusPlace::Progress) => {
-            Arrival::Focus
-        }
-        (FocusAfterComparison::IfNotMoved, FocusPlace::Elsewhere) => Arrival::Replace,
+/// The focus still where it was when the comparison started, or on its progress row,
+/// which goes away with it, counts as not moved.
+pub fn arrival(setting: FocusAfterComparison, focus: Focus) -> Arrival {
+    match setting {
+        _ if focus.in_list(Pane::Difference) => Arrival::Focus,
+        FocusAfterComparison::Always => Arrival::Focus,
+        FocusAfterComparison::Never => Arrival::Replace,
+        FocusAfterComparison::IfNotMoved if focus.unmoved || focus.progress => Arrival::Focus,
+        FocusAfterComparison::IfNotMoved => Arrival::Replace,
     }
 }
 
@@ -1454,13 +1462,13 @@ pub fn arrival(setting: FocusAfterComparison, focus: FocusPlace) -> Arrival {
 /// profile again, or when it is in the difference list already (TASK-11 #21).
 pub fn arrival_after_snapshot(
     setting: FocusAfterComparison,
-    focus: FocusPlace,
+    focus: Focus,
     of_open_profile: bool,
 ) -> Arrival {
-    match (setting, focus) {
+    match setting {
         _ if of_open_profile => arrival(setting, focus),
-        (FocusAfterComparison::Always, _) => Arrival::OpenProfileAndFocus,
-        (_, FocusPlace::DifferenceList) => Arrival::Focus,
+        FocusAfterComparison::Always => Arrival::OpenProfileAndFocus,
+        _ if focus.in_list(Pane::Difference) => Arrival::Focus,
         _ => Arrival::Replace,
     }
 }

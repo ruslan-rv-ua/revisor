@@ -291,9 +291,7 @@ impl Window {
                 let text = match e {
                     LocateError::NotNtfs(fs) => s.folder_not_ntfs(&shown, &fs),
                     LocateError::Network => s.folder_on_network(&shown),
-                    LocateError::Io(e) => {
-                        s.folder_not_examined(&shown, &s.failure(&failure::of_io(&e)))
-                    }
+                    LocateError::Io(e) => s.folder_not_examined(&shown, &failure::reason(s, &e)),
                 };
                 tell(&self.dialog, s, self.title, &text);
                 return;
