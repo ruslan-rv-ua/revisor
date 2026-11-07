@@ -8,7 +8,43 @@ use revisor_core::compare::CompareError;
 use revisor_core::settings::SettingsError;
 use revisor_core::store::StoreError;
 
-use crate::i18n::Failure;
+use crate::i18n::{Failure, Strings};
+
+/// An error of an action on files that the interface explains (TASK-25).
+pub trait Cause {
+    /// The failure the error amounts to, in the terms of the interface.
+    fn failure(&self) -> Failure;
+}
+
+impl Cause for io::Error {
+    fn failure(&self) -> Failure {
+        of_io(self)
+    }
+}
+
+impl Cause for StoreError {
+    fn failure(&self) -> Failure {
+        of_store(self)
+    }
+}
+
+impl Cause for CompareError {
+    fn failure(&self) -> Failure {
+        of_compare(self)
+    }
+}
+
+impl Cause for SettingsError {
+    fn failure(&self) -> Failure {
+        of_settings(self)
+    }
+}
+
+/// Why the action failed, in the interface's words: the one function that writes the
+/// text of a failure (ADR-0013). Where it goes, the window event decides.
+pub fn reason(s: &dyn Strings, e: &dyn Cause) -> String {
+    s.failure(&e.failure())
+}
 
 // Win32 error codes.
 const ERROR_ACCESS_DENIED: i32 = 5;

@@ -26,11 +26,38 @@ impl Control {
     }
 }
 
-/// Where the focus is: the control, and the part of the window it belongs to, if any.
+/// Where the focus is: the control, and the part of the window it belongs to, if any —
+/// the one dictionary of the focus, which the window event reads once (ADR-0013) for the
+/// keys and for where a snapshot or a difference arrives.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct Focus {
     pub part: Option<Pane>,
     pub control: Control,
+    /// On the progress row — its field or its Cancel button — which goes away with the
+    /// job it shows; for «Знімок + порівняння» the row of the snapshot and that of its
+    /// comparison are one (TASK-12 #5).
+    pub progress: bool,
+    /// Where it was when the comparison started — for «Знімок + порівняння», when the
+    /// command was (TASK-11 #12, TASK-12 #5).
+    pub unmoved: bool,
+}
+
+impl Focus {
+    /// The focus on `control` of `part`, neither on the progress row nor where a
+    /// comparison started.
+    pub const fn new(part: Option<Pane>, control: Control) -> Self {
+        Self {
+            part,
+            control,
+            progress: false,
+            unmoved: false,
+        }
+    }
+
+    /// Whether the focus is in the main list of `pane`.
+    pub fn in_list(self, pane: Pane) -> bool {
+        self.part == Some(pane) && self.control == Control::MainList
+    }
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -59,7 +86,7 @@ pub enum Route {
 /// Routes `key` pressed with the focus at `focus`; `labels` are the access keys of the
 /// main window's labels, as uppercase Latin letters.
 pub fn route(key: Shortcut, focus: Focus, state: &AppState, labels: &[u8]) -> Route {
-    let in_list = |pane| focus.part == Some(pane) && focus.control == Control::MainList;
+    let in_list = |pane| focus.in_list(pane);
     let decide =
         |id: CommandId, available: fn(&AppState) -> Result<(), Reason>| match available(state) {
             Ok(()) => Route::Run(id),
@@ -118,26 +145,11 @@ pub fn route(key: Shortcut, focus: Focus, state: &AppState, labels: &[u8]) -> Ro
 mod tests {
     use super::*;
 
-    const SNAPSHOT_LIST: Focus = Focus {
-        part: Some(Pane::Snapshots),
-        control: Control::MainList,
-    };
-    const DIFFERENCE_LIST: Focus = Focus {
-        part: Some(Pane::Difference),
-        control: Control::MainList,
-    };
-    const FILTER_FIELD: Focus = Focus {
-        part: Some(Pane::Difference),
-        control: Control::FilterField,
-    };
-    const COMPARISON_FIELD: Focus = Focus {
-        part: Some(Pane::Difference),
-        control: Control::TextEntry,
-    };
-    const PROFILE_BOX: Focus = Focus {
-        part: Some(Pane::Snapshots),
-        control: Control::Other,
-    };
+    const SNAPSHOT_LIST: Focus = Focus::new(Some(Pane::Snapshots), Control::MainList);
+    const DIFFERENCE_LIST: Focus = Focus::new(Some(Pane::Difference), Control::MainList);
+    const FILTER_FIELD: Focus = Focus::new(Some(Pane::Difference), Control::FilterField);
+    const COMPARISON_FIELD: Focus = Focus::new(Some(Pane::Difference), Control::TextEntry);
+    const PROFILE_BOX: Focus = Focus::new(Some(Pane::Snapshots), Control::Other);
 
     fn key(key: Key) -> Shortcut {
         Shortcut::new(key)
@@ -298,10 +310,7 @@ mod tests {
                 route(f6, FILTER_FIELD, &state, &[]),
                 Route::FocusPane(Pane::Snapshots)
             );
-            let nowhere = Focus {
-                part: None,
-                control: Control::Other,
-            };
+            let nowhere = Focus::new(None, Control::Other);
             assert_eq!(
                 route(f6, nowhere, &state, &[]),
                 Route::FocusPane(Pane::Snapshots)
