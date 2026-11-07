@@ -1,0 +1,24 @@
+[package]
+name = "revisor-core"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+publish = false
+
+[dependencies]
+rusqlite = { version = "0.41", features = ["bundled"] }
+windows-sys = { version = "0.61", features = [
+    "Win32_Foundation",
+    "Win32_Security",
+    "Win32_Storage_FileSystem",
+    "Win32_System_IO",
+    "Win32_System_Ioctl",
+    "Win32_System_SystemServices",
+    "Win32_System_Threading",
+] }
+
+[dev-dependencies]
+windows-sys = { version = "0.61", features = [
+    "Win32_System_ProcessStatus",
+    "Win32_System_Threading",
+] }

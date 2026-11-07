@@ -1,0 +1,16 @@
+project_name: "revisor"
+default_status: "To Do"
+statuses: ["To Do", "In Progress", "Done"]
+labels: []
+definition_of_done: ["Тести (cargo test) проходять", "cargo clippy і cargo fmt --check без зауважень", "Зміни інтерфейсу перевірено вручну з NVDA в українському інтерфейсі (якщо задача їх містить)", "Нотатки виконання й підсумок задачі заповнено", "Бриф і ADR чи README оновлено (якщо задача змінила поведінку чи рішення)", "Нові вікна й контроли мають клавіші доступу за документом «Клавіатура й меню» (якщо задача їх додає)"]
+date_format: yyyy-mm-dd
+max_column_width: 20
+auto_open_browser: true
+default_port: 6420
+remote_operations: false
+auto_commit: false
+filesystem_only: false
+bypass_git_hooks: false
+check_active_branches: true
+active_branch_days: 30
+task_prefix: "task"

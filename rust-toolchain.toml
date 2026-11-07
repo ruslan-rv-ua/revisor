@@ -1,0 +1,6 @@
+# Exact pin, not "stable": neither wxdragon crate declares a rust-version, so a new Rust
+# release would change the build silently. Bump it by hand in a feature branch (ADR-0010).
+[toolchain]
+channel = "1.99.1"
+components = ["clippy", "rustfmt"]
+targets = ["x86_64-pc-windows-msvc"]

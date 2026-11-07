@@ -1,0 +1,293 @@
+use super::*;
+use crate::testing::TempDir;
+use std::fs;
+use std::path::PathBuf;
+
+use crate::store::{ProfileSettings, Store};
+
+/// The settings file in `tmp`, in its subfolder `data`, which does not exist at first.
+fn db(tmp: &TempDir) -> PathBuf {
+    tmp.path().join("data").join("settings.db")
+}
+
+#[test]
+fn a_new_settings_file_is_made_with_the_defaults() {
+    let tmp = TempDir::new("settings");
+    let settings = Settings::open(&db(&tmp)).unwrap();
+    assert!(db(&tmp).is_file(), "the file and its folder are created");
+    assert_eq!(settings.last_profile().unwrap(), None);
+    assert_eq!(
+        settings.focus_after_snapshot().unwrap(),
+        FocusAfterSnapshot::IfInList
+    );
+    assert!(settings.confirm_snapshot_deletion().unwrap());
+    assert_eq!(settings.language().unwrap(), Language::SameAsWindows);
+    // The difference list (TASK-13 #17, #28): sizes as in Explorer, every type, by path.
+    assert_eq!(settings.size_format().unwrap(), SizeFormat::Explorer);
+    assert_eq!(settings.difference_types().unwrap(), [true; 4]);
+    assert_eq!(
+        settings.difference_sort().unwrap(),
+        DifferenceSort {
+            column: SortColumn::Path,
+            descending: false
+        }
+    );
+    // The details of a change (TASK-14 #7, #13): attributes in words, and no warning.
+    assert_eq!(settings.attribute_format().unwrap(), AttributeFormat::Words);
+    assert!(!settings.warn_missing_entry().unwrap());
+    let conn = rusqlite::Connection::open(db(&tmp)).unwrap();
+    let version: i64 = conn
+        .pragma_query_value(None, "user_version", |r| r.get(0))
+        .unwrap();
+    assert_eq!(version, SCHEMA_VERSION);
+}
+
+#[test]
+fn settings_survive_a_restart() {
+    let tmp = TempDir::new("settings");
+    {
+        let settings = Settings::open(&db(&tmp)).unwrap();
+        settings.set_last_profile(Some("Дім.db")).unwrap();
+        settings
+            .set_focus_after_snapshot(FocusAfterSnapshot::Never)
+            .unwrap();
+        settings.set_confirm_snapshot_deletion(false).unwrap();
+        settings.set_language(Language::Ukrainian).unwrap();
+    }
+    let settings = Settings::open(&db(&tmp)).unwrap();
+    assert_eq!(settings.last_profile().unwrap().as_deref(), Some("Дім.db"));
+    assert_eq!(settings.language().unwrap(), Language::Ukrainian);
+    assert_eq!(
+        settings.focus_after_snapshot().unwrap(),
+        FocusAfterSnapshot::Never
+    );
+    assert!(!settings.confirm_snapshot_deletion().unwrap());
+
+    // Each value can change again, and the last profile can be forgotten.
+    settings
+        .set_focus_after_snapshot(FocusAfterSnapshot::Always)
+        .unwrap();
+    settings.set_confirm_snapshot_deletion(true).unwrap();
+    settings.set_language(Language::English).unwrap();
+    settings.set_last_profile(None).unwrap();
+    assert_eq!(settings.language().unwrap(), Language::English);
+    assert_eq!(
+        settings.focus_after_snapshot().unwrap(),
+        FocusAfterSnapshot::Always
+    );
+    assert!(settings.confirm_snapshot_deletion().unwrap());
+    assert_eq!(settings.last_profile().unwrap(), None);
+}
+
+#[test]
+fn the_view_of_the_difference_list_survives_a_restart() {
+    let tmp = TempDir::new("settings");
+    let sort = DifferenceSort {
+        column: SortColumn::WhatChanged,
+        descending: true,
+    };
+    {
+        let settings = Settings::open(&db(&tmp)).unwrap();
+        settings.set_size_format(SizeFormat::Bytes).unwrap();
+        settings
+            .set_difference_types([false, true, false, true])
+            .unwrap();
+        settings.set_difference_sort(sort).unwrap();
+    }
+    let settings = Settings::open(&db(&tmp)).unwrap();
+    assert_eq!(settings.size_format().unwrap(), SizeFormat::Bytes);
+    assert_eq!(
+        settings.difference_types().unwrap(),
+        [false, true, false, true]
+    );
+    assert_eq!(settings.difference_sort().unwrap(), sort);
+    // Every type hidden is kept as such, not taken for nothing stored.
+    settings.set_difference_types([false; 4]).unwrap();
+    assert_eq!(settings.difference_types().unwrap(), [false; 4]);
+    settings.set_size_format(SizeFormat::Decimal).unwrap();
+    assert_eq!(settings.size_format().unwrap(), SizeFormat::Decimal);
+    for column in SortColumn::ALL {
+        let sort = DifferenceSort {
+            column,
+            descending: false,
+        };
+        settings.set_difference_sort(sort).unwrap();
+        assert_eq!(settings.difference_sort().unwrap(), sort);
+    }
+}
+
+#[test]
+fn the_settings_of_the_details_survive_a_restart() {
+    let tmp = TempDir::new("settings");
+    {
+        let settings = Settings::open(&db(&tmp)).unwrap();
+        settings
+            .set_attribute_format(AttributeFormat::Letters)
+            .unwrap();
+        settings.set_warn_missing_entry(true).unwrap();
+    }
+    let settings = Settings::open(&db(&tmp)).unwrap();
+    assert_eq!(
+        settings.attribute_format().unwrap(),
+        AttributeFormat::Letters
+    );
+    assert!(settings.warn_missing_entry().unwrap());
+    settings
+        .set_attribute_format(AttributeFormat::LettersWithCommas)
+        .unwrap();
+    assert_eq!(
+        settings.attribute_format().unwrap(),
+        AttributeFormat::LettersWithCommas
+    );
+    settings
+        .set_attribute_format(AttributeFormat::Words)
+        .unwrap();
+    settings.set_warn_missing_entry(false).unwrap();
+    assert_eq!(settings.attribute_format().unwrap(), AttributeFormat::Words);
+    assert!(!settings.warn_missing_entry().unwrap());
+}
+
+#[test]
+fn values_are_stored_by_name() {
+    for value in SizeFormat::ALL {
+        assert_eq!(SizeFormat::parse(value.as_str()), Some(value));
+    }
+    for value in AttributeFormat::ALL {
+        assert_eq!(AttributeFormat::parse(value.as_str()), Some(value));
+    }
+    assert_eq!(AttributeFormat::ALL[0], AttributeFormat::default());
+    assert_eq!(AttributeFormat::parse("hex"), None);
+    for value in ChangeType::ALL {
+        assert_eq!(ChangeType::parse(value.as_str()), Some(value));
+    }
+    for value in SortColumn::ALL {
+        assert_eq!(SortColumn::parse(value.as_str()), Some(value));
+    }
+    assert_eq!(SortColumn::parse("colour"), None);
+    // The check boxes index the shown types by their order.
+    for (i, kind) in ChangeType::ALL.into_iter().enumerate() {
+        assert_eq!(kind as usize, i);
+    }
+}
+
+#[test]
+fn two_processes_share_one_settings_file() {
+    let tmp = TempDir::new("settings");
+    let first = Settings::open(&db(&tmp)).unwrap();
+    let second = Settings::open(&db(&tmp)).unwrap();
+    first.set_last_profile(Some("Робота.db")).unwrap();
+    assert_eq!(second.last_profile().unwrap().as_deref(), Some("Робота.db"));
+    second.set_confirm_snapshot_deletion(false).unwrap();
+    assert!(!first.confirm_snapshot_deletion().unwrap());
+}
+
+#[test]
+fn a_value_no_revisor_wrote_falls_back_to_the_default() {
+    let tmp = TempDir::new("settings");
+    drop(Settings::open(&db(&tmp)).unwrap());
+    let conn = rusqlite::Connection::open(db(&tmp)).unwrap();
+    conn.execute(
+        "INSERT OR REPLACE INTO setting VALUES ('focus_after_snapshot', 'sometimes')",
+        [],
+    )
+    .unwrap();
+    conn.execute(
+        "INSERT OR REPLACE INTO setting VALUES ('confirm_snapshot_deletion', 'yes')",
+        [],
+    )
+    .unwrap();
+    conn.execute(
+        "INSERT OR REPLACE INTO setting VALUES ('language', 'fr')",
+        [],
+    )
+    .unwrap();
+    drop(conn);
+    let settings = Settings::open(&db(&tmp)).unwrap();
+    assert_eq!(
+        settings.focus_after_snapshot().unwrap(),
+        FocusAfterSnapshot::IfInList
+    );
+    assert!(settings.confirm_snapshot_deletion().unwrap());
+    assert_eq!(settings.language().unwrap(), Language::SameAsWindows);
+}
+
+#[test]
+fn files_that_are_not_revisor_settings_are_refused() {
+    let tmp = TempDir::new("settings");
+    fs::create_dir_all(db(&tmp).parent().unwrap()).unwrap();
+
+    // A text file is not a database at all.
+    fs::write(db(&tmp), b"some text, not a database").unwrap();
+    assert!(matches!(
+        Settings::open(&db(&tmp)),
+        Err(SettingsError::NotSettings)
+    ));
+    fs::remove_file(db(&tmp)).unwrap();
+
+    // Another program's database has tables but not revisor's mark.
+    let other = rusqlite::Connection::open(db(&tmp)).unwrap();
+    other.execute_batch("CREATE TABLE t (x)").unwrap();
+    drop(other);
+    assert!(matches!(
+        Settings::open(&db(&tmp)),
+        Err(SettingsError::NotSettings)
+    ));
+    fs::remove_file(db(&tmp)).unwrap();
+
+    // A profile database is not the settings database either.
+    drop(Store::create(&db(&tmp), &ProfileSettings::new_profile()).unwrap());
+    assert!(matches!(
+        Settings::open(&db(&tmp)),
+        Err(SettingsError::NotSettings)
+    ));
+}
+
+#[test]
+fn settings_from_a_newer_revisor_are_refused() {
+    let tmp = TempDir::new("settings");
+    drop(Settings::open(&db(&tmp)).unwrap());
+    let conn = rusqlite::Connection::open(db(&tmp)).unwrap();
+    conn.pragma_update(None, "user_version", SCHEMA_VERSION + 1)
+        .unwrap();
+    drop(conn);
+    assert!(matches!(
+        Settings::open(&db(&tmp)),
+        Err(SettingsError::NewerSchema(v)) if v == SCHEMA_VERSION + 1
+    ));
+}
+
+#[test]
+fn the_focus_setting_names_round_trip() {
+    for value in FocusAfterSnapshot::ALL {
+        assert_eq!(FocusAfterSnapshot::parse(value.as_str()), Some(value));
+    }
+    assert_eq!(FocusAfterSnapshot::parse("sometimes"), None);
+    assert_eq!(FocusAfterSnapshot::default(), FocusAfterSnapshot::IfInList);
+}
+
+#[test]
+fn the_comparison_focus_setting_is_kept_and_named() {
+    let tmp = TempDir::new("settings");
+    let settings = Settings::open(&db(&tmp)).unwrap();
+    assert_eq!(
+        settings.focus_after_comparison().unwrap(),
+        FocusAfterComparison::IfNotMoved
+    );
+    settings
+        .set_focus_after_comparison(FocusAfterComparison::Never)
+        .unwrap();
+    drop(settings);
+    let settings = Settings::open(&db(&tmp)).unwrap();
+    assert_eq!(
+        settings.focus_after_comparison().unwrap(),
+        FocusAfterComparison::Never
+    );
+    for value in FocusAfterComparison::ALL {
+        assert_eq!(FocusAfterComparison::parse(value.as_str()), Some(value));
+    }
+    assert_eq!(FocusAfterComparison::parse("sometimes"), None);
+    assert_eq!(
+        FocusAfterComparison::ALL[0],
+        FocusAfterComparison::default()
+    );
+}
