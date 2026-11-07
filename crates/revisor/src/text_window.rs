@@ -21,7 +21,7 @@ pub fn show(parent: &Frame, s: &dyn Strings, title: &str, text: &str) {
     // The dialog's Cancel: Esc presses it, and as in other dialogs it has no access key.
     let close = Button::builder(&dialog)
         .with_id(ID_CANCEL)
-        .with_label(s.close())
+        .with_label(s.close_window())
         .build();
     dialog.set_escape_id(ID_CANCEL);
 

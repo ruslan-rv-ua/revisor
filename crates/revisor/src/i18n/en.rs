@@ -4,7 +4,7 @@ use revisor_core::compare::{Side, Warning};
 use revisor_core::exclude::PatternError;
 use revisor_core::scan::EntryKind;
 use revisor_core::settings::{
-    AttributeFormat, FocusAfterComparison, FocusAfterSnapshot, Language, SizeFormat,
+    AttributeFormat, ChangeType, FocusAfterComparison, FocusAfterSnapshot, Language, SizeFormat,
 };
 
 use super::plural::{Category, category};
@@ -59,56 +59,56 @@ impl Strings for En {
 
     fn command(&self, id: CommandId) -> &'static str {
         match id {
-            CommandId::NewProfile => "New profile",
-            CommandId::EditProfile => "Edit profile",
-            CommandId::DeleteProfile => "Delete profile",
-            CommandId::Settings => "Settings",
-            CommandId::RestartAsAdmin => "Restart as administrator",
-            CommandId::Exit => "Exit",
-            CommandId::TakeSnapshot => "Take snapshot",
-            CommandId::SnapshotAndCompare => "Snapshot and compare",
-            CommandId::Comment => "Comment",
-            CommandId::DeleteSnapshots => "Delete snapshots",
-            CommandId::CancelSnapshot => "Cancel snapshot",
-            CommandId::CancelCompaction => "Cancel compaction",
-            CommandId::CompareWithPrevious => "Compare with previous",
-            CommandId::CompareWith => "Compare with",
-            CommandId::CancelComparison => "Cancel comparison",
-            CommandId::CancelComment => "Cancel comment",
-            CommandId::Details => "Details",
-            CommandId::ShowInExplorer => "Show in File Explorer",
-            CommandId::FilterByText => "Filter by text",
-            CommandId::ShowAdded => "Added",
-            CommandId::ShowDeleted => "Deleted",
-            CommandId::ShowModified => "Modified",
-            CommandId::ShowInaccessible => "Inaccessible",
-            CommandId::SortByPath => "Path",
-            CommandId::SortByName => "Name",
-            CommandId::SortByChange => "Change",
-            CommandId::SortByWhatChanged => "What changed",
-            CommandId::SortBySize => "Size",
-            CommandId::SortByDateModified => "Date modified",
-            CommandId::SortByFolder => "Folder",
-            CommandId::SortAscending => "Ascending",
-            CommandId::SortDescending => "Descending",
-            CommandId::KeyboardShortcuts => "Keyboard shortcuts",
-            CommandId::About => "About revisor",
+            CommandId::NewProfile => "&New profile",
+            CommandId::EditProfile => "&Edit profile",
+            CommandId::DeleteProfile => "&Delete profile",
+            CommandId::Settings => "&Settings",
+            CommandId::RestartAsAdmin => "&Restart as administrator",
+            CommandId::Exit => "E&xit",
+            CommandId::TakeSnapshot => "&Take snapshot",
+            CommandId::SnapshotAndCompare => "Snapshot &and compare",
+            CommandId::Comment => "&Comment",
+            CommandId::DeleteSnapshots => "&Delete snapshots",
+            CommandId::CancelSnapshot => "Ca&ncel snapshot",
+            CommandId::CancelCompaction => "Cancel c&ompaction",
+            CommandId::CompareWithPrevious => "&Compare with previous",
+            CommandId::CompareWith => "Compare &with",
+            CommandId::CancelComparison => "Ca&ncel comparison",
+            CommandId::CancelComment => "Cancel co&mment",
+            CommandId::Details => "&Details",
+            CommandId::ShowInExplorer => "Show in File &Explorer",
+            CommandId::FilterByText => "&Filter by text",
+            CommandId::ShowAdded => "&Added",
+            CommandId::ShowDeleted => "Dele&ted",
+            CommandId::ShowModified => "&Modified",
+            CommandId::ShowInaccessible => "I&naccessible",
+            CommandId::SortByPath => "Pa&th",
+            CommandId::SortByName => "&Name",
+            CommandId::SortByChange => "&Change",
+            CommandId::SortByWhatChanged => "&What changed",
+            CommandId::SortBySize => "&Size",
+            CommandId::SortByDateModified => "&Date modified",
+            CommandId::SortByFolder => "&Folder",
+            CommandId::SortAscending => "&Ascending",
+            CommandId::SortDescending => "D&escending",
+            CommandId::KeyboardShortcuts => "&Keyboard shortcuts",
+            CommandId::About => "&About revisor",
         }
     }
 
     fn menu(&self, id: MenuId) -> &'static str {
         match id {
-            MenuId::File => "File",
-            MenuId::Snapshot => "Snapshot",
-            MenuId::Compare => "Compare",
-            MenuId::Difference => "Difference",
-            MenuId::Help => "Help",
+            MenuId::File => "&File",
+            MenuId::Snapshot => "&Snapshot",
+            MenuId::Compare => "&Compare",
+            MenuId::Difference => "&Difference",
+            MenuId::Help => "&Help",
         }
     }
 
     fn submenu(&self, id: SubmenuId) -> &'static str {
         match id {
-            SubmenuId::SortBy => "Sort by",
+            SubmenuId::SortBy => "&Sort by",
         }
     }
 
@@ -182,7 +182,7 @@ impl Strings for En {
     }
 
     fn profile(&self) -> &'static str {
-        "Profile"
+        "P&rofile"
     }
 
     fn no_actions(&self) -> &'static str {
@@ -190,6 +190,10 @@ impl Strings for En {
     }
 
     fn close(&self) -> &'static str {
+        "&Close"
+    }
+
+    fn close_window(&self) -> &'static str {
         "Close"
     }
 
@@ -201,23 +205,23 @@ impl Strings for En {
     }
 
     fn profile_name(&self) -> &'static str {
-        "Name"
+        "&Name"
     }
 
     fn profile_folders(&self) -> &'static str {
-        "Folders"
+        "&Folders"
     }
 
     fn add_folder(&self) -> &'static str {
-        "Add folder"
+        "&Add folder"
     }
 
     fn remove_folder(&self) -> &'static str {
-        "Remove folder"
+        "&Remove folder"
     }
 
     fn profile_exclusions(&self) -> &'static str {
-        "Exclusions"
+        "&Exclusions"
     }
 
     fn create(&self) -> &'static str {
@@ -230,6 +234,19 @@ impl Strings for En {
 
     fn cancel(&self) -> &'static str {
         "Cancel"
+    }
+
+    fn cancel_job(&self) -> &'static str {
+        "Ca&ncel"
+    }
+
+    fn type_box(&self, kind: ChangeType) -> &'static str {
+        match kind {
+            ChangeType::Added => "&Added",
+            ChangeType::Deleted => "Dele&ted",
+            ChangeType::Modified => "Modifi&ed",
+            ChangeType::Inaccessible => "Inaccessi&ble",
+        }
     }
 
     fn choose_folder(&self) -> &'static str {
@@ -302,7 +319,7 @@ impl Strings for En {
     }
 
     fn replace(&self) -> &'static str {
-        "Replace"
+        "&Replace"
     }
 
     fn delete_profile_question(&self, name: &str, snapshots: usize) -> String {
@@ -318,7 +335,7 @@ impl Strings for En {
     }
 
     fn delete(&self) -> &'static str {
-        "Delete"
+        "&Delete"
     }
 
     fn profile_created(&self, name: &str) -> String {
@@ -377,7 +394,7 @@ impl Strings for En {
     }
 
     fn progress(&self) -> &'static str {
-        "Progress"
+        "&Progress"
     }
 
     fn snapshot_progress(&self, entries: u64, entries_text: &str, folder: &str) -> String {
@@ -461,7 +478,7 @@ impl Strings for En {
     }
 
     fn restart(&self) -> &'static str {
-        "Restart"
+        "&Restart"
     }
 
     fn close_during_snapshot(&self) -> &'static str {
@@ -498,7 +515,7 @@ impl Strings for En {
     }
 
     fn comment_of(&self, snapshot: &str) -> String {
-        format!("Comment on the snapshot {snapshot}")
+        format!("&Comment on the snapshot {snapshot}")
     }
 
     fn comment_saved(&self) -> &'static str {
@@ -568,7 +585,7 @@ impl Strings for En {
     }
 
     fn focus_after_snapshot(&self) -> &'static str {
-        "Focus after a snapshot"
+        "&Focus after a snapshot"
     }
 
     fn focus_option(&self, value: FocusAfterSnapshot) -> &'static str {
@@ -580,7 +597,7 @@ impl Strings for En {
     }
 
     fn confirm_snapshot_deletion(&self) -> &'static str {
-        "Confirm snapshot deletion"
+        "&Confirm snapshot deletion"
     }
 
     fn settings_saved(&self) -> &'static str {
@@ -599,7 +616,7 @@ impl Strings for En {
     }
 
     fn language(&self) -> &'static str {
-        "Language"
+        "&Language"
     }
 
     fn language_option(&self, value: Language) -> &'static str {
@@ -615,11 +632,11 @@ impl Strings for En {
     }
 
     fn restart_now(&self) -> &'static str {
-        "Restart now"
+        "&Restart now"
     }
 
     fn later(&self) -> &'static str {
-        "Later"
+        "&Later"
     }
 
     fn comparing(&self) -> &'static str {
@@ -655,7 +672,7 @@ impl Strings for En {
     }
 
     fn compare_with_label(&self, snapshot: &str) -> String {
-        format!("Compare the snapshot {snapshot} with")
+        format!("Compare the snapshot {snapshot} &with")
     }
 
     fn compare(&self) -> &'static str {
@@ -663,7 +680,7 @@ impl Strings for En {
     }
 
     fn focus_after_comparison(&self) -> &'static str {
-        "Focus after a comparison"
+        "Focus after a co&mparison"
     }
 
     fn comparison_focus_option(&self, value: FocusAfterComparison) -> &'static str {
@@ -903,15 +920,15 @@ impl Strings for En {
     }
 
     fn comparison_field(&self) -> &'static str {
-        "Comparison"
+        "Co&mparison"
     }
 
     fn filter_field(&self) -> &'static str {
-        "Filter"
+        "Fi&lter"
     }
 
     fn size_format(&self) -> &'static str {
-        "Size"
+        "&Size"
     }
 
     fn size_option(&self, value: SizeFormat) -> &'static str {
@@ -1033,7 +1050,7 @@ impl Strings for En {
     }
 
     fn attribute_format(&self) -> &'static str {
-        "Attributes"
+        "&Attributes"
     }
 
     fn attribute_option(&self, value: AttributeFormat) -> &'static str {
@@ -1045,7 +1062,7 @@ impl Strings for En {
     }
 
     fn warn_missing_entry(&self) -> &'static str {
-        "Warn when the entry is no longer on disk"
+        "&Warn when the entry is no longer on disk"
     }
 
     fn entry_gone_question(&self) -> &'static str {
@@ -1053,7 +1070,7 @@ impl Strings for En {
     }
 
     fn open(&self) -> &'static str {
-        "Open"
+        "&Open"
     }
 
     fn no_folder_on_disk(&self, path: &str) -> String {

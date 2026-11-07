@@ -3,6 +3,7 @@
 //! and the «Keyboard shortcuts» window are all built from `COMMANDS`; the keys follow the
 //! document «Клавіатура й меню».
 
+use crate::access::plain;
 use crate::i18n::Strings;
 use crate::keys::{Key, Shortcut};
 use crate::state::{AppState, ChangeType, SortColumn};
@@ -63,30 +64,11 @@ impl MenuId {
         Self::Difference,
         Self::Help,
     ];
-
-    /// The access key: the Latin letter, also in the Ukrainian interface.
-    pub const fn access(self) -> u8 {
-        match self {
-            Self::File => b'F',
-            Self::Snapshot => b'S',
-            Self::Compare => b'C',
-            Self::Difference => b'D',
-            Self::Help => b'H',
-        }
-    }
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
 pub enum SubmenuId {
     SortBy,
-}
-
-impl SubmenuId {
-    pub const fn access(self) -> u8 {
-        match self {
-            Self::SortBy => b'S',
-        }
-    }
 }
 
 /// One of the two parts of the main window, named after its main control: the snapshot
@@ -163,8 +145,6 @@ pub struct ContextPlace {
 pub struct Command {
     pub id: CommandId,
     pub place: Place,
-    /// The access key: a Latin letter of the English name, also in Ukrainian.
-    pub access: u8,
     /// Whether the label ends in "…": the command asks for more before it acts.
     pub ellipsis: bool,
     pub kind: CommandKind,
@@ -182,15 +162,15 @@ pub struct Command {
 }
 
 impl Command {
-    /// The command's name, without access key or ellipsis.
-    pub fn name(&self, s: &dyn Strings) -> &'static str {
-        s.command(self.id)
+    /// The command's name as text, without access key or ellipsis.
+    pub fn name(&self, s: &dyn Strings) -> String {
+        plain(s.command(self.id))
     }
 
     /// The name as messages and the «Keyboard shortcuts» window say it: with the menu's
     /// ellipsis, so that «Порівняти з…» does not end on its preposition (TASK-17).
     pub fn spoken_name(&self, s: &dyn Strings) -> String {
-        let mut name = self.name(s).to_string();
+        let mut name = self.name(s);
         if self.ellipsis {
             name.push('…');
         }
@@ -369,13 +349,11 @@ const fn key(key: Key) -> Shortcut {
 const fn item(
     id: CommandId,
     place: Place,
-    access: u8,
     available: fn(&AppState) -> Result<(), Reason>,
 ) -> Command {
     Command {
         id,
         place,
-        access,
         ellipsis: false,
         kind: CommandKind::Normal,
         shortcut: None,
@@ -387,24 +365,19 @@ const fn item(
     }
 }
 
-const fn shown_check(id: CommandId, access: u8, digit: u8) -> Command {
+const fn shown_check(id: CommandId, digit: u8) -> Command {
     Command {
         kind: CommandKind::Check,
         shortcut: Some(key(Key::Digit(digit)).ctrl()),
-        ..item(id, place(MenuId::Difference, 1), access, difference_shown)
+        ..item(id, place(MenuId::Difference, 1), difference_shown)
     }
 }
 
-const fn sort_radio(
-    id: CommandId,
-    group: u8,
-    access: u8,
-    checked: fn(&AppState) -> bool,
-) -> Command {
+const fn sort_radio(id: CommandId, group: u8, checked: fn(&AppState) -> bool) -> Command {
     Command {
         kind: CommandKind::Radio,
         checked: Some(checked),
-        ..item(id, sort_place(group), access, difference_shown)
+        ..item(id, sort_place(group), difference_shown)
     }
 }
 
@@ -417,40 +390,33 @@ pub static COMMANDS: &[Command] = &[
     Command {
         ellipsis: true,
         shortcut: Some(key(Key::Letter(b'N')).ctrl()),
-        ..item(CommandId::NewProfile, place(MenuId::File, 0), b'N', always)
+        ..item(CommandId::NewProfile, place(MenuId::File, 0), always)
     },
     Command {
         ellipsis: true,
-        ..item(
-            CommandId::EditProfile,
-            place(MenuId::File, 0),
-            b'E',
-            profile_free,
-        )
+        ..item(CommandId::EditProfile, place(MenuId::File, 0), profile_free)
     },
     Command {
         ellipsis: true,
         ..item(
             CommandId::DeleteProfile,
             place(MenuId::File, 0),
-            b'D',
             profile_free,
         )
     },
     Command {
-        ..item(CommandId::Settings, place(MenuId::File, 1), b'S', always)
+        ..item(CommandId::Settings, place(MenuId::File, 1), always)
     },
     Command {
         ..item(
             CommandId::RestartAsAdmin,
             place(MenuId::File, 1),
-            b'R',
             not_elevated,
         )
     },
     Command {
         shortcut: Some(key(Key::F(4)).alt()),
-        ..item(CommandId::Exit, place(MenuId::File, 2), b'X', always)
+        ..item(CommandId::Exit, place(MenuId::File, 2), always)
     },
     // Snapshot
     Command {
@@ -458,7 +424,6 @@ pub static COMMANDS: &[Command] = &[
         ..item(
             CommandId::TakeSnapshot,
             place(MenuId::Snapshot, 0),
-            b'T',
             snapshot_possible,
         )
     },
@@ -467,7 +432,6 @@ pub static COMMANDS: &[Command] = &[
         ..item(
             CommandId::SnapshotAndCompare,
             place(MenuId::Snapshot, 0),
-            b'A',
             snapshot_possible,
         )
     },
@@ -481,7 +445,6 @@ pub static COMMANDS: &[Command] = &[
         ..item(
             CommandId::Comment,
             place(MenuId::Snapshot, 1),
-            b'C',
             comment_possible,
         )
     },
@@ -495,7 +458,6 @@ pub static COMMANDS: &[Command] = &[
         ..item(
             CommandId::DeleteSnapshots,
             place(MenuId::Snapshot, 1),
-            b'D',
             snapshots_deletable,
         )
     },
@@ -504,7 +466,6 @@ pub static COMMANDS: &[Command] = &[
         ..item(
             CommandId::CancelSnapshot,
             place(MenuId::Snapshot, 2),
-            b'N',
             snapshot_running,
         )
     },
@@ -512,7 +473,6 @@ pub static COMMANDS: &[Command] = &[
         ..item(
             CommandId::CancelCompaction,
             place(MenuId::Snapshot, 2),
-            b'O',
             compaction_running,
         )
     },
@@ -521,7 +481,6 @@ pub static COMMANDS: &[Command] = &[
         ..item(
             CommandId::CancelComment,
             place(MenuId::Snapshot, 2),
-            b'M',
             comment_waiting,
         )
     },
@@ -536,7 +495,6 @@ pub static COMMANDS: &[Command] = &[
         ..item(
             CommandId::CompareWithPrevious,
             place(MenuId::Compare, 0),
-            b'C',
             previous_comparable,
         )
     },
@@ -550,7 +508,6 @@ pub static COMMANDS: &[Command] = &[
         ..item(
             CommandId::CompareWith,
             place(MenuId::Compare, 0),
-            b'W',
             other_comparable,
         )
     },
@@ -559,7 +516,6 @@ pub static COMMANDS: &[Command] = &[
         ..item(
             CommandId::CancelComparison,
             place(MenuId::Compare, 1),
-            b'N',
             comparison_running,
         )
     },
@@ -574,7 +530,6 @@ pub static COMMANDS: &[Command] = &[
         ..item(
             CommandId::Details,
             place(MenuId::Difference, 0),
-            b'D',
             change_shown,
         )
     },
@@ -587,7 +542,6 @@ pub static COMMANDS: &[Command] = &[
         ..item(
             CommandId::ShowInExplorer,
             place(MenuId::Difference, 0),
-            b'E',
             change_shown,
         )
     },
@@ -596,61 +550,49 @@ pub static COMMANDS: &[Command] = &[
         ..item(
             CommandId::FilterByText,
             place(MenuId::Difference, 1),
-            b'F',
             difference_shown,
         )
     },
     Command {
         checked: Some(|s| s.shows(ChangeType::Added)),
-        ..shown_check(CommandId::ShowAdded, b'A', 1)
+        ..shown_check(CommandId::ShowAdded, 1)
     },
     Command {
         checked: Some(|s| s.shows(ChangeType::Deleted)),
-        ..shown_check(CommandId::ShowDeleted, b'T', 2)
+        ..shown_check(CommandId::ShowDeleted, 2)
     },
     Command {
         checked: Some(|s| s.shows(ChangeType::Modified)),
-        ..shown_check(CommandId::ShowModified, b'M', 3)
+        ..shown_check(CommandId::ShowModified, 3)
     },
     Command {
         checked: Some(|s| s.shows(ChangeType::Inaccessible)),
-        ..shown_check(CommandId::ShowInaccessible, b'N', 4)
+        ..shown_check(CommandId::ShowInaccessible, 4)
     },
-    sort_radio(CommandId::SortByPath, 0, b'T', |s| {
-        sorted_by(s, SortColumn::Path)
-    }),
-    sort_radio(CommandId::SortByName, 0, b'N', |s| {
-        sorted_by(s, SortColumn::Name)
-    }),
-    sort_radio(CommandId::SortByChange, 0, b'C', |s| {
+    sort_radio(CommandId::SortByPath, 0, |s| sorted_by(s, SortColumn::Path)),
+    sort_radio(CommandId::SortByName, 0, |s| sorted_by(s, SortColumn::Name)),
+    sort_radio(CommandId::SortByChange, 0, |s| {
         sorted_by(s, SortColumn::Change)
     }),
-    sort_radio(CommandId::SortByWhatChanged, 0, b'W', |s| {
+    sort_radio(CommandId::SortByWhatChanged, 0, |s| {
         sorted_by(s, SortColumn::WhatChanged)
     }),
-    sort_radio(CommandId::SortBySize, 0, b'S', |s| {
-        sorted_by(s, SortColumn::Size)
-    }),
-    sort_radio(CommandId::SortByDateModified, 0, b'D', |s| {
+    sort_radio(CommandId::SortBySize, 0, |s| sorted_by(s, SortColumn::Size)),
+    sort_radio(CommandId::SortByDateModified, 0, |s| {
         sorted_by(s, SortColumn::DateModified)
     }),
-    sort_radio(CommandId::SortByFolder, 0, b'F', |s| {
+    sort_radio(CommandId::SortByFolder, 0, |s| {
         sorted_by(s, SortColumn::Folder)
     }),
-    sort_radio(CommandId::SortAscending, 1, b'A', |s| !s.sort.descending),
-    sort_radio(CommandId::SortDescending, 1, b'E', |s| s.sort.descending),
+    sort_radio(CommandId::SortAscending, 1, |s| !s.sort.descending),
+    sort_radio(CommandId::SortDescending, 1, |s| s.sort.descending),
     // Help
     Command {
         shortcut: Some(key(Key::F(1))),
-        ..item(
-            CommandId::KeyboardShortcuts,
-            place(MenuId::Help, 0),
-            b'K',
-            always,
-        )
+        ..item(CommandId::KeyboardShortcuts, place(MenuId::Help, 0), always)
     },
     Command {
-        ..item(CommandId::About, place(MenuId::Help, 1), b'A', always)
+        ..item(CommandId::About, place(MenuId::Help, 1), always)
     },
 ];
 
@@ -695,50 +637,6 @@ pub fn validate(table: &[Command], en: &dyn Strings) -> Vec<String> {
         }
     }
 
-    // Access keys: a Latin letter of the English name, unique on its menu level.
-    let mut levels: Vec<(String, Vec<(u8, &str)>)> = Vec::new();
-    let mut add = |level: String, access: u8, name: &'static str| match levels
-        .iter_mut()
-        .find(|(l, _)| *l == level)
-    {
-        Some((_, keys)) => keys.push((access, name)),
-        None => levels.push((level, vec![(access, name)])),
-    };
-    for menu in MenuId::ALL {
-        add("menu bar".into(), menu.access(), en.menu(menu));
-    }
-    let mut submenus = Vec::new();
-    for c in table {
-        let parent = en.menu(c.place.menu).to_string();
-        match c.place.submenu {
-            Some((sub, _)) => {
-                if !submenus.contains(&sub) {
-                    submenus.push(sub);
-                    add(parent, sub.access(), en.submenu(sub));
-                }
-                add(en.submenu(sub).into(), c.access, c.name(en));
-            }
-            None => add(parent, c.access, c.name(en)),
-        }
-    }
-    for (level, keys) in &levels {
-        for (i, &(access, name)) in keys.iter().enumerate() {
-            if !access.is_ascii_uppercase() {
-                problems.push(format!(
-                    "{level}: the access key of {name} is not a Latin letter"
-                ));
-                continue;
-            }
-            let letter = char::from(access);
-            if !name.to_ascii_uppercase().contains(letter) {
-                problems.push(format!("{level}: access key {letter} is not in {name}"));
-            }
-            if keys[..i].iter().any(|&(a, _)| a == access) {
-                problems.push(format!("{level}: access key {letter} is used twice"));
-            }
-        }
-    }
-
     // Context menus: the list's Enter action comes first.
     for pane in [Pane::Snapshots, Pane::Difference] {
         let first = context_items(table, pane).next();
@@ -772,6 +670,7 @@ pub fn context_items(table: &[Command], pane: Pane) -> impl Iterator<Item = &Com
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::access::letter;
     use crate::i18n::En;
 
     #[test]
@@ -871,11 +770,11 @@ mod tests {
         let details = command(CommandId::Details);
         assert_eq!(details.shortcut, Some(key(Key::Enter).alt()));
         assert_eq!(details.list_key, Some((Pane::Difference, key(Key::Enter))));
-        assert_eq!(details.access, b'D');
+        assert_eq!(letter(En.command(details.id)), Some(b'D'));
         let explorer = command(CommandId::ShowInExplorer);
         assert_eq!(explorer.shortcut, Some(key(Key::Enter).ctrl()));
         assert_eq!(explorer.list_key, None);
-        assert_eq!(explorer.access, b'E');
+        assert_eq!(letter(En.command(explorer.id)), Some(b'E'));
     }
 
     #[test]
@@ -904,7 +803,7 @@ mod tests {
         ];
         for (id, shortcut, access) in keys {
             assert_eq!(command(id).shortcut, Some(shortcut), "{id:?}");
-            assert_eq!(command(id).access, access, "{id:?}");
+            assert_eq!(letter(En.command(id)), Some(access), "{id:?}");
         }
         for id in &DIFFERENCE_VIEW[5..] {
             let c = command(*id);
@@ -1003,7 +902,8 @@ mod tests {
     #[test]
     fn cancel_comment_is_in_the_snapshot_menu_with_shift_f2() {
         let c = command(CommandId::CancelComment);
-        assert_eq!((c.place.menu, c.access), (MenuId::Snapshot, b'M'));
+        assert_eq!(c.place.menu, MenuId::Snapshot);
+        assert_eq!(letter(En.command(c.id)), Some(b'M'));
         assert_eq!(c.shortcut, Some(key(Key::F(2)).shift()));
     }
 
@@ -1146,7 +1046,8 @@ mod tests {
             |state: &AppState| (command(CommandId::SnapshotAndCompare).available)(state);
         // In the Snapshot menu with its letter and Ctrl+F5 (TASK-12 #14).
         let c = command(CommandId::SnapshotAndCompare);
-        assert_eq!((c.place.menu, c.access), (MenuId::Snapshot, b'A'));
+        assert_eq!(c.place.menu, MenuId::Snapshot);
+        assert_eq!(letter(En.command(c.id)), Some(b'A'));
         assert_eq!(c.shortcut, Some(key(Key::F(5)).ctrl()));
         assert_eq!(available(&AppState::new()), Err(Reason::NoProfiles));
         // A profile without snapshots: the snapshot is taken all the same (#4).
@@ -1288,7 +1189,6 @@ mod tests {
                 ..item(
                     CommandId::CompareWithPrevious,
                     place(MenuId::Compare, 0),
-                    b'C',
                     always,
                 )
             },
@@ -1297,7 +1197,6 @@ mod tests {
                 ..item(
                     CommandId::ShowInExplorer,
                     place(MenuId::Difference, 0),
-                    b'E',
                     always,
                 )
             },
@@ -1316,37 +1215,21 @@ mod tests {
             // Same shortcut twice.
             Command {
                 shortcut: f5,
-                ..item(
-                    CommandId::TakeSnapshot,
-                    place(MenuId::Snapshot, 0),
-                    b'T',
-                    always,
-                )
+                ..item(CommandId::TakeSnapshot, place(MenuId::Snapshot, 0), always)
             },
             Command {
                 shortcut: f5,
                 ..item(
                     CommandId::CancelSnapshot,
                     place(MenuId::Snapshot, 0),
-                    b'N',
                     always,
                 )
             },
             // A forbidden shortcut.
             Command {
                 shortcut: Some(key(Key::Letter(b'X')).alt()),
-                ..item(CommandId::Exit, place(MenuId::File, 0), b'X', always)
+                ..item(CommandId::Exit, place(MenuId::File, 0), always)
             },
-            // An access key used twice in one menu, and one missing from the name.
-            item(CommandId::Settings, place(MenuId::File, 0), b'X', always),
-            item(CommandId::About, place(MenuId::Help, 0), b'Q', always),
-            // A Cyrillic access key.
-            item(
-                CommandId::KeyboardShortcuts,
-                place(MenuId::Help, 0),
-                0xD0,
-                always,
-            ),
             // A context menu whose Enter action is not first.
             Command {
                 context: Some(ContextPlace {
@@ -1356,7 +1239,6 @@ mod tests {
                 ..item(
                     CommandId::ShowInExplorer,
                     place(MenuId::Difference, 0),
-                    b'E',
                     always,
                 )
             },
@@ -1366,23 +1248,14 @@ mod tests {
                     pane: Pane::Difference,
                     group: 0,
                 }),
-                ..item(
-                    CommandId::Details,
-                    place(MenuId::Difference, 0),
-                    b'D',
-                    always,
-                )
+                ..item(CommandId::Details, place(MenuId::Difference, 0), always)
             },
         ];
         let problems = validate(&broken, &En);
         let mentions = |needle: &str| problems.iter().any(|p| p.contains(needle));
         assert!(mentions("F5"), "{problems:#?}");
         assert!(mentions("Alt+X"), "{problems:#?}");
-        assert!(mentions("access key X"), "{problems:#?}");
-        assert!(mentions("access key Q"), "{problems:#?}");
-        assert!(mentions("not a Latin letter"), "{problems:#?}");
         assert!(mentions("Enter action"), "{problems:#?}");
-        assert!(mentions("not in Settings"), "{problems:#?}");
-        assert_eq!(problems.len(), 7, "{problems:#?}");
+        assert_eq!(problems.len(), 3, "{problems:#?}");
     }
 }

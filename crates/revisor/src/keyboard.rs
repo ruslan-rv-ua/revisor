@@ -2,9 +2,10 @@
 //! every key first and asks `route`; only `Route::Pass` lets the key go on to the focused
 //! control and to Windows.
 
+use crate::access::{self, Act, Target};
 use crate::commands::{COMMANDS, CommandId, Pane, Reason};
 use crate::keys::{Key, Shortcut};
-use crate::state::AppState;
+use crate::state::{AppState, ChangeType};
 
 /// The kind of control that has the focus.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -60,6 +61,34 @@ impl Focus {
     }
 }
 
+/// A labelled control of the main window that Alt with its letter reaches (TASK-30).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Label {
+    /// The profile box.
+    Profile,
+    /// The field of the progress row, while the row is shown.
+    Progress,
+    /// The Cancel button of the progress row, while the row is shown.
+    Cancel,
+    /// The field «Порівняння».
+    Comparison,
+    /// The field «Фільтр:».
+    Filter,
+    /// The check box of a type under the difference list.
+    Type(ChangeType),
+}
+
+impl Label {
+    /// What its letter does: a button or a check box is pressed once Alt is up, a field
+    /// or a box takes the focus at once.
+    pub fn act(self) -> Act {
+        match self {
+            Self::Cancel | Self::Type(_) => Act::Press,
+            Self::Profile | Self::Progress | Self::Comparison | Self::Filter => Act::Focus,
+        }
+    }
+}
+
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Route {
     Run(CommandId),
@@ -77,15 +106,16 @@ pub enum Route {
     /// Esc in the field «Фільтр:»: clear it, so the filter lets every row through
     /// (TASK-13 #24).
     ClearFilter,
-    /// Alt with a label's access key: focus the control the label names.
-    FocusLabel(usize),
+    /// Alt with a label's access key: focus the control the label names, or press the
+    /// button.
+    FocusLabel(Label),
     /// Not revisor's key: the focused control and Windows get it.
     Pass,
 }
 
-/// Routes `key` pressed with the focus at `focus`; `labels` are the access keys of the
-/// main window's labels, as uppercase Latin letters.
-pub fn route(key: Shortcut, focus: Focus, state: &AppState, labels: &[u8]) -> Route {
+/// Routes `key` pressed with the focus at `focus`; `labels` are the labelled controls of
+/// the main window shown now.
+pub fn route(key: Shortcut, focus: Focus, state: &AppState, labels: &[Target<Label>]) -> Route {
     let in_list = |pane| focus.in_list(pane);
     let decide =
         |id: CommandId, available: fn(&AppState) -> Result<(), Reason>| match available(state) {
@@ -117,9 +147,7 @@ pub fn route(key: Shortcut, focus: Focus, state: &AppState, labels: &[u8]) -> Ro
     if key == Shortcut::new(Key::Esc) && focus.control == Control::FilterField {
         return Route::ClearFilter;
     }
-    if let Some(letter) = key.access_letter()
-        && let Some(label) = labels.iter().position(|&l| l == letter)
-    {
+    if let Some((_, label)) = access::find(key, labels) {
         return Route::FocusLabel(label);
     }
     for c in COMMANDS {
@@ -417,11 +445,14 @@ mod tests {
     #[test]
     fn alt_with_a_labels_letter_focuses_its_control() {
         let state = AppState::new();
-        let labels = *b"RL";
+        let labels = [
+            Target::new("P&rofile", Act::Focus, Label::Profile),
+            Target::new("Fi&lter", Act::Focus, Label::Filter),
+        ];
         let alt = |letter| key(Key::Letter(letter)).alt();
         assert_eq!(
             route(alt(b'L'), SNAPSHOT_LIST, &state, &labels),
-            Route::FocusLabel(1)
+            Route::FocusLabel(Label::Filter)
         );
         // Menu letters go on to Windows, which opens the menu (or asks WM_MENUCHAR).
         assert_eq!(

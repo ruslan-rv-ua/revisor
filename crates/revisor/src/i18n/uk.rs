@@ -5,7 +5,7 @@ use revisor_core::compare::{Side, Warning};
 use revisor_core::exclude::PatternError;
 use revisor_core::scan::EntryKind;
 use revisor_core::settings::{
-    AttributeFormat, FocusAfterComparison, FocusAfterSnapshot, Language, SizeFormat,
+    AttributeFormat, ChangeType, FocusAfterComparison, FocusAfterSnapshot, Language, SizeFormat,
 };
 
 use super::plural::{Category, category};
@@ -197,6 +197,10 @@ impl Strings for Uk {
         "Закрити"
     }
 
+    fn close_window(&self) -> &'static str {
+        "Закрити"
+    }
+
     fn about(&self, version: &str) -> String {
         format!(
             "revisor {version}\nЛіцензія: MIT\nhttps://github.com/ruslan-rv-ua/revisor\n\n\
@@ -234,6 +238,19 @@ impl Strings for Uk {
 
     fn cancel(&self) -> &'static str {
         "Скасувати"
+    }
+
+    fn cancel_job(&self) -> &'static str {
+        "Скасувати"
+    }
+
+    fn type_box(&self, kind: ChangeType) -> &'static str {
+        match kind {
+            ChangeType::Added => "Додані",
+            ChangeType::Deleted => "Видалені",
+            ChangeType::Modified => "Змінені",
+            ChangeType::Inaccessible => "Недоступні",
+        }
     }
 
     fn choose_folder(&self) -> &'static str {

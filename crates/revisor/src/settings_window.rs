@@ -13,10 +13,9 @@ use revisor_core::settings::{
 };
 use wxdragon::prelude::*;
 
+use crate::access::{self, Act, Name, Target, field_label, plain};
 use crate::commands::CommandId;
 use crate::i18n::Strings;
-use crate::keys::Shortcut;
-use crate::menus::{button_label, field_label};
 
 /// The settings the window edits.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -33,7 +32,7 @@ pub struct Values {
 /// The labelled controls of the window. OK and Cancel are not among them: they have no
 /// access keys, as Enter and Esc press them.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
-enum Control {
+pub(crate) enum Control {
     Language,
     FocusAfterSnapshot,
     FocusAfterComparison,
@@ -54,44 +53,49 @@ impl Control {
         Self::WarnMissingEntry,
     ];
 
-    /// The access key, as the document «Клавіатура й меню» lists it.
-    const fn access(self) -> u8 {
+    /// The name of the control's label or check box, whose English marks its access key.
+    fn name(self) -> Name {
         match self {
-            Self::Language => b'L',
-            Self::FocusAfterSnapshot => b'F',
-            Self::FocusAfterComparison => b'M',
-            Self::SizeFormat => b'S',
-            Self::AttributeFormat => b'A',
-            Self::ConfirmDeletion => b'C',
-            Self::WarnMissingEntry => b'W',
+            Self::Language => |s| s.language(),
+            Self::FocusAfterSnapshot => |s| s.focus_after_snapshot(),
+            Self::FocusAfterComparison => |s| s.focus_after_comparison(),
+            Self::SizeFormat => |s| s.size_format(),
+            Self::AttributeFormat => |s| s.attribute_format(),
+            Self::ConfirmDeletion => |s| s.confirm_snapshot_deletion(),
+            Self::WarnMissingEntry => |s| s.warn_missing_entry(),
         }
     }
 
-    fn name(self, s: &dyn Strings) -> &'static str {
-        match self {
-            Self::Language => s.language(),
-            Self::FocusAfterSnapshot => s.focus_after_snapshot(),
-            Self::FocusAfterComparison => s.focus_after_comparison(),
-            Self::SizeFormat => s.size_format(),
-            Self::AttributeFormat => s.attribute_format(),
-            Self::ConfirmDeletion => s.confirm_snapshot_deletion(),
-            Self::WarnMissingEntry => s.warn_missing_entry(),
-        }
+    /// Whether the control is a check box, which its access key toggles, as an access key
+    /// on a check box does in Windows; the others are lists that take the focus.
+    fn is_check_box(self) -> bool {
+        matches!(self, Self::ConfirmDeletion | Self::WarnMissingEntry)
     }
 
     /// The text of the control's label or check box: "&Focus after a snapshot:",
     /// "Підтверджувати видалення знімків (&C)".
     fn label(self, s: &dyn Strings) -> String {
-        let (name, access) = (self.name(s), self.access());
-        match self {
-            Self::Language
-            | Self::FocusAfterSnapshot
-            | Self::FocusAfterComparison
-            | Self::SizeFormat
-            | Self::AttributeFormat => field_label(s, name, access),
-            Self::ConfirmDeletion | Self::WarnMissingEntry => button_label(s, name, access, false),
+        if self.is_check_box() {
+            access::label(s, self.name())
+        } else {
+            field_label(s, self.name())
         }
     }
+}
+
+/// The access keys of the window: a check box is pressed, a list takes the focus.
+pub(crate) fn targets() -> Vec<Target<Control>> {
+    Control::ALL
+        .into_iter()
+        .map(|c| {
+            let act = if c.is_check_box() {
+                Act::Press
+            } else {
+                Act::Focus
+            };
+            Target::of(c.name(), act, c)
+        })
+        .collect()
 }
 
 struct Window {
@@ -107,7 +111,7 @@ struct Window {
 /// Shows the window with the `initial` values and returns the new ones once the user
 /// confirms, or `None` when they cancel.
 pub fn show(parent: &Frame, s: &'static dyn Strings, initial: Values) -> Option<Values> {
-    let dialog = Dialog::builder(parent, s.command(CommandId::Settings)).build();
+    let dialog = Dialog::builder(parent, &plain(s.command(CommandId::Settings))).build();
     // Made in tab order. The label comes right before its control, so screen readers name
     // the control after it.
     let language_label = StaticText::builder(&dialog)
@@ -226,14 +230,7 @@ pub fn show(parent: &Frame, s: &'static dyn Strings, initial: Values) -> Option<
     // Access keys by the key's position, so they work in the Ukrainian layout too
     // (document «Клавіатура й меню»).
     let w = Rc::clone(&window);
-    dialog.on_char_hook(move |data| {
-        if let WindowEventData::Keyboard(key) = data {
-            let handled = Shortcut::from_event(&key)
-                .access_letter()
-                .is_some_and(|letter| w.access_key(letter));
-            key.event.skip(!handled);
-        }
-    });
+    access::bind(&dialog, targets(), move |control| w.access_key(control));
 
     dialog.centre();
     window.language.set_focus();
@@ -246,12 +243,8 @@ pub fn show(parent: &Frame, s: &'static dyn Strings, initial: Values) -> Option<
 }
 
 impl Window {
-    /// Acts on the access key `letter`; returns whether it is one of the window's. The
-    /// check box's key toggles it, as an access key on a check box does in Windows.
-    fn access_key(&self, letter: u8) -> bool {
-        let Some(control) = Control::ALL.into_iter().find(|c| c.access() == letter) else {
-            return false;
-        };
+    /// Acts on the access key of `control`. The check box's key toggles it.
+    fn access_key(&self, control: Control) {
         match control {
             Control::Language => self.language.set_focus(),
             Control::FocusAfterSnapshot => self.focus.set_focus(),
@@ -267,7 +260,6 @@ impl Window {
                 self.warn_missing.set_focus();
             }
         }
-        true
     }
 
     fn values(&self) -> Values {
@@ -303,20 +295,7 @@ mod tests {
     use crate::i18n::{En, Uk};
 
     #[test]
-    fn each_labelled_control_has_its_own_latin_access_key() {
-        for (i, control) in Control::ALL.into_iter().enumerate() {
-            let letter = char::from(control.access());
-            assert!(
-                control.name(&En).to_ascii_uppercase().contains(letter),
-                "{control:?}"
-            );
-            assert!(
-                Control::ALL[..i]
-                    .iter()
-                    .all(|c| c.access() != control.access()),
-                "{control:?}"
-            );
-        }
+    fn the_labels_mark_their_letters_in_both_languages() {
         assert_eq!(Control::Language.label(&En), "&Language:");
         assert_eq!(Control::Language.label(&Uk), "Мова (&L):");
         assert_eq!(

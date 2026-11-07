@@ -13,16 +13,11 @@ use revisor_core::profiles::ProfileFile;
 use revisor_core::store::{ProfileSettings, Scope};
 use wxdragon::prelude::*;
 
+use crate::access::{self, Act, Name, Target, field_label, plain};
 use crate::commands::CommandId;
 use crate::failure;
 use crate::i18n::Strings;
-use crate::keys::Shortcut;
-use crate::menus::{button_label, field_label};
 use crate::message_box::{confirm, tell};
-
-/// The access key of «Замінити» in the question whether a new folder replaces the
-/// profile's folders inside it.
-const REPLACE_ACCESS: u8 = b'R';
 
 /// What the window is opened for.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -34,7 +29,7 @@ pub enum Purpose {
 /// The labelled controls of the window. OK and Cancel are not among them: they have no
 /// access keys, as Enter and Esc press them.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
-enum Control {
+pub(crate) enum Control {
     Name,
     Folders,
     AddFolder,
@@ -51,36 +46,41 @@ impl Control {
         Self::Exclusions,
     ];
 
-    /// The access key, as the document «Клавіатура й меню» lists it.
-    const fn access(self) -> u8 {
+    /// The name of the control's label or button, whose English marks its access key.
+    fn name(self) -> Name {
         match self {
-            Self::Name => b'N',
-            Self::Folders => b'F',
-            Self::AddFolder => b'A',
-            Self::RemoveFolder => b'R',
-            Self::Exclusions => b'E',
-        }
-    }
-
-    fn name(self, s: &dyn Strings) -> &'static str {
-        match self {
-            Self::Name => s.profile_name(),
-            Self::Folders => s.profile_folders(),
-            Self::AddFolder => s.add_folder(),
-            Self::RemoveFolder => s.remove_folder(),
-            Self::Exclusions => s.profile_exclusions(),
+            Self::Name => |s| s.profile_name(),
+            Self::Folders => |s| s.profile_folders(),
+            Self::AddFolder => |s| s.add_folder(),
+            Self::RemoveFolder => |s| s.remove_folder(),
+            Self::Exclusions => |s| s.profile_exclusions(),
         }
     }
 
     /// The text of the control's label or button: "&Name:", "Додати теку (&A)…".
     fn label(self, s: &dyn Strings) -> String {
-        let (name, access) = (self.name(s), self.access());
         match self {
-            Self::AddFolder => button_label(s, name, access, true),
-            Self::RemoveFolder => button_label(s, name, access, false),
-            Self::Name | Self::Folders | Self::Exclusions => field_label(s, name, access),
+            Self::AddFolder => format!("{}…", access::label(s, self.name())),
+            Self::RemoveFolder => access::label(s, self.name()),
+            Self::Name | Self::Folders | Self::Exclusions => field_label(s, self.name()),
         }
     }
+
+    /// What its access key does: a field or list takes the focus, a button is pressed.
+    fn act(self) -> Act {
+        match self {
+            Self::AddFolder | Self::RemoveFolder => Act::Press,
+            Self::Name | Self::Folders | Self::Exclusions => Act::Focus,
+        }
+    }
+}
+
+/// The access keys of the window.
+pub(crate) fn targets() -> Vec<Target<Control>> {
+    Control::ALL
+        .into_iter()
+        .map(|c| Target::of(c.name(), c.act(), c))
+        .collect()
 }
 
 /// Writes the settings of the profile and gives its file, or the message to show when it
@@ -90,7 +90,7 @@ type Save = dyn Fn(&ProfileSettings) -> Result<ProfileFile, String>;
 struct Window {
     dialog: Dialog,
     s: &'static dyn Strings,
-    title: &'static str,
+    title: String,
     name: TextCtrl,
     folders: ListBox,
     add: Button,
@@ -114,11 +114,12 @@ pub fn show(
     taken: impl Fn(&str) -> bool + 'static,
     save: impl Fn(&ProfileSettings) -> Result<ProfileFile, String> + 'static,
 ) -> Option<ProfileFile> {
-    let (title, commit) = match purpose {
-        Purpose::New => (s.command(CommandId::NewProfile), s.create()),
-        Purpose::Edit => (s.command(CommandId::EditProfile), s.ok()),
+    let (command, commit) = match purpose {
+        Purpose::New => (CommandId::NewProfile, s.create()),
+        Purpose::Edit => (CommandId::EditProfile, s.ok()),
     };
-    let dialog = Dialog::builder(parent, title)
+    let title = plain(s.command(command));
+    let dialog = Dialog::builder(parent, &title)
         .with_style(DialogStyle::DefaultDialogStyle | DialogStyle::ResizeBorder)
         .with_size(640, 560)
         .build();
@@ -226,21 +227,13 @@ impl Window {
         // Access keys by the key's position, so they work in the Ukrainian layout too
         // (document «Клавіатура й меню»).
         let w = Rc::clone(self);
-        self.dialog.on_char_hook(move |data| {
-            if let WindowEventData::Keyboard(key) = data {
-                let handled = Shortcut::from_event(&key)
-                    .access_letter()
-                    .is_some_and(|letter| w.access_key(letter));
-                key.event.skip(!handled);
-            }
+        access::bind(&self.dialog, targets(), move |control| {
+            w.access_key(control)
         });
     }
 
-    /// Acts on the access key `letter`; returns whether it is one of the window's.
-    fn access_key(&self, letter: u8) -> bool {
-        let Some(control) = Control::ALL.into_iter().find(|c| c.access() == letter) else {
-            return false;
-        };
+    /// Acts on the access key of `control`.
+    fn access_key(&self, control: Control) {
         match control {
             Control::Name => self.name.set_focus(),
             Control::Folders => self.folders.set_focus(),
@@ -249,7 +242,6 @@ impl Window {
             Control::RemoveFolder => {}
             Control::Exclusions => self.exclusions.set_focus(),
         }
-        true
     }
 
     /// Fills the folder list, selects the folder at `selected` if there is one, and lets
@@ -293,7 +285,7 @@ impl Window {
                     LocateError::Network => s.folder_on_network(&shown),
                     LocateError::Io(e) => s.folder_not_examined(&shown, &failure::reason(s, &e)),
                 };
-                tell(&self.dialog, s, self.title, &text);
+                tell(&self.dialog, s, &self.title, &text);
                 return;
             }
         };
@@ -301,7 +293,7 @@ impl Window {
         match addition {
             Addition::Covered(i) => {
                 let by = self.entries.borrow()[i].path.to_string_lossy().into_owned();
-                tell(&self.dialog, s, self.title, &s.folder_covered(&shown, &by));
+                tell(&self.dialog, s, &self.title, &s.folder_covered(&shown, &by));
                 return;
             }
             Addition::Replaces(inside) => {
@@ -310,8 +302,14 @@ impl Window {
                     .map(|&i| self.entries.borrow()[i].path.to_string_lossy().into_owned())
                     .collect();
                 let question = s.replace_folders(&shown, &names);
-                let replace = (s.replace(), REPLACE_ACCESS);
-                if !confirm(&self.dialog, s, self.title, &question, replace, false) {
+                if !confirm(
+                    &self.dialog,
+                    s,
+                    &self.title,
+                    &question,
+                    |s| s.replace(),
+                    false,
+                ) {
                     return;
                 }
                 let mut entries = self.entries.borrow_mut();
@@ -360,18 +358,18 @@ impl Window {
         let s = self.s;
         let name = self.name.get_value().trim().to_string();
         if name.is_empty() {
-            tell(&self.dialog, s, self.title, s.name_missing());
+            tell(&self.dialog, s, &self.title, s.name_missing());
             self.name.set_focus();
             return;
         }
         if (self.taken)(&name) {
-            tell(&self.dialog, s, self.title, &s.name_taken(&name));
+            tell(&self.dialog, s, &self.title, &s.name_taken(&name));
             self.name.set_focus();
             self.name.select_all();
             return;
         }
         if self.entries.borrow().is_empty() {
-            tell(&self.dialog, s, self.title, s.no_folders());
+            tell(&self.dialog, s, &self.title, s.no_folders());
             self.add.set_focus();
             return;
         }
@@ -379,7 +377,7 @@ impl Window {
             Ok(exclusions) => exclusions,
             Err(e) => {
                 let text = s.bad_pattern(e.line, &e.pattern, e.error);
-                tell(&self.dialog, s, self.title, &text);
+                tell(&self.dialog, s, &self.title, &text);
                 self.select_line(e.line - 1);
                 return;
             }
@@ -401,7 +399,7 @@ impl Window {
                 *self.saved.borrow_mut() = Some(file);
                 self.dialog.end_modal(ID_OK);
             }
-            Err(message) => tell(&self.dialog, s, self.title, &message),
+            Err(message) => tell(&self.dialog, s, &self.title, &message),
         }
     }
 
@@ -421,25 +419,7 @@ mod tests {
     use crate::i18n::{En, Uk};
 
     #[test]
-    fn each_labelled_control_has_its_own_latin_access_key() {
-        for (i, control) in Control::ALL.into_iter().enumerate() {
-            let letter = char::from(control.access());
-            assert!(
-                control.name(&En).to_ascii_uppercase().contains(letter),
-                "{control:?}"
-            );
-            assert!(
-                Control::ALL[..i]
-                    .iter()
-                    .all(|c| c.access() != control.access()),
-                "{control:?}"
-            );
-        }
-        assert!(
-            En.replace()
-                .to_ascii_uppercase()
-                .contains(char::from(REPLACE_ACCESS))
-        );
+    fn the_labels_mark_their_letters_in_both_languages() {
         assert_eq!(Control::Name.label(&En), "&Name:");
         assert_eq!(Control::Name.label(&Uk), "Назва (&N):");
         assert_eq!(Control::AddFolder.label(&En), "&Add folder…");

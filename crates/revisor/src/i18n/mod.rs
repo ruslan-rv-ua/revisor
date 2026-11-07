@@ -15,7 +15,7 @@ use revisor_core::compare::Warning;
 use revisor_core::exclude::PatternError;
 use revisor_core::scan::EntryKind;
 use revisor_core::settings::{
-    AttributeFormat, FocusAfterComparison, FocusAfterSnapshot, Language, SizeFormat,
+    AttributeFormat, ChangeType, FocusAfterComparison, FocusAfterSnapshot, Language, SizeFormat,
 };
 
 use crate::commands::{CommandId, MenuId, Pane, Reason, SubmenuId};
@@ -148,11 +148,13 @@ macro_rules! strings {
 }
 
 strings! {
-/// All interface strings of one language.
+/// All interface strings of one language. A name with an access key is marked with "&"
+/// before its letter in English, and has the words only in Ukrainian (TASK-30): the
+/// `access` module writes the label, and `access::plain` gives the name as text.
 pub trait Strings {
     fn lang(&self) -> Lang;
 
-    /// A command's name as the menu shows it, without access key or ellipsis.
+    /// A command's name as the menu shows it, without ellipsis.
     fn command(&self, id: CommandId) -> &'static str;
     fn menu(&self, id: MenuId) -> &'static str;
     fn submenu(&self, id: SubmenuId) -> &'static str;
@@ -175,16 +177,18 @@ pub trait Strings {
     // The main window.
     /// A pane's main list, as screen readers name it.
     fn pane(&self, pane: Pane) -> &'static str;
-    /// The label of the profile box, without access key or colon.
+    /// The label of the profile box, without colon.
     fn profile(&self) -> &'static str;
     /// Said when a list's context menu would have no items.
     fn no_actions(&self) -> &'static str;
-    /// Closes the «Help» windows; Esc does the same.
+    /// The action button of a question that closes revisor.
     fn close(&self) -> &'static str;
+    /// Closes the «Help» windows, with no access key; Esc does the same.
+    fn close_window(&self) -> &'static str;
     /// The «About revisor» text above the third-party licences.
     fn about(&self, version: &str) -> String;
 
-    // The profile window (TASK-7); labels come without access key or colon.
+    // The profile window (TASK-7); labels come without colon.
     fn profile_name(&self) -> &'static str;
     fn profile_folders(&self) -> &'static str;
     fn add_folder(&self) -> &'static str;
@@ -193,7 +197,14 @@ pub trait Strings {
     /// The button that makes a new profile.
     fn create(&self) -> &'static str;
     fn ok(&self) -> &'static str;
+    /// Cancel of a dialog, with no access key: Esc presses it.
     fn cancel(&self) -> &'static str;
+    /// Cancel of the progress row of the main window while it shows a snapshot, a
+    /// comparison or a comment waiting for the database (TASK-24).
+    fn cancel_job(&self) -> &'static str;
+    /// A check box under the difference list that shows or hides the rows of a type
+    /// (TASK-13 #22).
+    fn type_box(&self, kind: ChangeType) -> &'static str;
     /// The prompt of the folder picker.
     fn choose_folder(&self) -> &'static str;
     fn name_missing(&self) -> &'static str;
@@ -552,7 +563,7 @@ mod tests {
         );
         assert_eq!(
             En.compare_with_label("11/5/2026 12:00:00 PM"),
-            "Compare the snapshot 11/5/2026 12:00:00 PM with"
+            "Compare the snapshot 11/5/2026 12:00:00 PM &with"
         );
         assert_eq!(
             Uk.comparison_failed("знімок тим часом видалено"),
@@ -668,11 +679,11 @@ mod tests {
         }
         assert_eq!(En.size_unit(3), "GB");
         assert_eq!(Uk.comparison_field(), "Порівняння");
-        assert_eq!(En.comparison_field(), "Comparison");
+        assert_eq!(En.comparison_field(), "Co&mparison");
         assert_eq!(Uk.filter_field(), "Фільтр");
-        assert_eq!(En.filter_field(), "Filter");
+        assert_eq!(En.filter_field(), "Fi&lter");
         assert_eq!(Uk.size_format(), "Розмір");
-        assert_eq!(En.size_format(), "Size");
+        assert_eq!(En.size_format(), "&Size");
     }
 
     #[test]
