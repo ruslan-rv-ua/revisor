@@ -6,6 +6,7 @@ mod commands;
 mod compare_window;
 mod details;
 mod difference;
+mod difference_tree;
 mod explorer;
 mod failure;
 mod help;

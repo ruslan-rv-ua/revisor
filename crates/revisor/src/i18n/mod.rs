@@ -15,12 +15,15 @@ use revisor_core::compare::Warning;
 use revisor_core::exclude::PatternError;
 use revisor_core::scan::EntryKind;
 use revisor_core::settings::{
-    AttributeFormat, ChangeType, FocusAfterComparison, FocusAfterSnapshot, Language, SizeFormat,
+    AttributeFormat, ChangeType, DifferenceView, FocusAfterComparison, FocusAfterSnapshot,
+    Language, SizeFormat, TreeNodeText,
 };
 
 use crate::commands::{CommandId, MenuId, Pane, Reason, SubmenuId};
 use crate::details::{Attribute, Inaccessibility, Property};
-use crate::difference::{Column, Field, InaccessibleIn, PairText, RowChange, SummaryText};
+use crate::difference::{
+    Column, Field, InaccessibleIn, NodeText, PairText, RowChange, SummaryText,
+};
 
 /// An interface language.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -70,6 +73,16 @@ fn in_sentence(text: &str) -> String {
     match chars.next() {
         Some(first) if !is_name => first.to_lowercase().chain(chars).collect(),
         _ => text.to_string(),
+    }
+}
+
+/// `text` with its first letter small, as words of a column read after a dash (TASK-33):
+/// "Додано теку" in «docs — додано теку».
+fn lower_first(text: &str) -> String {
+    let mut chars = text.chars();
+    match chars.next() {
+        Some(first) => first.to_lowercase().chain(chars).collect(),
+        None => String::new(),
     }
 }
 
@@ -170,6 +183,9 @@ pub trait Strings {
     fn only_in(&self, pane: Pane) -> String;
     /// A key that works in one list: "Enter in the snapshot list".
     fn in_list(&self, key: &str, pane: Pane) -> String;
+    /// Two commands that share a shortcut, which switches between them (TASK-33): "List or
+    /// tree".
+    fn either(&self, first: &str, second: &str) -> String;
     fn navigation(&self) -> &'static str;
     fn switch_panes(&self) -> &'static str;
     fn context_menu(&self) -> &'static str;
@@ -384,6 +400,15 @@ pub trait Strings {
     /// The label of the setting «Розмір» (TASK-13), without access key or colon.
     fn size_format(&self) -> &'static str;
     fn size_option(&self, value: SizeFormat) -> &'static str;
+
+    // The difference tree (TASK-33).
+    /// What a node of the tree says: "a.txt — змінено: розмір", "docs — 12 змін".
+    fn tree_node(&self, node: &NodeText) -> String;
+    /// Said when Ctrl+T switches the view while the focus is not on the difference.
+    fn layout_shown(&self, layout: DifferenceView) -> &'static str;
+    /// The label of the setting «Вузли дерева», without access key or colon.
+    fn tree_nodes(&self) -> &'static str;
+    fn tree_node_option(&self, value: TreeNodeText) -> &'static str;
 
     // The details of a change (TASK-14).
     /// The name of a property, at the start of its line: "Розмір".

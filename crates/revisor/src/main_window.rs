@@ -7,7 +7,8 @@
 //! «Порівняння» above it and its filter under it (TASK-13), the details of its change in
 //! focus and the change shown in File Explorer (TASK-14), and «Знімок + порівняння», which
 //! chains a snapshot and its comparison (TASK-12). The profile box lists the profiles
-//! (TASK-7).
+//! (TASK-7). The difference shows as a list or, in the same place, as a tree of its
+//! folders (TASK-33).
 
 use std::cell::{Cell, RefCell};
 use std::ffi::c_void;
@@ -21,7 +22,7 @@ use revisor_core::compare::{self, CompareError, Difference};
 use revisor_core::job::{Cancel, Lost, Outcome};
 use revisor_core::profiles::{self, ProfileError, ProfileFile, Unreadable};
 use revisor_core::settings::{
-    DifferenceSort, FocusAfterComparison, FocusAfterSnapshot, Language, Settings,
+    DifferenceSort, DifferenceView, FocusAfterComparison, FocusAfterSnapshot, Language, Settings,
 };
 use revisor_core::snapshot::{Phase, Report, SnapshotError};
 use revisor_core::store::{
@@ -32,7 +33,8 @@ use wxdragon::prelude::*;
 use crate::access::{Dispatcher, Name, Target, compose, field_label, plain};
 use crate::commands::{COMMANDS, CommandId, CommandKind, MenuId, Pane, Reason, command};
 use crate::compare_window;
-use crate::difference::{self, Column, List, View};
+use crate::difference::{self, Column, List, Location, View};
+use crate::difference_tree::{self, TreeView};
 use crate::explorer::{self, Reveal};
 use crate::failure::reason;
 use crate::help;
@@ -226,8 +228,15 @@ pub struct MainWindow {
     /// seconds with a large difference (TASK-13 #29), so the other list is disabled — no
     /// stop for Tab — and has no size instead.
     differences: [ListCtrl; 2],
-    /// Which of `differences` is shown.
+    /// Which of `differences` is shown, while the difference shows as a list.
     shown_difference: Cell<usize>,
+    /// The difference trees (TASK-33): two tree controls over `difference_list`, which
+    /// take turns as the lists do — a new difference goes into the other one, so screen
+    /// readers name the tree again (#8). One of the four controls of the holder is shown
+    /// at a time; the others are disabled and have no size, and none is ever hidden.
+    trees: [TreeView<difference_tree::Native>; 2],
+    /// Which of `trees` is shown, while the difference shows as a tree.
+    shown_tree: Cell<usize>,
     /// The model of the difference list (TASK-13).
     difference_list: Rc<RefCell<List>>,
     /// The field «Фільтр:» and the check boxes of the types under the difference list
@@ -299,13 +308,15 @@ impl MainWindow {
 
         let settings_path = data_dir.join(SETTINGS_FILE);
         let settings = Settings::open(&settings_path).map_err(|e| reason(s, &e));
-        // The view of the difference list and the size format, as kept (TASK-13 #17, #28).
+        // The view of the difference list and the size format, as kept (TASK-13 #17, #28),
+        // and whether it shows as a tree (TASK-33 #3).
         let view = settings
             .as_ref()
             .ok()
             .map(|settings| View {
                 types: settings.difference_types().unwrap_or([true; 4]),
                 sort: settings.difference_sort().unwrap_or_default(),
+                layout: settings.difference_view().unwrap_or_default(),
             })
             .unwrap_or_default();
         let size_format = settings
@@ -320,6 +331,14 @@ impl MainWindow {
                 .as_ref()
                 .ok()
                 .and_then(|settings| settings.attribute_format().ok())
+                .unwrap_or_default(),
+        );
+        // What the tree's nodes say, as kept (TASK-33 #6).
+        list.set_node_text(
+            settings
+                .as_ref()
+                .ok()
+                .and_then(|settings| settings.tree_node_text().ok())
                 .unwrap_or_default(),
         );
         let difference_list = Rc::new(RefCell::new(list));
@@ -383,7 +402,15 @@ impl MainWindow {
             });
             list
         });
+        // The trees after the lists, in the same holder; one of the four is enabled, as the
+        // view kept says (TASK-33 #3).
+        let trees =
+            [(); 2].map(|()| TreeView::new(difference_tree::Native::new(&difference_holder)));
+        let as_tree = view.layout == DifferenceView::Tree;
+        differences[0].enable(!as_tree);
         differences[1].enable(false);
+        trees[0].control().tree().enable(as_tree);
+        trees[1].control().tree().enable(false);
         // The holder answers for the difference lists' text while they are empty.
         let difference_empty_texts = EmptyTexts::subclass(difference_holder.get_handle());
         let filter_label = StaticText::builder(&panel)
@@ -483,6 +510,8 @@ impl MainWindow {
             difference_empty_texts,
             differences,
             shown_difference: Cell::new(0),
+            trees,
+            shown_tree: Cell::new(0),
             difference_list,
             filter_field,
             type_boxes,
@@ -680,6 +709,27 @@ impl MainWindow {
                 move |w, event| w.difference_focused(i, event.get_item_index()),
             );
         }
+        // The difference trees (TASK-33): a node gets its children as it first expands
+        // (#2), the focus picks the node selected, and a right click selects the node under
+        // the mouse, for the context menu that follows.
+        for (i, view) in self.trees.iter().enumerate() {
+            let tree = view.control().tree();
+            self.bind(
+                Source::Navigation,
+                |f| tree.on_item_expanding(f),
+                move |w, event| w.tree_expanding(i, event.get_item()),
+            );
+            self.bind(
+                Source::Navigation,
+                |f| tree.on_selection_changed(f),
+                move |w, event| w.tree_selected(i, event.get_item()),
+            );
+            self.bind(
+                Source::Navigation,
+                |f| tree.on_item_right_click(f),
+                move |w, event| w.tree_right_clicked(i, event.get_item()),
+            );
+        }
         self.bind(
             Source::Navigation,
             |f| self.filter_field.on_text_changed(f),
@@ -844,24 +894,50 @@ impl MainWindow {
         (focus, focused)
     }
 
-    /// Moves the keyboard focus to the list of `pane`.
+    /// Moves the keyboard focus to the list of `pane`: of the difference, its list or its
+    /// tree, whichever is shown.
     fn focus_list(&self, pane: Pane) {
         match pane {
             Pane::Snapshots => self.snapshots.set_focus(),
-            Pane::Difference => self.difference().set_focus(),
+            Pane::Difference => match self.layout() {
+                DifferenceView::List => self.difference().set_focus(),
+                DifferenceView::Tree => self.tree().control().tree().set_focus(),
+            },
         }
     }
 
-    /// The difference list shown.
+    /// The difference list shown, or that shown last while the difference is a tree.
     fn difference(&self) -> &ListCtrl {
         &self.differences[self.shown_difference.get()]
     }
 
-    /// Whether `hwnd` is a difference list, shown or not.
+    /// The difference tree shown, or that shown last while the difference is a list.
+    fn tree(&self) -> &TreeView<difference_tree::Native> {
+        &self.trees[self.shown_tree.get()]
+    }
+
+    /// Whether the difference shows as a list or as a tree (TASK-33).
+    fn layout(&self) -> DifferenceView {
+        self.difference_list.borrow().view().layout
+    }
+
+    /// The window of the control the difference shows in now: its list or its tree.
+    fn difference_window(&self) -> *mut c_void {
+        match self.layout() {
+            DifferenceView::List => self.difference().get_handle(),
+            DifferenceView::Tree => self.tree().control().tree().get_handle(),
+        }
+    }
+
+    /// Whether `hwnd` is a difference list or tree, shown or not.
     fn is_difference(&self, hwnd: *mut c_void) -> bool {
         self.differences
             .iter()
             .any(|list| list.get_handle() == hwnd)
+            || self
+                .trees
+                .iter()
+                .any(|tree| tree.control().tree().get_handle() == hwnd)
     }
 
     fn apply(&self, routed: Route) {
@@ -978,6 +1054,8 @@ impl MainWindow {
             CommandId::SortByFolder => self.sort_by(SortColumn::Folder),
             CommandId::SortAscending => self.sort_direction(false),
             CommandId::SortDescending => self.sort_direction(true),
+            CommandId::ViewAsList => self.set_layout(DifferenceView::List),
+            CommandId::ViewAsTree => self.set_layout(DifferenceView::Tree),
             CommandId::Details => self.show_details(),
             CommandId::ShowInExplorer => self.show_in_explorer(),
             CommandId::KeyboardShortcuts => help::show_shortcuts(&self.frame, s),
@@ -1289,6 +1367,7 @@ impl MainWindow {
             focus_after_comparison: self.focus_after_comparison(),
             size_format: self.difference_list.borrow().size_format(),
             attribute_format: self.difference_list.borrow().attribute_format(),
+            tree_node_text: self.difference_list.borrow().node_text(),
             confirm_snapshot_deletion: self.confirm_deletion(),
             warn_missing_entry: self.warn_missing_entry(),
         };
@@ -1302,6 +1381,7 @@ impl MainWindow {
                 .and_then(|()| settings.set_focus_after_comparison(values.focus_after_comparison))
                 .and_then(|()| settings.set_size_format(values.size_format))
                 .and_then(|()| settings.set_attribute_format(values.attribute_format))
+                .and_then(|()| settings.set_tree_node_text(values.tree_node_text))
                 .and_then(|()| {
                     settings.set_confirm_snapshot_deletion(values.confirm_snapshot_deletion)
                 })
@@ -1316,12 +1396,14 @@ impl MainWindow {
                 return;
             }
         }
-        // Sizes in the list and the summary as the setting «Розмір» says (TASK-13 #17), and
-        // attributes in the details as «Атрибути» says (TASK-14 #7).
+        // Sizes in the list and the summary as the setting «Розмір» says (TASK-13 #17),
+        // attributes in the details as «Атрибути» says (TASK-14 #7), and the tree's nodes
+        // as «Вузли дерева» says (TASK-33 #6).
         let current = {
             let mut list = self.difference_list.borrow_mut();
             list.set_size_format(values.size_format);
             list.set_attribute_format(values.attribute_format);
+            list.set_node_text(values.tree_node_text);
             list.current()
         };
         self.refresh_difference(current);
@@ -1628,6 +1710,8 @@ impl MainWindow {
     /// row when `focus` says so (#12–#14, #21). The view stays, the text filter goes
     /// (TASK-13 #28), and the new list is named by the summary of its difference before
     /// it shows, so a screen reader names it so when the focus comes to it (TASK-13 #3).
+    /// As a tree, the difference goes into the tree not shown the same way, with the way
+    /// to its first change expanded and the focus there (TASK-33 #8).
     fn show_difference(&self, difference: Difference, profile: ProfileFile, focus: bool) {
         let current = self
             .difference_list
@@ -1636,6 +1720,16 @@ impl MainWindow {
         self.filter_field.change_value("");
         self.showing_timer.stop();
         self.refresh_pair();
+        if self.layout() == DifferenceView::Tree {
+            self.show_difference_tree(focus);
+            return;
+        }
+        // The trees' nodes were those of the difference shown before.
+        for tree in &self.trees {
+            if !tree.is_empty() {
+                tree.clear();
+            }
+        }
         let count = self.difference_list.borrow().len();
         let old = self.difference();
         let next = 1 - self.shown_difference.get();
@@ -1656,16 +1750,139 @@ impl MainWindow {
         old.set_item_count(0);
     }
 
-    /// The list shown fills the panel of the difference lists; the other has no size.
+    /// The difference just put in the model goes into the tree not shown, which takes the
+    /// place of the shown one (TASK-33 #8), as with the lists.
+    fn show_difference_tree(&self, focus: bool) {
+        let old = self.tree();
+        let next = 1 - self.shown_tree.get();
+        let new = &self.trees[next];
+        {
+            let model = self.difference_list.borrow();
+            new.fill(&*model, model.tree_current());
+        }
+        new.control().tree().enable(true);
+        self.shown_tree.set(next);
+        self.place_difference_lists();
+        self.describe_difference();
+        if focus {
+            new.control().tree().set_focus();
+        }
+        old.control().tree().enable(false);
+        old.clear();
+    }
+
+    /// The control the difference shows in fills the panel of the difference lists; the
+    /// other three have no size (TASK-33 #3).
     fn place_difference_lists(&self) {
         let size = self.difference_holder.get_client_size();
-        let shown = self.shown_difference.get();
-        for (i, list) in self.differences.iter().enumerate() {
-            if i == shown {
-                list.set_size_with_pos(0, 0, size.width, size.height);
+        let layout = self.layout();
+        let (list, tree) = (self.shown_difference.get(), self.shown_tree.get());
+        let place = |window: &dyn WxWidget, shown: bool| {
+            if shown {
+                window.set_size_with_pos(0, 0, size.width, size.height);
             } else {
-                list.set_size_with_pos(0, 0, 0, 0);
+                window.set_size_with_pos(0, 0, 0, 0);
             }
+        };
+        for (i, control) in self.differences.iter().enumerate() {
+            place(control, layout == DifferenceView::List && i == list);
+        }
+        for (i, view) in self.trees.iter().enumerate() {
+            place(
+                view.control().tree(),
+                layout == DifferenceView::Tree && i == tree,
+            );
+        }
+    }
+
+    /// «Списком» or «Деревом», or Ctrl+T (TASK-33 #3, #7): the difference shows the other
+    /// way in the same place, kept for the next starts, with the focus on the same entry.
+    /// The focus that was on the difference goes to the new control, which screen readers
+    /// name with the entry; with the focus elsewhere, the status bar says how the
+    /// difference shows now.
+    fn set_layout(&self, layout: DifferenceView) {
+        if self.layout() == layout {
+            return;
+        }
+        let here = self.focus().in_list(Pane::Difference);
+        self.difference_list.borrow_mut().set_layout(layout);
+        if let Ok(settings) = &self.settings {
+            let _ = settings.set_difference_view(layout);
+        }
+        match layout {
+            DifferenceView::Tree => {
+                let view = self.tree();
+                let model = self.difference_list.borrow();
+                // A tree shown before keeps what was expanded in it.
+                if view.is_empty() {
+                    view.fill(&*model, model.tree_current());
+                } else {
+                    view.refresh(&*model, model.tree_current());
+                }
+                view.control().tree().enable(true);
+            }
+            DifferenceView::List => {
+                let list = self.difference();
+                let (count, current) = {
+                    let model = self.difference_list.borrow();
+                    (model.len(), model.current())
+                };
+                list.set_item_count(count as i64);
+                if let Some(row) = current {
+                    win32::lists::select_only(list.get_handle(), row);
+                }
+                if count > 0 {
+                    list.refresh_items(0, count as i64 - 1);
+                }
+                list.enable(true);
+            }
+        }
+        self.place_difference_lists();
+        self.describe_difference();
+        if here {
+            self.focus_list(Pane::Difference);
+        } else {
+            self.say(self.s.layout_shown(layout));
+        }
+        // Disabled once the focus has left it, so that the focus does not go elsewhere.
+        match layout {
+            DifferenceView::Tree => self.difference().enable(false),
+            DifferenceView::List => self.tree().control().tree().enable(false),
+        }
+    }
+
+    /// The node of `item` of the tree `tree` is about to expand: its children come now,
+    /// the first time (TASK-33 #2).
+    fn tree_expanding(&self, tree: usize, item: Option<TreeItemId>) {
+        let view = &self.trees[tree];
+        if view.busy() {
+            return;
+        }
+        let Some(node) = item.and_then(|item| view.control().node_of(&item)) else {
+            return;
+        };
+        let model = self.difference_list.borrow();
+        view.expanding(node, &*model);
+    }
+
+    /// The focus of the tree `tree` has moved to `item`: the model keeps its node.
+    fn tree_selected(&self, tree: usize, item: Option<TreeItemId>) {
+        let view = &self.trees[tree];
+        if view.busy() || tree != self.shown_tree.get() {
+            return;
+        }
+        if let Some(node) = item.and_then(|item| view.control().node_of(&item)) {
+            self.difference_list.borrow_mut().tree_focus(node);
+        }
+    }
+
+    /// A right click on `item` of the tree `tree`: the node gets the focus, so the
+    /// context menu that follows acts on it.
+    fn tree_right_clicked(&self, tree: usize, item: Option<TreeItemId>) {
+        let control = self.trees[tree].control().tree();
+        if let Some(item) = item {
+            control.set_focus();
+            control.select_item(&item);
         }
     }
 
@@ -1678,7 +1895,7 @@ impl MainWindow {
         let Ok(index) = usize::try_from(index) else {
             return;
         };
-        if list != self.shown_difference.get() {
+        if list != self.shown_difference.get() || self.layout() != DifferenceView::List {
             return;
         }
         self.difference_list.borrow_mut().focus(index);
@@ -1690,16 +1907,22 @@ impl MainWindow {
 
     /// Brings the difference list in line with the model once the view or the difference
     /// changed: its rows, the row with the focus, at `current` (#21, #27), and what is
-    /// said about the difference.
+    /// said about the difference. The tree, when it is shown, changes its items in place,
+    /// its focus where the model says (TASK-33 #4).
     fn refresh_difference(&self, current: Option<usize>) {
-        let list = self.difference();
-        let count = self.difference_list.borrow().len();
-        list.set_item_count(count as i64);
-        if let Some(row) = current {
-            win32::lists::select_only(list.get_handle(), row);
-        }
-        if count > 0 {
-            list.refresh_items(0, count as i64 - 1);
+        if self.layout() == DifferenceView::Tree {
+            let model = self.difference_list.borrow();
+            self.tree().refresh(&*model, model.tree_current());
+        } else {
+            let list = self.difference();
+            let count = self.difference_list.borrow().len();
+            list.set_item_count(count as i64);
+            if let Some(row) = current {
+                win32::lists::select_only(list.get_handle(), row);
+            }
+            if count > 0 {
+                list.refresh_items(0, count as i64 - 1);
+            }
         }
         self.describe_difference();
     }
@@ -1726,8 +1949,10 @@ impl MainWindow {
                 &key(CommandId::CompareWith),
             )
         });
+        // The tree is named as the list, and has no empty text to show (TASK-33).
+        let shown = self.difference_window();
+        win32::accessibility::set_accessible_name(shown, &name);
         let list = self.difference().get_handle();
-        win32::accessibility::set_accessible_name(list, &name);
         self.difference_empty_texts.set(list, &name);
         // The caret stays where it is while the text does.
         if self.comparison_field.get_value() != text {
@@ -1897,13 +2122,11 @@ impl MainWindow {
     /// window of their own (#1, #2), whose title names the entry. The jobs' timer rests
     /// while it is open, as all through an event, so the difference does not change under
     /// it, and the focus goes back where it was — on the same change, when it was in the
-    /// list.
+    /// list. In the tree, a folder that is no change itself has its path and what changed
+    /// inside it (TASK-33 #9).
     fn show_details(&self) {
         let s = self.s;
-        let details = {
-            let list = self.difference_list.borrow();
-            list.current().and_then(|row| list.details(row))
-        };
+        let details = self.difference_list.borrow().current_details();
         let Some(details) = details else {
             return;
         };
@@ -1916,19 +2139,26 @@ impl MainWindow {
     /// or the nearest one above, to open without a selection, after a question when the
     /// setting asks for one (#12, #13). When no folder of the path is on disk, nothing
     /// opens, and the status bar says why, as for a command that cannot run now; when the
-    /// shell fails, a window says so, as for the failure of any command (ADR-0013).
+    /// shell fails, a window says so, as for the failure of any command (ADR-0013). A
+    /// folder of the tree that is no change itself opens, its contents shown (TASK-33 #9).
     fn show_in_explorer(&self) {
         let s = self.s;
         let command = &plain(s.command(CommandId::ShowInExplorer));
-        let path = {
-            let list = self.difference_list.borrow();
-            list.current().and_then(|row| list.entry_path(row))
+        let location = self.difference_list.borrow().current_location();
+        let (path, reveal) = match location {
+            Some(Location::Entry(path)) => {
+                let reveal = explorer::reveal(&path, explorer::on_disk);
+                (path, reveal)
+            }
+            Some(Location::Folder(path)) => {
+                let reveal = explorer::open_folder(&path, explorer::on_disk);
+                (path, reveal)
+            }
+            None => return,
         };
-        let Some(path) = path else {
-            return;
-        };
-        let shown = match explorer::reveal(&path, explorer::on_disk) {
+        let shown = match reveal {
             Reveal::Select(entry) => win32::shell::select_in_explorer(&entry),
+            Reveal::Inside(folder) => win32::shell::open_in_explorer(&folder),
             Reveal::Open(folder) => {
                 if self.warn_missing_entry() {
                     let question = s.entry_gone_question();
@@ -2541,9 +2771,12 @@ impl MainWindow {
                 );
             }
         }
-        let (x, y) = at.unwrap_or_else(|| match pane {
-            Pane::Snapshots => self.snapshots.control().context_menu_point(),
-            Pane::Difference => win32::lists::context_menu_point(self.difference().get_handle()),
+        let (x, y) = at.unwrap_or_else(|| match (pane, self.layout()) {
+            (Pane::Snapshots, _) => self.snapshots.control().context_menu_point(),
+            (Pane::Difference, DifferenceView::List) => {
+                win32::lists::context_menu_point(self.difference().get_handle())
+            }
+            (Pane::Difference, DifferenceView::Tree) => self.tree().control().context_menu_point(),
         });
         self.main_frame.popup(menu_items.default.is_some(), || {
             self.frame.popup_menu(&mut menu, Some(Point::new(x, y)))

@@ -36,6 +36,9 @@ pub enum Property {
     ProductVersion,
     Target,
     Inaccessible,
+    /// What changed inside a folder of the difference tree that is no change itself
+    /// (TASK-33 #9): the line after its path.
+    Inside,
 }
 
 /// Why an entry could not be read in a snapshot, as far as the snapshot knows it (decided

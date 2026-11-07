@@ -4,16 +4,17 @@ use revisor_core::compare::{Side, Warning};
 use revisor_core::exclude::PatternError;
 use revisor_core::scan::EntryKind;
 use revisor_core::settings::{
-    AttributeFormat, ChangeType, FocusAfterComparison, FocusAfterSnapshot, Language, SizeFormat,
+    AttributeFormat, ChangeType, DifferenceView, FocusAfterComparison, FocusAfterSnapshot,
+    Language, SizeFormat, TreeNodeText,
 };
 
 use super::plural::{Category, category};
-use super::{Failure, Lang, Strings, error_code, in_sentence};
+use super::{Failure, Lang, Strings, error_code, in_sentence, lower_first};
 use crate::commands::{CommandId, MenuId, Pane, Reason, SubmenuId};
 use crate::details::{Attribute, Inaccessibility, Property, Unreadable};
 use crate::difference::{
-    Column, Counted, Field, InaccessibleIn, PairText, RowChange, SizeChange, SnapshotText,
-    SummaryText,
+    Column, Counted, Field, InaccessibleIn, NodeText, PairText, RowChange, SizeChange,
+    SnapshotText, SummaryText,
 };
 
 pub struct En;
@@ -91,6 +92,8 @@ impl Strings for En {
             CommandId::SortByFolder => "&Folder",
             CommandId::SortAscending => "&Ascending",
             CommandId::SortDescending => "D&escending",
+            CommandId::ViewAsList => "&List",
+            CommandId::ViewAsTree => "T&ree",
             CommandId::KeyboardShortcuts => "&Keyboard shortcuts",
             CommandId::About => "&About revisor",
         }
@@ -133,6 +136,7 @@ impl Strings for En {
             Reason::NoOtherSnapshot => "the profile has no other snapshot",
             Reason::AlreadyAdmin => "revisor is already running as administrator",
             Reason::NoChangeShown => "the difference list shows no changes",
+            Reason::TreeSortedByName => "the tree is always sorted by name",
         }
     }
 
@@ -158,8 +162,12 @@ impl Strings for En {
     fn in_list(&self, key: &str, pane: Pane) -> String {
         match pane {
             Pane::Snapshots => format!("{key} in the snapshot list"),
-            Pane::Difference => format!("{key} in the difference list"),
+            Pane::Difference => format!("{key} in the difference list or tree"),
         }
+    }
+
+    fn either(&self, first: &str, second: &str) -> String {
+        format!("{first} or {}", lower_first(second))
     }
 
     fn navigation(&self) -> &'static str {
@@ -939,6 +947,55 @@ impl Strings for En {
         }
     }
 
+    fn tree_node(&self, node: &NodeText) -> String {
+        let change = node.change.as_ref().map(|(change, what)| {
+            let mut text = lower_first(change);
+            if !what.is_empty() {
+                text.push_str(": ");
+                text.push_str(what);
+            }
+            (text, !what.is_empty())
+        });
+        let inside = node.inside.as_ref().map(|(changes, inaccessible)| {
+            let mut parts = Vec::new();
+            if changes.n > 0 {
+                parts.push(self.counted(changes, "change", "changes"));
+            }
+            if inaccessible.n > 0 {
+                parts.push(format!("{} inaccessible", inaccessible.text));
+            }
+            parts.join(", ")
+        });
+        let inside = inside.filter(|inside| !inside.is_empty());
+        let name = &node.name;
+        match (change, inside) {
+            (None, None) => name.clone(),
+            (Some((change, _)), None) => format!("{name} — {change}"),
+            (None, Some(inside)) => format!("{name} — {inside}"),
+            // After what changed, the count follows a semicolon, not to read as a field.
+            (Some((change, true)), Some(inside)) => format!("{name} — {change}; {inside}"),
+            (Some((change, false)), Some(inside)) => format!("{name} — {change}, {inside}"),
+        }
+    }
+
+    fn layout_shown(&self, layout: DifferenceView) -> &'static str {
+        match layout {
+            DifferenceView::List => "The difference is shown as a list.",
+            DifferenceView::Tree => "The difference is shown as a tree.",
+        }
+    }
+
+    fn tree_nodes(&self) -> &'static str {
+        "&Tree nodes"
+    }
+
+    fn tree_node_option(&self, value: TreeNodeText) -> &'static str {
+        match value {
+            TreeNodeText::Long => "Name, change, and what changed",
+            TreeNodeText::Short => "Name and change only",
+        }
+    }
+
     fn property(&self, property: Property) -> &'static str {
         match property {
             Property::Path => "Path",
@@ -953,6 +1010,7 @@ impl Strings for En {
             Property::ProductVersion => "Product version",
             Property::Target => "Target",
             Property::Inaccessible => "Inaccessible",
+            Property::Inside => "Inside",
         }
     }
 

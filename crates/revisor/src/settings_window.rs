@@ -1,15 +1,16 @@
 //! The settings window (TASK-9): the application's own settings (ADR-0007) that have a
 //! control of their own — the interface language (TASK-16), what the focus does when a
 //! snapshot ends, what it does when a comparison ends (TASK-11), how sizes are written
-//! (TASK-13), how the details of a change write attributes (TASK-14), whether deleting
-//! snapshots asks first, and whether showing a change no longer on disk in File Explorer
-//! asks first (TASK-14). The profile opened last and the view of the difference list are
-//! kept without a control.
+//! (TASK-13), how the details of a change write attributes (TASK-14), what the nodes of the
+//! difference tree say (TASK-33), whether deleting snapshots asks first, and whether
+//! showing a change no longer on disk in File Explorer asks first (TASK-14). The profile
+//! opened last and the view of the difference — its types, order, list or tree — are kept
+//! without a control.
 
 use std::rc::Rc;
 
 use revisor_core::settings::{
-    AttributeFormat, FocusAfterComparison, FocusAfterSnapshot, Language, SizeFormat,
+    AttributeFormat, FocusAfterComparison, FocusAfterSnapshot, Language, SizeFormat, TreeNodeText,
 };
 use wxdragon::prelude::*;
 
@@ -25,6 +26,7 @@ pub struct Values {
     pub focus_after_comparison: FocusAfterComparison,
     pub size_format: SizeFormat,
     pub attribute_format: AttributeFormat,
+    pub tree_node_text: TreeNodeText,
     pub confirm_snapshot_deletion: bool,
     pub warn_missing_entry: bool,
 }
@@ -38,17 +40,19 @@ pub(crate) enum Control {
     FocusAfterComparison,
     SizeFormat,
     AttributeFormat,
+    TreeNodes,
     ConfirmDeletion,
     WarnMissingEntry,
 }
 
 impl Control {
-    const ALL: [Control; 7] = [
+    const ALL: [Control; 8] = [
         Self::Language,
         Self::FocusAfterSnapshot,
         Self::FocusAfterComparison,
         Self::SizeFormat,
         Self::AttributeFormat,
+        Self::TreeNodes,
         Self::ConfirmDeletion,
         Self::WarnMissingEntry,
     ];
@@ -61,6 +65,7 @@ impl Control {
             Self::FocusAfterComparison => |s| s.focus_after_comparison(),
             Self::SizeFormat => |s| s.size_format(),
             Self::AttributeFormat => |s| s.attribute_format(),
+            Self::TreeNodes => |s| s.tree_nodes(),
             Self::ConfirmDeletion => |s| s.confirm_snapshot_deletion(),
             Self::WarnMissingEntry => |s| s.warn_missing_entry(),
         }
@@ -104,6 +109,7 @@ struct Window {
     comparison_focus: Choice,
     size_format: Choice,
     attribute_format: Choice,
+    tree_nodes: Choice,
     confirm: CheckBox,
     warn_missing: CheckBox,
 }
@@ -174,6 +180,18 @@ pub fn show(parent: &Frame, s: &'static dyn Strings, initial: Values) -> Option<
         .position(|&v| v == initial.attribute_format)
         .unwrap_or(0);
     attribute_format.set_selection(chosen as u32);
+    let tree_nodes_label = StaticText::builder(&dialog)
+        .with_label(&Control::TreeNodes.label(s))
+        .build();
+    let tree_nodes = Choice::builder(&dialog).build();
+    for value in TreeNodeText::ALL {
+        tree_nodes.append(s.tree_node_option(value));
+    }
+    let chosen = TreeNodeText::ALL
+        .iter()
+        .position(|&v| v == initial.tree_node_text)
+        .unwrap_or(0);
+    tree_nodes.set_selection(chosen as u32);
     let confirm = CheckBox::builder(&dialog)
         .with_label(&Control::ConfirmDeletion.label(s))
         .build();
@@ -205,6 +223,8 @@ pub fn show(parent: &Frame, s: &'static dyn Strings, initial: Values) -> Option<
     sizer.add(&size_format, 0, SizerFlag::Expand | SizerFlag::All, 12);
     sizer.add(&attribute_label, 0, side, 12);
     sizer.add(&attribute_format, 0, SizerFlag::Expand | SizerFlag::All, 12);
+    sizer.add(&tree_nodes_label, 0, side, 12);
+    sizer.add(&tree_nodes, 0, SizerFlag::Expand | SizerFlag::All, 12);
     sizer.add(&confirm, 0, side | SizerFlag::Bottom, 12);
     sizer.add(&warn_missing, 0, side | SizerFlag::Bottom, 12);
     let commit_row = BoxSizer::builder(Orientation::Horizontal).build();
@@ -224,6 +244,7 @@ pub fn show(parent: &Frame, s: &'static dyn Strings, initial: Values) -> Option<
         comparison_focus,
         size_format,
         attribute_format,
+        tree_nodes,
         confirm,
         warn_missing,
     });
@@ -251,6 +272,7 @@ impl Window {
             Control::FocusAfterComparison => self.comparison_focus.set_focus(),
             Control::SizeFormat => self.size_format.set_focus(),
             Control::AttributeFormat => self.attribute_format.set_focus(),
+            Control::TreeNodes => self.tree_nodes.set_focus(),
             Control::ConfirmDeletion => {
                 self.confirm.set_value(!self.confirm.get_value());
                 self.confirm.set_focus();
@@ -268,6 +290,7 @@ impl Window {
         let comparison = self.comparison_focus.get_selection().unwrap_or(0) as usize;
         let size = self.size_format.get_selection().unwrap_or(0) as usize;
         let attributes = self.attribute_format.get_selection().unwrap_or(0) as usize;
+        let tree_nodes = self.tree_nodes.get_selection().unwrap_or(0) as usize;
         Values {
             language: Language::ALL.get(language).copied().unwrap_or_default(),
             focus_after_snapshot: FocusAfterSnapshot::ALL
@@ -281,6 +304,10 @@ impl Window {
             size_format: SizeFormat::ALL.get(size).copied().unwrap_or_default(),
             attribute_format: AttributeFormat::ALL
                 .get(attributes)
+                .copied()
+                .unwrap_or_default(),
+            tree_node_text: TreeNodeText::ALL
+                .get(tree_nodes)
                 .copied()
                 .unwrap_or_default(),
             confirm_snapshot_deletion: self.confirm.get_value(),
@@ -327,6 +354,9 @@ mod tests {
         // TASK-14 #7, #13.
         assert_eq!(Control::AttributeFormat.label(&En), "&Attributes:");
         assert_eq!(Control::AttributeFormat.label(&Uk), "Атрибути (&A):");
+        // TASK-33 #6.
+        assert_eq!(Control::TreeNodes.label(&En), "&Tree nodes:");
+        assert_eq!(Control::TreeNodes.label(&Uk), "Вузли дерева (&T):");
         assert_eq!(
             Control::WarnMissingEntry.label(&En),
             "&Warn when the entry is no longer on disk"
@@ -365,6 +395,25 @@ mod tests {
             ]
         );
         assert_eq!(AttributeFormat::ALL[0], AttributeFormat::default());
+    }
+
+    #[test]
+    fn the_tree_node_options_are_named_in_both_languages_in_setting_order() {
+        // TASK-33 #6; the first, the long text, is the default.
+        let uk: Vec<&str> = TreeNodeText::ALL
+            .iter()
+            .map(|&v| Uk.tree_node_option(v))
+            .collect();
+        assert_eq!(uk, ["Ім'я, зміна й що змінилося", "Лише ім'я й зміна"]);
+        let en: Vec<&str> = TreeNodeText::ALL
+            .iter()
+            .map(|&v| En.tree_node_option(v))
+            .collect();
+        assert_eq!(
+            en,
+            ["Name, change, and what changed", "Name and change only"]
+        );
+        assert_eq!(TreeNodeText::ALL[0], TreeNodeText::default());
     }
 
     #[test]

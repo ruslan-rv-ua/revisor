@@ -2,7 +2,7 @@
 //! they can run now.
 
 use revisor_core::settings::DifferenceSort;
-pub use revisor_core::settings::{ChangeType, SortColumn};
+pub use revisor_core::settings::{ChangeType, DifferenceView, SortColumn};
 
 use crate::difference::ListState;
 use crate::jobs::Flags;
@@ -62,6 +62,8 @@ pub struct AppState {
     /// which order (TASK-13): what the check marks of the menu «Різниця» say.
     pub shown_types: [bool; 4],
     pub sort: DifferenceSort,
+    /// Whether the difference shows as a list or as a tree (TASK-33).
+    pub layout: DifferenceView,
 }
 
 impl AppState {
@@ -108,6 +110,7 @@ impl AppState {
             elevated,
             shown_types: difference.view.types,
             sort: difference.view.sort,
+            layout: difference.view.layout,
         }
     }
 
@@ -149,6 +152,7 @@ mod tests {
                         column: SortColumn::Size,
                         descending: true,
                     },
+                    layout: DifferenceView::Tree,
                 },
             },
             elevated: true,
@@ -173,6 +177,7 @@ mod tests {
         assert!(state.shows(ChangeType::Added) && !state.shows(ChangeType::Deleted));
         assert_eq!(state.sort.column, SortColumn::Size);
         assert!(state.sort.descending);
+        assert_eq!(state.layout, DifferenceView::Tree);
         assert!(state.elevated);
     }
 
@@ -184,8 +189,9 @@ mod tests {
         assert_eq!(state.snapshots, 0);
         assert_eq!(state.current_snapshot, None);
         assert!(!state.has_difference && !state.snapshot_running && !state.elevated);
-        // No difference yet: every type shown, by path, as a new window has it.
+        // No difference yet: every type shown, by path, as a list, as a new window has it.
         assert_eq!(state.shown_types, new.shown_types);
         assert_eq!(state.sort, new.sort);
+        assert_eq!(state.layout, new.layout);
     }
 }
