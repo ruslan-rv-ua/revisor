@@ -9,6 +9,19 @@ release that section becomes the version's own, and the release page publishes i
 
 ## [Unreleased]
 
+### Added
+
+- **The difference can be viewed as a tree of its folders.** `Ctrl+T`, or List and Tree in
+  the Difference menu, switch between the list and the tree in the same place, with the focus
+  on the same entry, and revisor keeps the view for its next start. The tree shows only the
+  folders with changes, by name; a folder gets its contents when you first expand it, so even
+  a difference of a million rows opens at once, expanded to its first change. A node says its
+  change and what changed, and a folder how many changes it holds; the new setting Tree nodes
+  shortens that to the name and the change. The filter and the type check boxes work in the
+  tree too, and Details and Show in File Explorer act on a node as on a row: for a folder that
+  did not change itself, Details gives its path and the summary of its contents, and File
+  Explorer opens it. Sorting stays with the list.
+
 ### Changed
 
 - **Failures of «Show in File Explorer» and «Restart as administrator» open a window.**

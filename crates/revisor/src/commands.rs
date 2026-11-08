@@ -6,7 +6,7 @@
 use crate::access::plain;
 use crate::i18n::Strings;
 use crate::keys::{Key, Shortcut};
-use crate::state::{AppState, ChangeType, SortColumn};
+use crate::state::{AppState, ChangeType, DifferenceView, SortColumn};
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
 pub enum CommandId {
@@ -42,6 +42,8 @@ pub enum CommandId {
     SortByFolder,
     SortAscending,
     SortDescending,
+    ViewAsList,
+    ViewAsTree,
     KeyboardShortcuts,
     About,
 }
@@ -114,6 +116,9 @@ pub enum Reason {
     AlreadyAdmin,
     /// The difference list shows no row, so there is no change to act on (TASK-14).
     NoChangeShown,
+    /// The difference shows as a tree, whose nodes are always in the order of their names
+    /// (TASK-33 #5).
+    TreeSortedByName,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -280,10 +285,20 @@ fn difference_shown(state: &AppState) -> Result<(), Reason> {
 
 /// The difference list shows a change to act on (TASK-14): a row of a difference of
 /// whichever profile, the one with the focus. The difference is in memory, so no profile
-/// or snapshot is needed (TASK-13 #6).
+/// or snapshot is needed (TASK-13 #6). The tree shows the same rows (TASK-33).
 fn change_shown(state: &AppState) -> Result<(), Reason> {
     difference_shown(state)?;
     require(state.difference_rows > 0, Reason::NoChangeShown)
+}
+
+/// The difference shows as a list, whose order can change: the tree's nodes are always
+/// by name (TASK-33 #5).
+fn list_sortable(state: &AppState) -> Result<(), Reason> {
+    difference_shown(state)?;
+    require(
+        state.layout == DifferenceView::List,
+        Reason::TreeSortedByName,
+    )
 }
 
 /// The current snapshot can be compared (TASK-11): the profile has snapshots and its
@@ -377,12 +392,23 @@ const fn sort_radio(id: CommandId, group: u8, checked: fn(&AppState) -> bool) ->
     Command {
         kind: CommandKind::Radio,
         checked: Some(checked),
-        ..item(id, sort_place(group), difference_shown)
+        ..item(id, sort_place(group), list_sortable)
     }
 }
 
 fn sorted_by(state: &AppState, column: SortColumn) -> bool {
     state.sort.column == column
+}
+
+/// «Списком» or «Деревом» (TASK-33 #7): both items have Ctrl+T, which runs the one not
+/// marked, so it switches the view.
+const fn view_radio(id: CommandId, checked: fn(&AppState) -> bool) -> Command {
+    Command {
+        kind: CommandKind::Radio,
+        shortcut: Some(key(Key::Letter(b'T')).ctrl()),
+        checked: Some(checked),
+        ..item(id, place(MenuId::Difference, 2), difference_shown)
+    }
 }
 
 pub static COMMANDS: &[Command] = &[
@@ -569,6 +595,8 @@ pub static COMMANDS: &[Command] = &[
         checked: Some(|s| s.shows(ChangeType::Inaccessible)),
         ..shown_check(CommandId::ShowInaccessible, 4)
     },
+    view_radio(CommandId::ViewAsList, |s| s.layout == DifferenceView::List),
+    view_radio(CommandId::ViewAsTree, |s| s.layout == DifferenceView::Tree),
     sort_radio(CommandId::SortByPath, 0, |s| sorted_by(s, SortColumn::Path)),
     sort_radio(CommandId::SortByName, 0, |s| sorted_by(s, SortColumn::Name)),
     sort_radio(CommandId::SortByChange, 0, |s| {
@@ -602,15 +630,24 @@ pub static COMMANDS: &[Command] = &[
 pub fn validate(table: &[Command], en: &dyn Strings) -> Vec<String> {
     let mut problems = Vec::new();
 
-    // Shortcuts: allowed by the rules, and one meaning each in the whole main window.
+    // Shortcuts: allowed by the rules, and one meaning each in the whole main window. The
+    // two radio items of one group may share one, which switches between them (TASK-33).
     for (i, c) in table.iter().enumerate() {
         let Some(shortcut) = c.shortcut else { continue };
         let key = shortcut.name(en);
         if let Err(rule) = shortcut.check_rules() {
             problems.push(format!("{}: {key}: {rule}", c.name(en)));
         }
+        let sharing = table
+            .iter()
+            .filter(|o| o.shortcut == Some(shortcut))
+            .count();
         for (j, other) in table.iter().enumerate() {
-            let same_shortcut = j > i && other.shortcut == Some(shortcut);
+            let switch = sharing == 2
+                && c.kind == CommandKind::Radio
+                && other.kind == CommandKind::Radio
+                && c.place == other.place;
+            let same_shortcut = j > i && other.shortcut == Some(shortcut) && !switch;
             let same_as_list_key = j != i && other.list_key.is_some_and(|(_, k)| k == shortcut);
             if same_shortcut || same_as_list_key {
                 problems.push(format!(
@@ -835,6 +872,97 @@ mod tests {
         assert!(!checked(CommandId::SortByPath, &state));
         assert!(checked(CommandId::SortDescending, &state));
         assert!(!checked(CommandId::SortAscending, &state));
+    }
+
+    #[test]
+    fn the_view_items_share_ctrl_t_and_the_tree_says_why_it_cannot_be_sorted() {
+        // TASK-33 #5, #7, #10.
+        let available = |id, state: &AppState| (command(id).available)(state);
+        let checked = |id, state: &AppState| (command(id).checked.unwrap())(state);
+        let list = AppState {
+            has_difference: true,
+            ..AppState::new()
+        };
+        let tree = AppState {
+            layout: DifferenceView::Tree,
+            ..list.clone()
+        };
+        for id in [CommandId::ViewAsList, CommandId::ViewAsTree] {
+            let c = command(id);
+            assert_eq!(c.kind, CommandKind::Radio, "{id:?}");
+            assert_eq!(c.place, place(MenuId::Difference, 2), "{id:?}");
+            assert_eq!(c.shortcut, Some(key(Key::Letter(b'T')).ctrl()), "{id:?}");
+            assert_eq!(available(id, &list), Ok(()), "{id:?}");
+            assert_eq!(available(id, &tree), Ok(()), "{id:?}");
+            assert_eq!(
+                available(id, &AppState::new()),
+                Err(Reason::NoDifference),
+                "{id:?}"
+            );
+        }
+        assert_eq!(letter(En.command(CommandId::ViewAsList)), Some(b'L'));
+        assert_eq!(letter(En.command(CommandId::ViewAsTree)), Some(b'R'));
+        assert!(checked(CommandId::ViewAsList, &list));
+        assert!(!checked(CommandId::ViewAsTree, &list));
+        assert!(checked(CommandId::ViewAsTree, &tree));
+        assert!(!checked(CommandId::ViewAsList, &tree));
+        // The tree is always by name; the order of the list stays for it.
+        for id in &DIFFERENCE_VIEW[5..] {
+            assert_eq!(available(*id, &list), Ok(()), "{id:?}");
+            assert_eq!(
+                available(*id, &tree),
+                Err(Reason::TreeSortedByName),
+                "{id:?}"
+            );
+        }
+        // The filter works in both.
+        for id in &DIFFERENCE_VIEW[..5] {
+            assert_eq!(available(*id, &tree), Ok(()), "{id:?}");
+        }
+        assert_eq!(
+            available(CommandId::Details, &tree),
+            Err(Reason::NoChangeShown)
+        );
+    }
+
+    #[test]
+    fn only_the_two_radio_items_of_one_group_may_share_a_shortcut() {
+        let ctrl_t = Some(key(Key::Letter(b'T')).ctrl());
+        let radio = |id| Command {
+            kind: CommandKind::Radio,
+            shortcut: ctrl_t,
+            ..item(id, place(MenuId::Difference, 2), always)
+        };
+        assert_eq!(
+            validate(
+                &[radio(CommandId::ViewAsList), radio(CommandId::ViewAsTree)],
+                &En
+            ),
+            Vec::<String>::new()
+        );
+        // A third, or one of another group or kind, is a clash.
+        let three = [
+            radio(CommandId::ViewAsList),
+            radio(CommandId::ViewAsTree),
+            radio(CommandId::SortByName),
+        ];
+        assert!(!validate(&three, &En).is_empty());
+        let other_group = [
+            radio(CommandId::ViewAsList),
+            Command {
+                place: place(MenuId::Difference, 3),
+                ..radio(CommandId::ViewAsTree)
+            },
+        ];
+        assert!(!validate(&other_group, &En).is_empty());
+        let check = [
+            radio(CommandId::ViewAsList),
+            Command {
+                kind: CommandKind::Check,
+                ..radio(CommandId::ViewAsTree)
+            },
+        ];
+        assert!(!validate(&check, &En).is_empty());
     }
 
     #[test]

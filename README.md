@@ -43,9 +43,10 @@ The main scenario takes four steps, all from the keyboard:
   snapshot of the profile (`Ctrl+F7`), or a new snapshot with the one before it in a single
   command (`Ctrl+F5`). The difference always runs from the earlier snapshot to the later one.
 - **Read the difference.** A list of added, deleted, modified and inaccessible entries, with
-  what changed in each and a summary above it. Filter it by type and by text, sort it by any
-  column, read the details of a change, before and after (`Alt+Enter`), or show it in File
-  Explorer (`Ctrl+Enter`). A difference of a million rows reads without delay.
+  what changed in each and a summary above it, or the same entries as a tree of their folders
+  (`Ctrl+T`), where a folder opens when you expand it. Filter it by type and by text, sort the
+  list by any column, read the details of a change, before and after (`Alt+Enter`), or show it
+  in File Explorer (`Ctrl+Enter`). A difference of a million rows reads without delay.
 - **In the background.** Snapshots and comparisons show their progress and can be canceled,
   and the window keeps responding.
 - **Nothing hidden by permissions.** An entry revisor cannot read is kept, marked inaccessible,
@@ -124,13 +125,14 @@ lists them in the application too.
 | `Delete` | Delete the selected snapshots (in the snapshot list only) |
 | `F7` | Compare the current snapshot with the previous one; `Enter` in the snapshot list does the same |
 | `Ctrl+F7` | Compare the current snapshot with another one you choose |
-| `Alt+Enter` | Show the details of the change in focus, before and after; `Enter` in the difference list does the same |
+| `Alt+Enter` | Show the details of the change in focus, before and after; `Enter` in the difference list or tree does the same |
 | `Ctrl+Enter` | Show the change in File Explorer |
 | `Ctrl+F` | Move to the Filter field; `Esc` there clears it |
 | `Ctrl+1` to `Ctrl+4` | Show or hide added, deleted, modified and inaccessible entries |
-| `F6`, `Shift+F6` | Move between the snapshot list and the difference list |
+| `Ctrl+T` | Show the difference as a tree, or as a list again |
+| `F6`, `Shift+F6` | Move between the snapshot list and the difference list or tree |
 | `Shift+F5`, `Shift+F7`, `Shift+F2` | Cancel the snapshot, the comparison, or a comment waiting for the profile database |
-| `Shift+F10` or the Application key | Open the context menu of the list in focus |
+| `Shift+F10` or the Application key | Open the context menu of the list or tree in focus |
 | `F1` | List the keyboard shortcuts |
 | `Alt+F4` | Exit |
 
@@ -180,8 +182,8 @@ snapshots there; `scoop uninstall revisor --purge` deletes them.
   scheduled snapshot: its shortcuts work only in its own window.
 - **It is not signed**, by decision; see [Direct download](#direct-download).
 
-Planned for later 0.x versions: a tree view of the difference, export to a text report and
-CSV, content hashes, detection of renames and moves, and a command line.
+Planned for later 0.x versions: export to a text report and CSV, content hashes, detection of
+renames and moves, and a command line.
 
 ## Building from source
 

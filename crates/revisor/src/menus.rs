@@ -101,27 +101,38 @@ pub fn window_title(profile: Option<&str>) -> String {
 }
 
 /// The text of the «Keyboard shortcuts» window: every command with a shortcut, by menu.
+/// The two radio items that share a shortcut, which switches between them, take one line:
+/// «Списком чи деревом — Ctrl+T» (TASK-33).
 pub fn shortcuts_text(s: &dyn Strings) -> String {
     let mut text = String::new();
     for menu in MenuId::ALL {
-        let mut lines = COMMANDS
+        let commands: Vec<&Command> = COMMANDS
             .iter()
-            .filter(|c| c.place.menu == menu)
-            .filter_map(|c| {
-                let shortcut = c.shortcut?;
-                let mut keys = shortcut.name(s);
-                if let Some(pane) = c.scope {
-                    keys = format!("{keys} {}", s.only_in(pane));
-                }
-                if let Some((pane, key)) = c.list_key {
-                    keys = format!("{keys}, {}", s.in_list(&key.name(s), pane));
-                }
-                Some(format!("{} — {keys}", c.spoken_name(s)))
-            });
-        if let Some(first) = lines.next() {
+            .filter(|c| c.place.menu == menu && c.shortcut.is_some())
+            .collect();
+        let mut lines = Vec::new();
+        let mut at = 0;
+        while let Some(c) = commands.get(at) {
+            let shortcut = c.shortcut.expect("only commands with a shortcut");
+            let mut name = c.spoken_name(s);
+            if let Some(other) = commands.get(at + 1).filter(|o| o.shortcut == c.shortcut) {
+                name = s.either(&name, &other.spoken_name(s));
+                at += 1;
+            }
+            let mut keys = shortcut.name(s);
+            if let Some(pane) = c.scope {
+                keys = format!("{keys} {}", s.only_in(pane));
+            }
+            if let Some((pane, key)) = c.list_key {
+                keys = format!("{keys}, {}", s.in_list(&key.name(s), pane));
+            }
+            lines.push(format!("{name} — {keys}"));
+            at += 1;
+        }
+        if !lines.is_empty() {
             text.push_str(&plain(s.menu(menu)));
             text.push('\n');
-            for line in std::iter::once(first).chain(lines) {
+            for line in lines {
                 text.push_str(&line);
                 text.push('\n');
             }
@@ -221,8 +232,10 @@ mod tests {
             "Зробити знімок — F5",
             "Видалити знімки — Delete (лише в переліку знімків)",
             "Порівняти з попереднім — F7, Enter у переліку знімків",
-            "Подробиці — Alt+Enter, Enter у списку різниці",
+            "Подробиці — Alt+Enter, Enter у списку чи дереві різниці",
             "Додані — Ctrl+1",
+            // Two items, one key, one line (TASK-33).
+            "Списком чи деревом — Ctrl+T",
             "Гарячі клавіші — F1",
             "Перейти між переліком знімків і списком різниці — F6, Shift+F6",
             "Контекстне меню — Shift+F10, Клавіша контекстного меню",
@@ -241,6 +254,25 @@ mod tests {
             shortcuts_text(&En)
                 .lines()
                 .any(|l| l == "Take snapshot — F5")
+        );
+        assert!(
+            shortcuts_text(&En)
+                .lines()
+                .any(|l| l == "List or tree — Ctrl+T")
+        );
+        assert!(!uk.contains("Деревом"), "the pair takes one line");
+    }
+
+    #[test]
+    fn the_view_items_show_ctrl_t_and_their_letters() {
+        // TASK-33 #7, #10: both items have the key that switches between them.
+        assert_eq!(
+            menu_label(&En, command(CommandId::ViewAsList)),
+            "&List\tCtrl+T"
+        );
+        assert_eq!(
+            menu_label(&Uk, command(CommandId::ViewAsTree)),
+            "Деревом (&R)\tCtrl+T"
         );
     }
 

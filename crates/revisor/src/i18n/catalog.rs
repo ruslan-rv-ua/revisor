@@ -18,7 +18,8 @@ use revisor_core::compare::{Side, Warning};
 use revisor_core::exclude::PatternError;
 use revisor_core::scan::EntryKind;
 use revisor_core::settings::{
-    AttributeFormat, ChangeType, FocusAfterComparison, FocusAfterSnapshot, Language, SizeFormat,
+    AttributeFormat, ChangeType, DifferenceView, FocusAfterComparison, FocusAfterSnapshot,
+    Language, SizeFormat, TreeNodeText,
 };
 use revisor_core::store::Unavailable;
 
@@ -27,8 +28,8 @@ use crate::access::plain;
 use crate::commands::{COMMANDS, CommandId, MenuId, Pane, Reason, SubmenuId};
 use crate::details::{Attribute, Inaccessibility, Property, Unreadable};
 use crate::difference::{
-    Column, Counted, Field, InaccessibleIn, PairText, RowChange, SizeChange, SnapshotText,
-    SummaryText,
+    Column, Counted, Field, InaccessibleIn, NodeText, PairText, RowChange, SizeChange,
+    SnapshotText, SummaryText,
 };
 use crate::menus;
 
@@ -154,6 +155,8 @@ fn entries_in(en: &dyn Strings, uk: &dyn Strings) -> Vec<Entry> {
             SortByFolder,
             SortAscending,
             SortDescending,
+            ViewAsList,
+            ViewAsTree,
             KeyboardShortcuts,
             About,
         }
@@ -207,6 +210,7 @@ fn entries_in(en: &dyn Strings, uk: &dyn Strings) -> Vec<Entry> {
         NoOtherSnapshot,
         AlreadyAdmin,
         NoChangeShown,
+        TreeSortedByName,
     });
     for reason in reasons {
         c.add(format!("reason.{reason:?}"), |s| s.reason(reason).into());
@@ -219,6 +223,7 @@ fn entries_in(en: &dyn Strings, uk: &dyn Strings) -> Vec<Entry> {
         c.add(format!("only_in.{pane:?}"), |s| s.only_in(pane));
         c.add(format!("in_list.{pane:?}"), |s| s.in_list("Enter", pane));
     }
+    c.add("either", |s| s.either("{first}", "{Second}"));
     c.add("navigation", |s| s.navigation().into());
     c.add("switch_panes", |s| s.switch_panes().into());
     c.add("context_menu", |s| s.context_menu().into());
@@ -734,6 +739,62 @@ fn entries_in(en: &dyn Strings, uk: &dyn Strings) -> Vec<Entry> {
         });
     }
 
+    // The difference tree (TASK-33): a file, a folder that is a change, a folder that is
+    // none, in the long and in the short text.
+    let node = |name: &str, change: Option<(&str, &str)>, inside: Option<(u64, u64)>| NodeText {
+        name: name.into(),
+        change: change.map(|(change, what)| (change.into(), what.into())),
+        inside: inside.map(|(changes, inaccessible)| (counted(changes), counted(inaccessible))),
+    };
+    let modified = |s: &dyn Strings| s.change(RowChange::Modified, EntryKind::File).to_string();
+    let folder_added = |s: &dyn Strings| s.change(RowChange::Added, EntryKind::Dir).to_string();
+    let folder_modified =
+        |s: &dyn Strings| s.change(RowChange::Modified, EntryKind::Dir).to_string();
+    let fields =
+        |s: &dyn Strings| format!("{}, {}", s.field(Field::Size), s.field(Field::DateModified));
+    c.add("tree_node (a file, long)", |s| {
+        s.tree_node(&node("{name}", Some((&modified(s), &fields(s))), None))
+    });
+    c.add("tree_node (a file, short)", |s| {
+        s.tree_node(&node("{name}", Some((&modified(s), "")), None))
+    });
+    for n in COUNTS {
+        c.add(format!("tree_node (a folder added, long)({n})"), |s| {
+            s.tree_node(&node("{name}", Some((&folder_added(s), "")), Some((n, 0))))
+        });
+        c.add(format!("tree_node (a folder, long)({n})"), |s| {
+            s.tree_node(&node("{name}", None, Some((n, n))))
+        });
+    }
+    c.add("tree_node (a folder modified, long)", |s| {
+        s.tree_node(&node(
+            "{name}",
+            Some((&folder_modified(s), s.field(Field::Attributes))),
+            Some((5, 0)),
+        ))
+    });
+    c.add(
+        "tree_node (a folder with inaccessible entries only, long)",
+        |s| s.tree_node(&node("{name}", None, Some((0, 3)))),
+    );
+    c.add("tree_node (a folder added, short)", |s| {
+        s.tree_node(&node("{name}", Some((&folder_added(s), "")), None))
+    });
+    c.add("tree_node (a folder, short)", |s| {
+        s.tree_node(&node("{name}", None, None))
+    });
+    for layout in all!(DifferenceView { List, Tree }) {
+        c.add(format!("layout_shown.{layout:?}"), |s| {
+            s.layout_shown(layout).into()
+        });
+    }
+    c.add("tree_nodes", |s| plain(s.tree_nodes()));
+    for value in all!(TreeNodeText { Long, Short }) {
+        c.add(format!("tree_node_option.{value:?}"), |s| {
+            s.tree_node_option(value).into()
+        });
+    }
+
     let properties = all!(Property {
         Path,
         Name,
@@ -747,6 +808,7 @@ fn entries_in(en: &dyn Strings, uk: &dyn Strings) -> Vec<Entry> {
         ProductVersion,
         Target,
         Inaccessible,
+        Inside,
     });
     for property in properties {
         c.add(format!("property.{property:?}"), |s| {

@@ -29,6 +29,9 @@ pub enum OnDisk {
 pub enum Reveal {
     /// The entry is on disk: its folder, with the entry selected (#11).
     Select(PathBuf),
+    /// A folder of the difference tree that is no change itself is on disk: its contents
+    /// (TASK-33 #9).
+    Inside(PathBuf),
     /// The entry is gone: the nearest folder of its path on disk, nothing selected (#12).
     Open(PathBuf),
     /// No folder of the path is on disk (#12).
@@ -40,6 +43,21 @@ pub fn reveal(path: &Path, on_disk: impl Fn(&Path) -> OnDisk) -> Reveal {
     if on_disk(path) != OnDisk::Missing {
         return Reveal::Select(path.to_path_buf());
     }
+    nearest_folder(path, on_disk)
+}
+
+/// What to show for the folder at `path`, a folder of the difference tree that is no
+/// change itself (TASK-33 #9): its contents, when it is there; else as for an entry gone,
+/// the nearest folder above that is.
+pub fn open_folder(path: &Path, on_disk: impl Fn(&Path) -> OnDisk) -> Reveal {
+    match on_disk(path) {
+        OnDisk::Folder | OnDisk::Unknown => Reveal::Inside(path.to_path_buf()),
+        OnDisk::Missing | OnDisk::Other => nearest_folder(path, on_disk),
+    }
+}
+
+/// The nearest folder above `path` on disk, or nowhere.
+fn nearest_folder(path: &Path, on_disk: impl Fn(&Path) -> OnDisk) -> Reveal {
     let mut folder = path.parent();
     while let Some(at) = folder.filter(|at| !at.as_os_str().is_empty()) {
         match on_disk(at) {
@@ -150,6 +168,29 @@ mod tests {
         assert_eq!(
             reveal(Path::new(r"C:\Games\setup.exe"), &on_disk),
             Reveal::Open(r"C:\".into())
+        );
+    }
+
+    #[test]
+    fn a_folder_of_the_tree_opens_itself_or_the_nearest_folder_above() {
+        // TASK-33 #9: a folder that is no change itself shows its contents.
+        let on_disk = disk(&[r"C:\", r"C:\App", r"C:\App\data"], &[r"C:\App\data.txt"]);
+        assert_eq!(
+            open_folder(Path::new(r"C:\App\data"), &on_disk),
+            Reveal::Inside(r"C:\App\data".into())
+        );
+        // Gone since, or a file in its place: the nearest folder above, as for an entry.
+        assert_eq!(
+            open_folder(Path::new(r"C:\App\plugins"), &on_disk),
+            Reveal::Open(r"C:\App".into())
+        );
+        assert_eq!(
+            open_folder(Path::new(r"C:\App\data.txt"), &on_disk),
+            Reveal::Open(r"C:\App".into())
+        );
+        assert_eq!(
+            open_folder(Path::new(r"E:\Backup"), &on_disk),
+            Reveal::Nowhere
         );
     }
 

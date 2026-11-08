@@ -3,7 +3,7 @@
 //! control and to Windows.
 
 use crate::access::{self, Act, Target};
-use crate::commands::{COMMANDS, CommandId, Pane, Reason};
+use crate::commands::{COMMANDS, Command, CommandId, Pane, Reason};
 use crate::keys::{Key, Shortcut};
 use crate::state::{AppState, ChangeType};
 
@@ -150,23 +150,28 @@ pub fn route(key: Shortcut, focus: Focus, state: &AppState, labels: &[Target<Lab
     if let Some((_, label)) = access::find(key, labels) {
         return Route::FocusLabel(label);
     }
-    for c in COMMANDS {
-        if c.list_key
+    if let Some(c) = COMMANDS.iter().find(|c| {
+        c.list_key
             .is_some_and(|(pane, k)| k == key && in_list(pane))
-        {
-            return decide(c.id, c.available);
-        }
-        if c.shortcut != Some(key) {
-            continue;
-        }
-        return match c.scope {
-            None => decide(c.id, c.available),
-            Some(pane) if in_list(pane) => decide(c.id, c.available),
-            Some(_) if focus.control.is_text() => Route::Pass,
-            Some(pane) => Route::OnlyIn(key, pane),
-        };
+    }) {
+        return decide(c.id, c.available);
     }
-    Route::Pass
+    // The radio items that share a shortcut switch between them: it runs the one not
+    // marked (TASK-33 #7).
+    let marked = |c: &&Command| c.checked.is_some_and(|checked| checked(state));
+    let mut sharing = COMMANDS.iter().filter(|c| c.shortcut == Some(key));
+    let first = sharing.next();
+    let c = match first {
+        Some(c) if marked(&c) => sharing.find(|c| !marked(c)).unwrap_or(c),
+        Some(c) => c,
+        None => return Route::Pass,
+    };
+    match c.scope {
+        None => decide(c.id, c.available),
+        Some(pane) if in_list(pane) => decide(c.id, c.available),
+        Some(_) if focus.control.is_text() => Route::Pass,
+        Some(pane) => Route::OnlyIn(key, pane),
+    }
 }
 
 #[cfg(test)]
@@ -319,6 +324,43 @@ mod tests {
         assert_eq!(
             route(key(Key::Enter).ctrl(), SNAPSHOT_LIST, &AppState::new(), &[]),
             Route::Refuse(CommandId::ShowInExplorer, Reason::NoDifference)
+        );
+    }
+
+    #[test]
+    fn ctrl_t_switches_to_the_view_not_shown_from_anywhere() {
+        // TASK-33 #7: the two items share the key, which runs the one not marked.
+        use crate::state::DifferenceView;
+        let ctrl_t = key(Key::Letter(b'T')).ctrl();
+        let list = ready();
+        let tree = AppState {
+            layout: DifferenceView::Tree,
+            ..ready()
+        };
+        for focus in [
+            DIFFERENCE_LIST,
+            FILTER_FIELD,
+            SNAPSHOT_LIST,
+            COMPARISON_FIELD,
+        ] {
+            assert_eq!(
+                route(ctrl_t, focus, &list, &[]),
+                Route::Run(CommandId::ViewAsTree)
+            );
+            assert_eq!(
+                route(ctrl_t, focus, &tree, &[]),
+                Route::Run(CommandId::ViewAsList)
+            );
+        }
+        assert_eq!(
+            route(ctrl_t, SNAPSHOT_LIST, &AppState::new(), &[]),
+            Route::Refuse(CommandId::ViewAsTree, Reason::NoDifference)
+        );
+        // Enter in the tree is «Подробиці», as in the list: the tree is the difference's
+        // main control (TASK-33 #9).
+        assert_eq!(
+            route(key(Key::Enter), DIFFERENCE_LIST, &tree, &[]),
+            Route::Run(CommandId::Details)
         );
     }
 
