@@ -16,7 +16,7 @@ use revisor_core::exclude::PatternError;
 use revisor_core::scan::EntryKind;
 use revisor_core::settings::{
     AttributeFormat, ChangeType, DifferenceView, FocusAfterComparison, FocusAfterSnapshot,
-    Language, SizeFormat, TreeNodeText,
+    Language, SizeFormat, Theme, TreeNodeText,
 };
 
 use crate::commands::{CommandId, MenuId, Pane, Reason, SubmenuId};
@@ -332,6 +332,11 @@ pub trait Strings {
     fn language_changes_after_restart(&self) -> &'static str;
     fn restart_now(&self) -> &'static str;
     fn later(&self) -> &'static str;
+
+    // The theme of the interface (TASK-34).
+    /// The label of the theme box, without access key or colon.
+    fn theme(&self) -> &'static str;
+    fn theme_option(&self, value: Theme) -> &'static str;
 
     // Comparisons (TASK-11).
     /// The progress field while the snapshots are compared.

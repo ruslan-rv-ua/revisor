@@ -6,7 +6,7 @@ use revisor_core::exclude::PatternError;
 use revisor_core::scan::EntryKind;
 use revisor_core::settings::{
     AttributeFormat, ChangeType, DifferenceView, FocusAfterComparison, FocusAfterSnapshot,
-    Language, SizeFormat, TreeNodeText,
+    Language, SizeFormat, Theme, TreeNodeText,
 };
 
 use super::plural::{Category, category};
@@ -644,6 +644,18 @@ impl Strings for Uk {
 
     fn later(&self) -> &'static str {
         "Пізніше"
+    }
+
+    fn theme(&self) -> &'static str {
+        "Тема"
+    }
+
+    fn theme_option(&self, value: Theme) -> &'static str {
+        match value {
+            Theme::SameAsWindows => "Як у Windows",
+            Theme::Light => "Світла",
+            Theme::Dark => "Темна",
+        }
     }
 
     fn comparing(&self) -> &'static str {

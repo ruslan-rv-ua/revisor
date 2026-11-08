@@ -38,6 +38,8 @@ fn a_new_settings_file_is_made_with_the_defaults() {
     // The difference as a list, and the long text of a tree's nodes (TASK-33).
     assert_eq!(settings.difference_view().unwrap(), DifferenceView::List);
     assert_eq!(settings.tree_node_text().unwrap(), TreeNodeText::Long);
+    // The theme as Windows has it (TASK-34 #1).
+    assert_eq!(settings.theme().unwrap(), Theme::SameAsWindows);
     let conn = rusqlite::Connection::open(db(&tmp)).unwrap();
     let version: i64 = conn
         .pragma_query_value(None, "user_version", |r| r.get(0))
@@ -178,6 +180,29 @@ fn the_view_and_the_tree_node_text_survive_a_restart() {
     }
     assert_eq!(DifferenceView::ALL[0], DifferenceView::default());
     assert_eq!(TreeNodeText::ALL[0], TreeNodeText::default());
+}
+
+#[test]
+fn the_theme_survives_a_restart() {
+    // TASK-34 #1: revisor starts with the theme chosen.
+    let tmp = TempDir::new("settings");
+    {
+        let settings = Settings::open(&db(&tmp)).unwrap();
+        settings.set_theme(Theme::Dark).unwrap();
+    }
+    let settings = Settings::open(&db(&tmp)).unwrap();
+    assert_eq!(settings.theme().unwrap(), Theme::Dark);
+    settings.set_theme(Theme::Light).unwrap();
+    assert_eq!(settings.theme().unwrap(), Theme::Light);
+    // A value no revisor wrote falls back to the default.
+    settings.set(KEY_THEME, "sepia").unwrap();
+    assert_eq!(settings.theme().unwrap(), Theme::SameAsWindows);
+    settings.set(KEY_THEME, 1).unwrap();
+    assert_eq!(settings.theme().unwrap(), Theme::SameAsWindows);
+    for value in Theme::ALL {
+        assert_eq!(Theme::parse(value.as_str()), Some(value));
+    }
+    assert_eq!(Theme::ALL[0], Theme::default());
 }
 
 #[test]
