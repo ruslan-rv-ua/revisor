@@ -42,8 +42,9 @@ pub fn show(parent: &Dialog, s: &'static dyn Strings, offered: &[Offered]) -> Ve
         list.insert_item(i as i64, &row_text(s, folder), None);
         win32::lists::set_checked(hwnd, i, true);
     }
-    // As wide as the longest row, so no path is cut off.
+    // At least as wide as the longest row, so no path is cut off.
     list.set_column_width(0, -1);
+    let longest = list.get_column_width(0);
     win32::lists::select_only(hwnd, 0);
     let add = Button::builder(&dialog)
         .with_id(ID_OK)
@@ -81,6 +82,7 @@ pub fn show(parent: &Dialog, s: &'static dyn Strings, offered: &[Offered]) -> Ve
         12,
     );
     dialog.set_sizer(sizer, true);
+    win32::lists::fill_width(hwnd, longest);
     dialog.centre();
     list.set_focus();
     let confirmed = dialog.show_modal() == ID_OK;
