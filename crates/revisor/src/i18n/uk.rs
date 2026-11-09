@@ -68,7 +68,7 @@ impl Strings for Uk {
     fn command(&self, id: CommandId) -> &'static str {
         match id {
             CommandId::NewProfile => "Новий профіль",
-            CommandId::EditProfile => "Змінити профіль",
+            CommandId::EditProfile => "Редагувати профіль",
             CommandId::DeleteProfile => "Видалити профіль",
             CommandId::Settings => "Налаштування",
             CommandId::RestartAsAdmin => "Перезапустити від імені адміністратора",
