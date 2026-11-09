@@ -119,6 +119,9 @@ pub enum Reason {
     /// The difference shows as a tree, whose nodes are always in the order of their names
     /// (TASK-33 #5).
     TreeSortedByName,
+    /// The focus of the difference tree is on a node «Ще…», which stands for the nodes of
+    /// a page not shown and is no file or folder (TASK-37 #7).
+    MoreNode,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -289,6 +292,13 @@ fn difference_shown(state: &AppState) -> Result<(), Reason> {
 fn change_shown(state: &AppState) -> Result<(), Reason> {
     difference_shown(state)?;
     require(state.difference_rows > 0, Reason::NoChangeShown)
+}
+
+/// The change to act on is an entry or a folder, which File Explorer can show: not a node
+/// «Ще…» of the tree (TASK-37 #7).
+fn entry_shown(state: &AppState) -> Result<(), Reason> {
+    change_shown(state)?;
+    require(!state.more_node, Reason::MoreNode)
 }
 
 /// The difference shows as a list, whose order can change: the tree's nodes are always
@@ -568,7 +578,7 @@ pub static COMMANDS: &[Command] = &[
         ..item(
             CommandId::ShowInExplorer,
             place(MenuId::Difference, 0),
-            change_shown,
+            entry_shown,
         )
     },
     Command {
@@ -872,6 +882,30 @@ mod tests {
         assert!(!checked(CommandId::SortByPath, &state));
         assert!(checked(CommandId::SortDescending, &state));
         assert!(!checked(CommandId::SortAscending, &state));
+    }
+
+    #[test]
+    fn a_node_more_of_the_tree_turns_its_page_and_has_nothing_for_file_explorer() {
+        // TASK-37 #5, #7: «Подробиці» turns the page; File Explorer says why it cannot.
+        use crate::state::DifferenceView;
+        let available = |id, state: &AppState| (command(id).available)(state);
+        let more = AppState {
+            has_difference: true,
+            difference_rows: 5,
+            layout: DifferenceView::Tree,
+            more_node: true,
+            ..AppState::new()
+        };
+        assert_eq!(available(CommandId::Details, &more), Ok(()));
+        assert_eq!(
+            available(CommandId::ShowInExplorer, &more),
+            Err(Reason::MoreNode)
+        );
+        let node = AppState {
+            more_node: false,
+            ..more
+        };
+        assert_eq!(available(CommandId::ShowInExplorer, &node), Ok(()));
     }
 
     #[test]

@@ -212,6 +212,7 @@ fn entries_in(en: &dyn Strings, uk: &dyn Strings) -> Vec<Entry> {
         AlreadyAdmin,
         NoChangeShown,
         TreeSortedByName,
+        MoreNode,
     });
     for reason in reasons {
         c.add(format!("reason.{reason:?}"), |s| s.reason(reason).into());
@@ -814,6 +815,12 @@ fn entries_in(en: &dyn Strings, uk: &dyn Strings) -> Vec<Entry> {
     c.add("tree_node (a folder, short)", |s| {
         s.tree_node(&node("{name}", None, None))
     });
+    for above in [false, true] {
+        let place = if above { "above" } else { "below" };
+        c.add(format!("tree_more ({place})"), |s| {
+            s.tree_more("{count}", above)
+        });
+    }
     for layout in all!(DifferenceView { List, Tree }) {
         c.add(format!("layout_shown.{layout:?}"), |s| {
             s.layout_shown(layout).into()

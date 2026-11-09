@@ -47,9 +47,10 @@ The main scenario takes four steps, all from the keyboard:
   command (`Ctrl+F5`). The difference always runs from the earlier snapshot to the later one.
 - **Read the difference.** A list of added, deleted, modified and inaccessible entries, with
   what changed in each and a summary above it, or the same entries as a tree of their folders
-  (`Ctrl+T`), where a folder opens when you expand it. Filter it by type and by text, sort the
-  list by any column, read the details of a change, before and after (`Alt+Enter`), or show it
-  in File Explorer (`Ctrl+Enter`). A difference of a million rows reads without delay.
+  (`Ctrl+T`), where a folder opens when you expand it, and a folder of more than a thousand
+  entries shows them a thousand at a time. Filter it by type and by text, sort the list by any
+  column, read the details of a change, before and after (`Alt+Enter`), or show it in File
+  Explorer (`Ctrl+Enter`). A difference of a million rows reads without delay.
 - **In the background.** Snapshots and comparisons show their progress and can be canceled,
   and the window keeps responding.
 - **Nothing hidden by permissions.** An entry revisor cannot read is kept, marked inaccessible,

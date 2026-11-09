@@ -142,6 +142,7 @@ impl Strings for Uk {
             Reason::AlreadyAdmin => "revisor уже працює від імені адміністратора",
             Reason::NoChangeShown => "у списку різниці немає змін",
             Reason::TreeSortedByName => "у дереві вузли завжди впорядковано за ім'ям",
+            Reason::MoreNode => "вузол «Ще…» — не файл і не тека",
         }
     }
 
@@ -1022,6 +1023,14 @@ impl Strings for Uk {
         match layout {
             DifferenceView::List => "Різницю показано списком.",
             DifferenceView::Tree => "Різницю показано деревом.",
+        }
+    }
+
+    fn tree_more(&self, count: &str, above: bool) -> String {
+        if above {
+            format!("Ще {count} вище — клавіша Enter покаже попередні 1000")
+        } else {
+            format!("Ще {count} — клавіша Enter покаже наступні 1000")
         }
     }
 
