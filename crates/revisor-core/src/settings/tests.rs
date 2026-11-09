@@ -35,6 +35,11 @@ fn a_new_settings_file_is_made_with_the_defaults() {
     // The details of a change (TASK-14 #7, #13): attributes in words, and no warning.
     assert_eq!(settings.attribute_format().unwrap(), AttributeFormat::Words);
     assert!(!settings.warn_missing_entry().unwrap());
+    // The difference as a list, and the long text of a tree's nodes (TASK-33).
+    assert_eq!(settings.difference_view().unwrap(), DifferenceView::List);
+    assert_eq!(settings.tree_node_text().unwrap(), TreeNodeText::Long);
+    // The theme as Windows has it (TASK-34 #1).
+    assert_eq!(settings.theme().unwrap(), Theme::SameAsWindows);
     let conn = rusqlite::Connection::open(db(&tmp)).unwrap();
     let version: i64 = conn
         .pragma_query_value(None, "user_version", |r| r.get(0))
@@ -145,6 +150,59 @@ fn the_settings_of_the_details_survive_a_restart() {
     settings.set_warn_missing_entry(false).unwrap();
     assert_eq!(settings.attribute_format().unwrap(), AttributeFormat::Words);
     assert!(!settings.warn_missing_entry().unwrap());
+}
+
+#[test]
+fn the_view_and_the_tree_node_text_survive_a_restart() {
+    let tmp = TempDir::new("settings");
+    {
+        let settings = Settings::open(&db(&tmp)).unwrap();
+        settings.set_difference_view(DifferenceView::Tree).unwrap();
+        settings.set_tree_node_text(TreeNodeText::Short).unwrap();
+    }
+    let settings = Settings::open(&db(&tmp)).unwrap();
+    assert_eq!(settings.difference_view().unwrap(), DifferenceView::Tree);
+    assert_eq!(settings.tree_node_text().unwrap(), TreeNodeText::Short);
+    settings.set_difference_view(DifferenceView::List).unwrap();
+    settings.set_tree_node_text(TreeNodeText::Long).unwrap();
+    assert_eq!(settings.difference_view().unwrap(), DifferenceView::List);
+    assert_eq!(settings.tree_node_text().unwrap(), TreeNodeText::Long);
+    // A value no revisor wrote falls back to the default.
+    settings.set(KEY_DIFFERENCE_VIEW, "grid").unwrap();
+    settings.set(KEY_TREE_NODE_TEXT, 3).unwrap();
+    assert_eq!(settings.difference_view().unwrap(), DifferenceView::List);
+    assert_eq!(settings.tree_node_text().unwrap(), TreeNodeText::Long);
+    for value in DifferenceView::ALL {
+        assert_eq!(DifferenceView::parse(value.as_str()), Some(value));
+    }
+    for value in TreeNodeText::ALL {
+        assert_eq!(TreeNodeText::parse(value.as_str()), Some(value));
+    }
+    assert_eq!(DifferenceView::ALL[0], DifferenceView::default());
+    assert_eq!(TreeNodeText::ALL[0], TreeNodeText::default());
+}
+
+#[test]
+fn the_theme_survives_a_restart() {
+    // TASK-34 #1: revisor starts with the theme chosen.
+    let tmp = TempDir::new("settings");
+    {
+        let settings = Settings::open(&db(&tmp)).unwrap();
+        settings.set_theme(Theme::Dark).unwrap();
+    }
+    let settings = Settings::open(&db(&tmp)).unwrap();
+    assert_eq!(settings.theme().unwrap(), Theme::Dark);
+    settings.set_theme(Theme::Light).unwrap();
+    assert_eq!(settings.theme().unwrap(), Theme::Light);
+    // A value no revisor wrote falls back to the default.
+    settings.set(KEY_THEME, "sepia").unwrap();
+    assert_eq!(settings.theme().unwrap(), Theme::SameAsWindows);
+    settings.set(KEY_THEME, 1).unwrap();
+    assert_eq!(settings.theme().unwrap(), Theme::SameAsWindows);
+    for value in Theme::ALL {
+        assert_eq!(Theme::parse(value.as_str()), Some(value));
+    }
+    assert_eq!(Theme::ALL[0], Theme::default());
 }
 
 #[test]

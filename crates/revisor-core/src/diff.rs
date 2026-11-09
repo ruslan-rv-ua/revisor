@@ -29,7 +29,7 @@ use std::sync::atomic::{AtomicU64, Ordering::Relaxed};
 
 use crate::exclude::{Branch, Exclusions};
 use crate::job::Cancel;
-use crate::names::upcase;
+use crate::path::upcase;
 use crate::scan::{Entry, EntryKind, VersionInfo};
 
 const FILE_ATTRIBUTE_ARCHIVE: u32 = 0x20;

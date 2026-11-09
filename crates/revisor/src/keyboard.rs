@@ -2,9 +2,10 @@
 //! every key first and asks `route`; only `Route::Pass` lets the key go on to the focused
 //! control and to Windows.
 
-use crate::commands::{COMMANDS, CommandId, Pane, Reason};
+use crate::access::{self, Act, Target};
+use crate::commands::{COMMANDS, Command, CommandId, Pane, Reason};
 use crate::keys::{Key, Shortcut};
-use crate::state::AppState;
+use crate::state::{AppState, ChangeType};
 
 /// The kind of control that has the focus.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -26,11 +27,66 @@ impl Control {
     }
 }
 
-/// Where the focus is: the control, and the part of the window it belongs to, if any.
+/// Where the focus is: the control, and the part of the window it belongs to, if any —
+/// the one dictionary of the focus, which the window event reads once (ADR-0013) for the
+/// keys and for where a snapshot or a difference arrives.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct Focus {
     pub part: Option<Pane>,
     pub control: Control,
+    /// On the progress row — its field or its Cancel button — which goes away with the
+    /// job it shows; for «Знімок + порівняння» the row of the snapshot and that of its
+    /// comparison are one (TASK-12 #5).
+    pub progress: bool,
+    /// Where it was when the comparison started — for «Знімок + порівняння», when the
+    /// command was (TASK-11 #12, TASK-12 #5).
+    pub unmoved: bool,
+}
+
+impl Focus {
+    /// The focus on `control` of `part`, neither on the progress row nor where a
+    /// comparison started.
+    pub const fn new(part: Option<Pane>, control: Control) -> Self {
+        Self {
+            part,
+            control,
+            progress: false,
+            unmoved: false,
+        }
+    }
+
+    /// Whether the focus is in the main list of `pane`.
+    pub fn in_list(self, pane: Pane) -> bool {
+        self.part == Some(pane) && self.control == Control::MainList
+    }
+}
+
+/// A labelled control of the main window that Alt with its letter reaches (TASK-30).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Label {
+    /// The profile box.
+    Profile,
+    /// The field of the progress row, while the row is shown.
+    Progress,
+    /// The Cancel button of the progress row, while the row is shown.
+    Cancel,
+    /// The field «Порівняння».
+    Comparison,
+    /// The field «Фільтр:».
+    Filter,
+    /// The check box of a type under the difference list.
+    Type(ChangeType),
+}
+
+impl Label {
+    /// What its letter does: a button or a check box is pressed once Alt is up, a field
+    /// or a box takes the focus at once.
+    pub fn act(self) -> Act {
+        match self {
+            Self::Cancel | Self::Type(_) => Act::Press,
+            Self::Profile | Self::Progress | Self::Comparison | Self::Filter => Act::Focus,
+        }
+    }
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -50,16 +106,17 @@ pub enum Route {
     /// Esc in the field «Фільтр:»: clear it, so the filter lets every row through
     /// (TASK-13 #24).
     ClearFilter,
-    /// Alt with a label's access key: focus the control the label names.
-    FocusLabel(usize),
+    /// Alt with a label's access key: focus the control the label names, or press the
+    /// button.
+    FocusLabel(Label),
     /// Not revisor's key: the focused control and Windows get it.
     Pass,
 }
 
-/// Routes `key` pressed with the focus at `focus`; `labels` are the access keys of the
-/// main window's labels, as uppercase Latin letters.
-pub fn route(key: Shortcut, focus: Focus, state: &AppState, labels: &[u8]) -> Route {
-    let in_list = |pane| focus.part == Some(pane) && focus.control == Control::MainList;
+/// Routes `key` pressed with the focus at `focus`; `labels` are the labelled controls of
+/// the main window shown now.
+pub fn route(key: Shortcut, focus: Focus, state: &AppState, labels: &[Target<Label>]) -> Route {
+    let in_list = |pane| focus.in_list(pane);
     let decide =
         |id: CommandId, available: fn(&AppState) -> Result<(), Reason>| match available(state) {
             Ok(()) => Route::Run(id),
@@ -90,54 +147,42 @@ pub fn route(key: Shortcut, focus: Focus, state: &AppState, labels: &[u8]) -> Ro
     if key == Shortcut::new(Key::Esc) && focus.control == Control::FilterField {
         return Route::ClearFilter;
     }
-    if let Some(letter) = key.access_letter()
-        && let Some(label) = labels.iter().position(|&l| l == letter)
-    {
+    if let Some((_, label)) = access::find(key, labels) {
         return Route::FocusLabel(label);
     }
-    for c in COMMANDS {
-        if c.list_key
+    if let Some(c) = COMMANDS.iter().find(|c| {
+        c.list_key
             .is_some_and(|(pane, k)| k == key && in_list(pane))
-        {
-            return decide(c.id, c.available);
-        }
-        if c.shortcut != Some(key) {
-            continue;
-        }
-        return match c.scope {
-            None => decide(c.id, c.available),
-            Some(pane) if in_list(pane) => decide(c.id, c.available),
-            Some(_) if focus.control.is_text() => Route::Pass,
-            Some(pane) => Route::OnlyIn(key, pane),
-        };
+    }) {
+        return decide(c.id, c.available);
     }
-    Route::Pass
+    // The radio items that share a shortcut switch between them: it runs the one not
+    // marked (TASK-33 #7).
+    let marked = |c: &&Command| c.checked.is_some_and(|checked| checked(state));
+    let mut sharing = COMMANDS.iter().filter(|c| c.shortcut == Some(key));
+    let first = sharing.next();
+    let c = match first {
+        Some(c) if marked(&c) => sharing.find(|c| !marked(c)).unwrap_or(c),
+        Some(c) => c,
+        None => return Route::Pass,
+    };
+    match c.scope {
+        None => decide(c.id, c.available),
+        Some(pane) if in_list(pane) => decide(c.id, c.available),
+        Some(_) if focus.control.is_text() => Route::Pass,
+        Some(pane) => Route::OnlyIn(key, pane),
+    }
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
 
-    const SNAPSHOT_LIST: Focus = Focus {
-        part: Some(Pane::Snapshots),
-        control: Control::MainList,
-    };
-    const DIFFERENCE_LIST: Focus = Focus {
-        part: Some(Pane::Difference),
-        control: Control::MainList,
-    };
-    const FILTER_FIELD: Focus = Focus {
-        part: Some(Pane::Difference),
-        control: Control::FilterField,
-    };
-    const COMPARISON_FIELD: Focus = Focus {
-        part: Some(Pane::Difference),
-        control: Control::TextEntry,
-    };
-    const PROFILE_BOX: Focus = Focus {
-        part: Some(Pane::Snapshots),
-        control: Control::Other,
-    };
+    const SNAPSHOT_LIST: Focus = Focus::new(Some(Pane::Snapshots), Control::MainList);
+    const DIFFERENCE_LIST: Focus = Focus::new(Some(Pane::Difference), Control::MainList);
+    const FILTER_FIELD: Focus = Focus::new(Some(Pane::Difference), Control::FilterField);
+    const COMPARISON_FIELD: Focus = Focus::new(Some(Pane::Difference), Control::TextEntry);
+    const PROFILE_BOX: Focus = Focus::new(Some(Pane::Snapshots), Control::Other);
 
     fn key(key: Key) -> Shortcut {
         Shortcut::new(key)
@@ -283,6 +328,43 @@ mod tests {
     }
 
     #[test]
+    fn ctrl_t_switches_to_the_view_not_shown_from_anywhere() {
+        // TASK-33 #7: the two items share the key, which runs the one not marked.
+        use crate::state::DifferenceView;
+        let ctrl_t = key(Key::Letter(b'T')).ctrl();
+        let list = ready();
+        let tree = AppState {
+            layout: DifferenceView::Tree,
+            ..ready()
+        };
+        for focus in [
+            DIFFERENCE_LIST,
+            FILTER_FIELD,
+            SNAPSHOT_LIST,
+            COMPARISON_FIELD,
+        ] {
+            assert_eq!(
+                route(ctrl_t, focus, &list, &[]),
+                Route::Run(CommandId::ViewAsTree)
+            );
+            assert_eq!(
+                route(ctrl_t, focus, &tree, &[]),
+                Route::Run(CommandId::ViewAsList)
+            );
+        }
+        assert_eq!(
+            route(ctrl_t, SNAPSHOT_LIST, &AppState::new(), &[]),
+            Route::Refuse(CommandId::ViewAsTree, Reason::NoDifference)
+        );
+        // Enter in the tree is «Подробиці», as in the list: the tree is the difference's
+        // main control (TASK-33 #9).
+        assert_eq!(
+            route(key(Key::Enter), DIFFERENCE_LIST, &tree, &[]),
+            Route::Run(CommandId::Details)
+        );
+    }
+
+    #[test]
     fn f6_moves_between_the_two_lists() {
         let state = AppState::new();
         for f6 in [key(Key::F(6)), key(Key::F(6)).shift()] {
@@ -298,10 +380,7 @@ mod tests {
                 route(f6, FILTER_FIELD, &state, &[]),
                 Route::FocusPane(Pane::Snapshots)
             );
-            let nowhere = Focus {
-                part: None,
-                control: Control::Other,
-            };
+            let nowhere = Focus::new(None, Control::Other);
             assert_eq!(
                 route(f6, nowhere, &state, &[]),
                 Route::FocusPane(Pane::Snapshots)
@@ -408,11 +487,14 @@ mod tests {
     #[test]
     fn alt_with_a_labels_letter_focuses_its_control() {
         let state = AppState::new();
-        let labels = *b"RL";
+        let labels = [
+            Target::new("P&rofile", Act::Focus, Label::Profile),
+            Target::new("Fi&lter", Act::Focus, Label::Filter),
+        ];
         let alt = |letter| key(Key::Letter(letter)).alt();
         assert_eq!(
             route(alt(b'L'), SNAPSHOT_LIST, &state, &labels),
-            Route::FocusLabel(1)
+            Route::FocusLabel(Label::Filter)
         );
         // Menu letters go on to Windows, which opens the menu (or asks WM_MENUCHAR).
         assert_eq!(

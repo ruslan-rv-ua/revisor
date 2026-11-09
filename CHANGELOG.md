@@ -9,6 +9,51 @@ release that section becomes the version's own, and the release page publishes i
 
 ## [Unreleased]
 
+## [0.2.0] - 2026-11-09
+
+### Added
+
+- **The difference can be viewed as a tree of its folders.** `Ctrl+T`, or List and Tree in
+  the Difference menu, switch between the list and the tree in the same place, with the focus
+  on the same entry, and revisor keeps the view for its next start. The tree shows only the
+  folders with changes, by name; a folder gets its contents when you first expand it, so even
+  a difference of a million rows opens at once, expanded to its first change. A node says its
+  change and what changed, and a folder how many changes it holds; the new setting Tree nodes
+  shortens that to the name and the change. The filter and the type check boxes work in the
+  tree too, and Details and Show in File Explorer act on a node as on a row: for a folder that
+  did not change itself, Details gives its path and the summary of its contents, and File
+  Explorer opens it. Sorting stays with the list.
+- **A dark theme.** The new setting Theme shows revisor as Windows has it, which is the
+  default, light or dark. A new theme shows at once, without a restart, and with Same as
+  Windows revisor follows Windows as it switches. While a contrast theme of Windows is on,
+  revisor keeps its colors whatever the setting says. NVDA reads every window the same in
+  either theme. In the dark theme an empty list does not show its hint, which NVDA still reads
+  as the list's name, and the selected node of the tree is faint while the tree does not have
+  the focus; a contrast theme switched on while revisor is dark leaves the column headers
+  faint until revisor is restarted.
+
+### Changed
+
+- **Failures of «Show in File Explorer» and «Restart as administrator» open a window.**
+  Before, they were said only in the status bar; now, like the failures of the other
+  commands, they open a window that names the command. So does a failure to restart revisor
+  after the interface language was changed in the settings.
+- **A button or check box pressed with Alt and its letter acts once Alt is released.**
+  This now holds in every window: the main window's Cancel and type check boxes, the
+  profile window's Add folder and Remove folder, and the check boxes of the settings. Before,
+  only the buttons of questions waited for it. The keys pressed next are no longer lost in
+  the window menu. A field or list still takes the focus at once.
+
+### Fixed
+
+- **A path exclusion with a name that is not valid Unicode leaves that folder out.** When
+  the variable a pattern starts with, or the real location of its folder, held a name with
+  an unpaired surrogate, the name was spoiled on the way and the exclusion left nothing
+  out. Such names are rare: Windows allows them, but programs seldom make them.
+- **A path exclusion whose folder is really on a network share matches.** A real location
+  written with the `\\?\UNC\` prefix had an extra part, so it never matched the folder it
+  named. revisor still takes snapshots of local NTFS folders only.
+
 ## [0.1.0] - 2026-11-07
 
 The first release. revisor takes snapshots of chosen folders and shows what changed between
@@ -68,5 +113,6 @@ keyboard and with a screen reader.
 - **Error messages** name the causes revisor recognizes in its own words—what happened, why,
   and what to do—and give the Windows or SQLite text and its code for the rest.
 
-[Unreleased]: https://github.com/ruslan-rv-ua/revisor/compare/v0.1.0...HEAD
+[Unreleased]: https://github.com/ruslan-rv-ua/revisor/compare/v0.2.0...HEAD
+[0.2.0]: https://github.com/ruslan-rv-ua/revisor/compare/v0.1.0...v0.2.0
 [0.1.0]: https://github.com/ruslan-rv-ua/revisor/releases/tag/v0.1.0

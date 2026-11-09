@@ -5,13 +5,49 @@
 use std::io;
 
 use revisor_core::compare::CompareError;
+use revisor_core::scan::is_access_denied;
 use revisor_core::settings::SettingsError;
 use revisor_core::store::StoreError;
 
-use crate::i18n::Failure;
+use crate::i18n::{Failure, Strings};
 
-// Win32 error codes.
-const ERROR_ACCESS_DENIED: i32 = 5;
+/// An error of an action on files that the interface explains (TASK-25).
+pub trait Cause {
+    /// The failure the error amounts to, in the terms of the interface.
+    fn failure(&self) -> Failure;
+}
+
+impl Cause for io::Error {
+    fn failure(&self) -> Failure {
+        of_io(self)
+    }
+}
+
+impl Cause for StoreError {
+    fn failure(&self) -> Failure {
+        of_store(self)
+    }
+}
+
+impl Cause for CompareError {
+    fn failure(&self) -> Failure {
+        of_compare(self)
+    }
+}
+
+impl Cause for SettingsError {
+    fn failure(&self) -> Failure {
+        of_settings(self)
+    }
+}
+
+/// Why the action failed, in the interface's words: the one function that writes the
+/// text of a failure (ADR-0013). Where it goes, the window event decides.
+pub fn reason(s: &dyn Strings, e: &dyn Cause) -> String {
+    s.failure(&e.failure())
+}
+
+// Win32 error codes; access denied is told by the core (`scan::is_access_denied`).
 const ERROR_SHARING_VIOLATION: i32 = 32;
 const ERROR_LOCK_VIOLATION: i32 = 33;
 const ERROR_HANDLE_DISK_FULL: i32 = 39;
@@ -26,8 +62,10 @@ const SQLITE_FULL: i32 = 13;
 const SQLITE_NOTADB: i32 = 26;
 
 pub fn of_io(e: &io::Error) -> Failure {
+    if is_access_denied(e) {
+        return Failure::AccessDenied;
+    }
     match e.raw_os_error() {
-        Some(ERROR_ACCESS_DENIED) => Failure::AccessDenied,
         Some(ERROR_SHARING_VIOLATION | ERROR_LOCK_VIOLATION) => Failure::InUse,
         Some(ERROR_DISK_FULL | ERROR_HANDLE_DISK_FULL) => Failure::DiskFull,
         Some(ERROR_CANCELLED) => Failure::Cancelled,

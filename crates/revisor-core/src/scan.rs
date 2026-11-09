@@ -7,10 +7,12 @@
 
 mod sys;
 
+pub use sys::is_access_denied;
+
 use std::ffi::{OsStr, OsString};
 use std::fmt;
 use std::io;
-use std::os::windows::ffi::{OsStrExt, OsStringExt};
+
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Condvar, Mutex};
@@ -19,6 +21,7 @@ use std::time::{Duration, Instant};
 
 use crate::exclude::{Branch, Exclusions};
 use crate::job::Cancel;
+use crate::path::{plain, verbatim};
 
 const FILE_ATTRIBUTE_ARCHIVE: u32 = 0x20;
 const FILE_ATTRIBUTE_DIRECTORY: u32 = 0x10;
@@ -206,7 +209,7 @@ pub fn scan(
     cancel: &Cancel,
     progress: &Progress,
 ) -> Result<Scan, ScanError> {
-    let root_path = verbatim(root).map_err(ScanError::Root)?;
+    let root_path = verbatim(&std::path::absolute(root).map_err(ScanError::Root)?);
     let (info, denied) = match sys::open_dir(&root_path) {
         Ok(dir) => (sys::dir_info(&dir).map_err(ScanError::Root)?, false),
         Err(e) if sys::is_access_denied(&e) => {
@@ -305,40 +308,6 @@ pub fn scan(
         volume_serial: info.volume_serial,
         real_root,
     })
-}
-
-/// Turns `path` into an absolute `\\?\` path, so paths longer than MAX_PATH work.
-pub(crate) fn verbatim(path: &Path) -> io::Result<PathBuf> {
-    let abs = std::path::absolute(path)?;
-    let wide: Vec<u16> = abs.as_os_str().encode_wide().collect();
-    let starts = |prefix: &str| wide.starts_with(&prefix.encode_utf16().collect::<Vec<_>>());
-    let out: Vec<u16> = if starts(r"\\?\") || starts(r"\\.\") {
-        return Ok(abs);
-    } else if starts(r"\\") {
-        r"\\?\UNC\"
-            .encode_utf16()
-            .chain(wide[2..].iter().copied())
-            .collect()
-    } else {
-        r"\\?\".encode_utf16().chain(wide.iter().copied()).collect()
-    };
-    Ok(PathBuf::from(OsString::from_wide(&out)))
-}
-
-/// A `\\?\` path as a plain one, the way it is shown: `\\?\C:\x` is `C:\x`, and
-/// `\\?\UNC\server\share` is `\\server\share`.
-pub(crate) fn plain(path: &Path) -> PathBuf {
-    let wide: Vec<u16> = path.as_os_str().encode_wide().collect();
-    let strip = |prefix: &str| -> Option<&[u16]> {
-        let prefix: Vec<u16> = prefix.encode_utf16().collect();
-        wide.starts_with(&prefix).then(|| &wide[prefix.len()..])
-    };
-    let out: Vec<u16> = match (strip(r"\\?\UNC\"), strip(r"\\?\")) {
-        (Some(rest), _) => r"\\".encode_utf16().chain(rest.iter().copied()).collect(),
-        (None, Some(rest)) => rest.to_vec(),
-        (None, None) => return path.to_path_buf(),
-    };
-    PathBuf::from(OsString::from_wide(&out))
 }
 
 /// Builds a made-up tree of `count` entries laid out like a [`scan`] result, without

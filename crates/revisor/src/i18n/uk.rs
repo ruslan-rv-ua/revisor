@@ -5,16 +5,17 @@ use revisor_core::compare::{Side, Warning};
 use revisor_core::exclude::PatternError;
 use revisor_core::scan::EntryKind;
 use revisor_core::settings::{
-    AttributeFormat, FocusAfterComparison, FocusAfterSnapshot, Language, SizeFormat,
+    AttributeFormat, ChangeType, DifferenceView, FocusAfterComparison, FocusAfterSnapshot,
+    Language, SizeFormat, Theme, TreeNodeText,
 };
 
 use super::plural::{Category, category};
-use super::{Failure, Lang, Strings, error_code, in_sentence};
+use super::{Failure, Lang, Strings, error_code, in_sentence, lower_first};
 use crate::commands::{CommandId, MenuId, Pane, Reason, SubmenuId};
 use crate::details::{Attribute, Inaccessibility, Property, Unreadable};
 use crate::difference::{
-    Column, Counted, Field, InaccessibleIn, PairText, RowChange, SizeChange, SnapshotText,
-    SummaryText,
+    Column, Counted, Field, InaccessibleIn, NodeText, PairText, RowChange, SizeChange,
+    SnapshotText, SummaryText,
 };
 
 pub struct Uk;
@@ -97,6 +98,8 @@ impl Strings for Uk {
             CommandId::SortByFolder => "Тека",
             CommandId::SortAscending => "За зростанням",
             CommandId::SortDescending => "За спаданням",
+            CommandId::ViewAsList => "Списком",
+            CommandId::ViewAsTree => "Деревом",
             CommandId::KeyboardShortcuts => "Гарячі клавіші",
             CommandId::About => "Про revisor",
         }
@@ -137,6 +140,7 @@ impl Strings for Uk {
             Reason::NoOtherSnapshot => "іншого знімка в профілі немає",
             Reason::AlreadyAdmin => "revisor уже працює від імені адміністратора",
             Reason::NoChangeShown => "у списку різниці немає змін",
+            Reason::TreeSortedByName => "у дереві вузли завжди впорядковано за ім'ям",
         }
     }
 
@@ -162,8 +166,12 @@ impl Strings for Uk {
     fn in_list(&self, key: &str, pane: Pane) -> String {
         match pane {
             Pane::Snapshots => format!("{key} у переліку знімків"),
-            Pane::Difference => format!("{key} у списку різниці"),
+            Pane::Difference => format!("{key} у списку чи дереві різниці"),
         }
+    }
+
+    fn either(&self, first: &str, second: &str) -> String {
+        format!("{first} чи {}", lower_first(second))
     }
 
     fn navigation(&self) -> &'static str {
@@ -194,6 +202,10 @@ impl Strings for Uk {
     }
 
     fn close(&self) -> &'static str {
+        "Закрити"
+    }
+
+    fn close_window(&self) -> &'static str {
         "Закрити"
     }
 
@@ -234,6 +246,19 @@ impl Strings for Uk {
 
     fn cancel(&self) -> &'static str {
         "Скасувати"
+    }
+
+    fn cancel_job(&self) -> &'static str {
+        "Скасувати"
+    }
+
+    fn type_box(&self, kind: ChangeType) -> &'static str {
+        match kind {
+            ChangeType::Added => "Додані",
+            ChangeType::Deleted => "Видалені",
+            ChangeType::Modified => "Змінені",
+            ChangeType::Inaccessible => "Недоступні",
+        }
     }
 
     fn choose_folder(&self) -> &'static str {
@@ -621,6 +646,18 @@ impl Strings for Uk {
         "Пізніше"
     }
 
+    fn theme(&self) -> &'static str {
+        "Тема"
+    }
+
+    fn theme_option(&self, value: Theme) -> &'static str {
+        match value {
+            Theme::SameAsWindows => "Як у Windows",
+            Theme::Light => "Світла",
+            Theme::Dark => "Темна",
+        }
+    }
+
     fn comparing(&self) -> &'static str {
         "Порівняння знімків…"
     }
@@ -925,6 +962,55 @@ impl Strings for Uk {
         }
     }
 
+    fn tree_node(&self, node: &NodeText) -> String {
+        let change = node.change.as_ref().map(|(change, what)| {
+            let mut text = lower_first(change);
+            if !what.is_empty() {
+                text.push_str(": ");
+                text.push_str(what);
+            }
+            (text, !what.is_empty())
+        });
+        let inside = node.inside.as_ref().map(|(changes, inaccessible)| {
+            let mut parts = Vec::new();
+            if changes.n > 0 {
+                parts.push(self.counted(changes, "зміна", "зміни", "змін"));
+            }
+            if inaccessible.n > 0 {
+                parts.push(format!("недоступно {}", inaccessible.text));
+            }
+            parts.join(", ")
+        });
+        let inside = inside.filter(|inside| !inside.is_empty());
+        let name = &node.name;
+        match (change, inside) {
+            (None, None) => name.clone(),
+            (Some((change, _)), None) => format!("{name} — {change}"),
+            (None, Some(inside)) => format!("{name} — {inside}"),
+            // After what changed, the count follows a semicolon, not to read as a field.
+            (Some((change, true)), Some(inside)) => format!("{name} — {change}; {inside}"),
+            (Some((change, false)), Some(inside)) => format!("{name} — {change}, {inside}"),
+        }
+    }
+
+    fn layout_shown(&self, layout: DifferenceView) -> &'static str {
+        match layout {
+            DifferenceView::List => "Різницю показано списком.",
+            DifferenceView::Tree => "Різницю показано деревом.",
+        }
+    }
+
+    fn tree_nodes(&self) -> &'static str {
+        "Вузли дерева"
+    }
+
+    fn tree_node_option(&self, value: TreeNodeText) -> &'static str {
+        match value {
+            TreeNodeText::Long => "Ім'я, зміна й що змінилося",
+            TreeNodeText::Short => "Лише ім'я й зміна",
+        }
+    }
+
     fn property(&self, property: Property) -> &'static str {
         match property {
             Property::Path => "Шлях",
@@ -939,6 +1025,7 @@ impl Strings for Uk {
             Property::ProductVersion => "Версія продукту",
             Property::Target => "Ціль",
             Property::Inaccessible => "Недоступно",
+            Property::Inside => "Усередині",
         }
     }
 

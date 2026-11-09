@@ -18,16 +18,18 @@ use revisor_core::compare::{Side, Warning};
 use revisor_core::exclude::PatternError;
 use revisor_core::scan::EntryKind;
 use revisor_core::settings::{
-    AttributeFormat, FocusAfterComparison, FocusAfterSnapshot, Language, SizeFormat,
+    AttributeFormat, ChangeType, DifferenceView, FocusAfterComparison, FocusAfterSnapshot,
+    Language, SizeFormat, Theme, TreeNodeText,
 };
 use revisor_core::store::Unavailable;
 
 use super::{En, Failure, Strings, Uk};
+use crate::access::plain;
 use crate::commands::{COMMANDS, CommandId, MenuId, Pane, Reason, SubmenuId};
 use crate::details::{Attribute, Inaccessibility, Property, Unreadable};
 use crate::difference::{
-    Column, Counted, Field, InaccessibleIn, PairText, RowChange, SizeChange, SnapshotText,
-    SummaryText,
+    Column, Counted, Field, InaccessibleIn, NodeText, PairText, RowChange, SizeChange,
+    SnapshotText, SummaryText,
 };
 use crate::menus;
 
@@ -153,13 +155,15 @@ fn entries_in(en: &dyn Strings, uk: &dyn Strings) -> Vec<Entry> {
             SortByFolder,
             SortAscending,
             SortDescending,
+            ViewAsList,
+            ViewAsTree,
             KeyboardShortcuts,
             About,
         }
     );
     for command in COMMANDS {
         c.add(format!("command.{:?}", command.id), |s| {
-            s.command(command.id).into()
+            plain(s.command(command.id))
         });
     }
     for command in COMMANDS {
@@ -175,14 +179,14 @@ fn entries_in(en: &dyn Strings, uk: &dyn Strings) -> Vec<Entry> {
         Help
     });
     for menu in menu_ids {
-        c.add(format!("menu.{menu:?}"), |s| s.menu(menu).into());
+        c.add(format!("menu.{menu:?}"), |s| plain(s.menu(menu)));
         c.add(format!("menu.{menu:?} (menu bar)"), |s| {
             menus::top_menu_label(s, menu)
         });
     }
     for submenu in all!(SubmenuId { SortBy }) {
         c.add(format!("submenu.{submenu:?}"), |s| {
-            s.submenu(submenu).into()
+            plain(s.submenu(submenu))
         });
         c.add(format!("submenu.{submenu:?} (menu item)"), |s| {
             menus::submenu_label(s, submenu)
@@ -206,6 +210,7 @@ fn entries_in(en: &dyn Strings, uk: &dyn Strings) -> Vec<Entry> {
         NoOtherSnapshot,
         AlreadyAdmin,
         NoChangeShown,
+        TreeSortedByName,
     });
     for reason in reasons {
         c.add(format!("reason.{reason:?}"), |s| s.reason(reason).into());
@@ -218,6 +223,7 @@ fn entries_in(en: &dyn Strings, uk: &dyn Strings) -> Vec<Entry> {
         c.add(format!("only_in.{pane:?}"), |s| s.only_in(pane));
         c.add(format!("in_list.{pane:?}"), |s| s.in_list("Enter", pane));
     }
+    c.add("either", |s| s.either("{first}", "{Second}"));
     c.add("navigation", |s| s.navigation().into());
     c.add("switch_panes", |s| s.switch_panes().into());
     c.add("context_menu", |s| s.context_menu().into());
@@ -228,19 +234,30 @@ fn entries_in(en: &dyn Strings, uk: &dyn Strings) -> Vec<Entry> {
     for pane in panes {
         c.add(format!("pane.{pane:?}"), |s| s.pane(pane).into());
     }
-    c.add("profile", |s| s.profile().into());
+    c.add("profile", |s| plain(s.profile()));
     c.add("no_actions", |s| s.no_actions().into());
-    c.add("close", |s| s.close().into());
+    c.add("close", |s| plain(s.close()));
+    c.add("close_window", |s| s.close_window().into());
     c.add("about", |s| s.about("{version}"));
 
-    c.add("profile_name", |s| s.profile_name().into());
-    c.add("profile_folders", |s| s.profile_folders().into());
-    c.add("add_folder", |s| s.add_folder().into());
-    c.add("remove_folder", |s| s.remove_folder().into());
-    c.add("profile_exclusions", |s| s.profile_exclusions().into());
+    c.add("profile_name", |s| plain(s.profile_name()));
+    c.add("profile_folders", |s| plain(s.profile_folders()));
+    c.add("add_folder", |s| plain(s.add_folder()));
+    c.add("remove_folder", |s| plain(s.remove_folder()));
+    c.add("profile_exclusions", |s| plain(s.profile_exclusions()));
     c.add("create", |s| s.create().into());
     c.add("ok", |s| s.ok().into());
     c.add("cancel", |s| s.cancel().into());
+    c.add("cancel_job", |s| plain(s.cancel_job()));
+    let types = all!(ChangeType {
+        Added,
+        Deleted,
+        Modified,
+        Inaccessible
+    });
+    for kind in types {
+        c.add(format!("type_box.{kind:?}"), |s| plain(s.type_box(kind)));
+    }
     c.add("choose_folder", |s| s.choose_folder().into());
     c.add("name_missing", |s| s.name_missing().into());
     c.add("name_taken", |s| s.name_taken("{name}"));
@@ -278,7 +295,7 @@ fn entries_in(en: &dyn Strings, uk: &dyn Strings) -> Vec<Entry> {
     c.add("replace_folders", |s| {
         s.replace_folders("{folder}", &["{inside 1}".into(), "{inside 2}".into()])
     });
-    c.add("replace", |s| s.replace().into());
+    c.add("replace", |s| plain(s.replace()));
 
     c.add("delete_profile_question(0)", |s| {
         s.delete_profile_question("{name}", 0)
@@ -286,7 +303,7 @@ fn entries_in(en: &dyn Strings, uk: &dyn Strings) -> Vec<Entry> {
     c.add_per_count("delete_profile_question", |s, n| {
         s.delete_profile_question("{name}", n as usize)
     });
-    c.add("delete", |s| s.delete().into());
+    c.add("delete", |s| plain(s.delete()));
     c.add("profile_created", |s| s.profile_created("{name}"));
     c.add("profile_changed", |s| s.profile_changed("{name}"));
     c.add("profile_deleted", |s| s.profile_deleted("{name}"));
@@ -352,7 +369,7 @@ fn entries_in(en: &dyn Strings, uk: &dyn Strings) -> Vec<Entry> {
         c.add(format!("failure.{id}"), |s| s.failure(failure));
     }
 
-    c.add("progress", |s| s.progress().into());
+    c.add("progress", |s| plain(s.progress()));
     c.add_per_count("snapshot_progress", |s, n| {
         s.snapshot_progress(n, &n.to_string(), "{folder}")
     });
@@ -389,7 +406,7 @@ fn entries_in(en: &dyn Strings, uk: &dyn Strings) -> Vec<Entry> {
     c.add("snapshot_failed", |s| s.snapshot_failed("{reason}"));
     c.add("snapshot_stopped", |s| s.snapshot_stopped().into());
     c.add("restart_question", |s| s.restart_question("{count}"));
-    c.add("restart", |s| s.restart().into());
+    c.add("restart", |s| plain(s.restart()));
     c.add("close_during_snapshot", |s| {
         s.close_during_snapshot().into()
     });
@@ -403,7 +420,7 @@ fn entries_in(en: &dyn Strings, uk: &dyn Strings) -> Vec<Entry> {
     c.add("no_snapshots_yet", |s| s.no_snapshots_yet("F5"));
     c.add("no_profiles_yet", |s| s.no_profiles_yet("Ctrl+N"));
     c.add("no_profiles_item", |s| s.no_profiles_item().into());
-    c.add("comment_of", |s| s.comment_of("{date and time}"));
+    c.add("comment_of", |s| plain(&s.comment_of("{date and time}")));
     c.add("comment_saved", |s| s.comment_saved().into());
     c.add("comment_removed", |s| s.comment_removed().into());
     c.add("comment_cancelled", |s| s.comment_cancelled().into());
@@ -435,7 +452,7 @@ fn entries_in(en: &dyn Strings, uk: &dyn Strings) -> Vec<Entry> {
     });
     c.add("compaction_stopped", |s| s.compaction_stopped().into());
 
-    c.add("focus_after_snapshot", |s| s.focus_after_snapshot().into());
+    c.add("focus_after_snapshot", |s| plain(s.focus_after_snapshot()));
     let focus_options = all!(FocusAfterSnapshot {
         IfInList,
         Always,
@@ -447,7 +464,7 @@ fn entries_in(en: &dyn Strings, uk: &dyn Strings) -> Vec<Entry> {
         });
     }
     c.add("confirm_snapshot_deletion", |s| {
-        s.confirm_snapshot_deletion().into()
+        plain(s.confirm_snapshot_deletion())
     });
     c.add("settings_saved", |s| s.settings_saved().into());
     c.add("settings_not_saved", |s| s.settings_not_saved("{reason}"));
@@ -455,7 +472,7 @@ fn entries_in(en: &dyn Strings, uk: &dyn Strings) -> Vec<Entry> {
         s.settings_not_opened("{file}", "{reason}")
     });
 
-    c.add("language", |s| s.language().into());
+    c.add("language", |s| plain(s.language()));
     let languages = all!(Language {
         SameAsWindows,
         English,
@@ -469,8 +486,19 @@ fn entries_in(en: &dyn Strings, uk: &dyn Strings) -> Vec<Entry> {
     c.add("language_changes_after_restart", |s| {
         s.language_changes_after_restart().into()
     });
-    c.add("restart_now", |s| s.restart_now().into());
-    c.add("later", |s| s.later().into());
+    c.add("restart_now", |s| plain(s.restart_now()));
+    c.add("later", |s| plain(s.later()));
+
+    c.add("theme", |s| plain(s.theme()));
+    for value in all!(Theme {
+        SameAsWindows,
+        Light,
+        Dark
+    }) {
+        c.add(format!("theme_option.{value:?}"), |s| {
+            s.theme_option(value).into()
+        });
+    }
 
     c.add("comparing", |s| s.comparing().into());
     c.add("comparing_percent", |s| s.comparing_percent(45));
@@ -481,11 +509,11 @@ fn entries_in(en: &dyn Strings, uk: &dyn Strings) -> Vec<Entry> {
     c.add("comparison_stopped", |s| s.comparison_stopped().into());
     c.add("comment_stopped", |s| s.comment_stopped().into());
     c.add("compare_with_label", |s| {
-        s.compare_with_label("{date and time}")
+        plain(&s.compare_with_label("{date and time}"))
     });
     c.add("compare", |s| s.compare().into());
     c.add("focus_after_comparison", |s| {
-        s.focus_after_comparison().into()
+        plain(s.focus_after_comparison())
     });
     let comparison_focus_options = all!(FocusAfterComparison {
         IfNotMoved,
@@ -708,9 +736,9 @@ fn entries_in(en: &dyn Strings, uk: &dyn Strings) -> Vec<Entry> {
     c.add("nothing_compared_yet", |s| {
         s.nothing_compared_yet("F7", "Ctrl+F7")
     });
-    c.add("comparison_field", |s| s.comparison_field().into());
-    c.add("filter_field", |s| s.filter_field().into());
-    c.add("size_format", |s| s.size_format().into());
+    c.add("comparison_field", |s| plain(s.comparison_field()));
+    c.add("filter_field", |s| plain(s.filter_field()));
+    c.add("size_format", |s| plain(s.size_format()));
     let size_options = all!(SizeFormat {
         Explorer,
         Decimal,
@@ -719,6 +747,62 @@ fn entries_in(en: &dyn Strings, uk: &dyn Strings) -> Vec<Entry> {
     for value in size_options {
         c.add(format!("size_option.{value:?}"), |s| {
             s.size_option(value).into()
+        });
+    }
+
+    // The difference tree (TASK-33): a file, a folder that is a change, a folder that is
+    // none, in the long and in the short text.
+    let node = |name: &str, change: Option<(&str, &str)>, inside: Option<(u64, u64)>| NodeText {
+        name: name.into(),
+        change: change.map(|(change, what)| (change.into(), what.into())),
+        inside: inside.map(|(changes, inaccessible)| (counted(changes), counted(inaccessible))),
+    };
+    let modified = |s: &dyn Strings| s.change(RowChange::Modified, EntryKind::File).to_string();
+    let folder_added = |s: &dyn Strings| s.change(RowChange::Added, EntryKind::Dir).to_string();
+    let folder_modified =
+        |s: &dyn Strings| s.change(RowChange::Modified, EntryKind::Dir).to_string();
+    let fields =
+        |s: &dyn Strings| format!("{}, {}", s.field(Field::Size), s.field(Field::DateModified));
+    c.add("tree_node (a file, long)", |s| {
+        s.tree_node(&node("{name}", Some((&modified(s), &fields(s))), None))
+    });
+    c.add("tree_node (a file, short)", |s| {
+        s.tree_node(&node("{name}", Some((&modified(s), "")), None))
+    });
+    for n in COUNTS {
+        c.add(format!("tree_node (a folder added, long)({n})"), |s| {
+            s.tree_node(&node("{name}", Some((&folder_added(s), "")), Some((n, 0))))
+        });
+        c.add(format!("tree_node (a folder, long)({n})"), |s| {
+            s.tree_node(&node("{name}", None, Some((n, n))))
+        });
+    }
+    c.add("tree_node (a folder modified, long)", |s| {
+        s.tree_node(&node(
+            "{name}",
+            Some((&folder_modified(s), s.field(Field::Attributes))),
+            Some((5, 0)),
+        ))
+    });
+    c.add(
+        "tree_node (a folder with inaccessible entries only, long)",
+        |s| s.tree_node(&node("{name}", None, Some((0, 3)))),
+    );
+    c.add("tree_node (a folder added, short)", |s| {
+        s.tree_node(&node("{name}", Some((&folder_added(s), "")), None))
+    });
+    c.add("tree_node (a folder, short)", |s| {
+        s.tree_node(&node("{name}", None, None))
+    });
+    for layout in all!(DifferenceView { List, Tree }) {
+        c.add(format!("layout_shown.{layout:?}"), |s| {
+            s.layout_shown(layout).into()
+        });
+    }
+    c.add("tree_nodes", |s| plain(s.tree_nodes()));
+    for value in all!(TreeNodeText { Long, Short }) {
+        c.add(format!("tree_node_option.{value:?}"), |s| {
+            s.tree_node_option(value).into()
         });
     }
 
@@ -735,6 +819,7 @@ fn entries_in(en: &dyn Strings, uk: &dyn Strings) -> Vec<Entry> {
         ProductVersion,
         Target,
         Inaccessible,
+        Inside,
     });
     for property in properties {
         c.add(format!("property.{property:?}"), |s| {
@@ -814,7 +899,7 @@ fn entries_in(en: &dyn Strings, uk: &dyn Strings) -> Vec<Entry> {
             |s| s.inaccessible_details(&absent),
         );
     }
-    c.add("attribute_format", |s| s.attribute_format().into());
+    c.add("attribute_format", |s| plain(s.attribute_format()));
     let attribute_options = all!(AttributeFormat {
         Words,
         Letters,
@@ -825,9 +910,9 @@ fn entries_in(en: &dyn Strings, uk: &dyn Strings) -> Vec<Entry> {
             s.attribute_option(value).into()
         });
     }
-    c.add("warn_missing_entry", |s| s.warn_missing_entry().into());
+    c.add("warn_missing_entry", |s| plain(s.warn_missing_entry()));
     c.add("entry_gone_question", |s| s.entry_gone_question().into());
-    c.add("open", |s| s.open().into());
+    c.add("open", |s| plain(s.open()));
     c.add("no_folder_on_disk", |s| s.no_folder_on_disk("{path}"));
     c.add("explorer_failed", |s| s.explorer_failed("{reason}"));
 

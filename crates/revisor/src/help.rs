@@ -3,6 +3,7 @@
 
 use wxdragon::prelude::*;
 
+use crate::access::plain;
 use crate::commands::CommandId;
 use crate::i18n::Strings;
 use crate::menus::shortcuts_text;
@@ -15,7 +16,7 @@ pub fn show_shortcuts(parent: &Frame, s: &'static dyn Strings) {
     text_window::show(
         parent,
         s,
-        s.command(CommandId::KeyboardShortcuts),
+        &plain(s.command(CommandId::KeyboardShortcuts)),
         &shortcuts_text(s),
     );
 }
@@ -25,5 +26,5 @@ pub fn show_about(parent: &Frame, s: &'static dyn Strings) {
         "{}\n{THIRD_PARTY_LICENSES}",
         s.about(revisor_core::version())
     );
-    text_window::show(parent, s, s.command(CommandId::About), &text);
+    text_window::show(parent, s, &plain(s.command(CommandId::About)), &text);
 }

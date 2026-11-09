@@ -17,16 +17,14 @@
 
 use std::ffi::OsString;
 use std::fmt;
-use std::os::windows::ffi::OsStringExt;
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicU8, AtomicU64, Ordering};
 use std::time::Duration;
 
 use crate::diff::{self, Diff, Filter, Inaccessible, Rules, Subtree};
 use crate::exclude::{Branch, Exclusions, RecordedEnvironment};
-use crate::folders;
 use crate::job::{Cancel, Outcome, Work};
-use crate::names::{eq_ignore_case, eq_ignore_case_os};
+use crate::path::{self, Folded, eq_ignore_case, eq_ignore_case_os};
 use crate::scan::{Entry, EntryKind};
 use crate::store::{
     self, FolderState, SnapshotExclusion, SnapshotFolder, SnapshotInfo, Store, StoreError,
@@ -510,15 +508,17 @@ enum Pairing {
 /// folder, or a folder inside a folder of the other snapshot. In the order of the later
 /// snapshot's folders, then the earlier snapshot's folders that are left.
 fn pair_folders(earlier: &[SnapshotFolder], later: &[SnapshotFolder]) -> Vec<Pairing> {
-    let earlier_parts: Vec<Vec<Vec<u16>>> =
-        earlier.iter().map(|f| folders::parts(&f.path)).collect();
+    let earlier_parts: Vec<Vec<Folded>> = earlier
+        .iter()
+        .map(|f| path::parts(f.path.as_os_str()))
+        .collect();
     // The folders of one snapshot do not nest, so a folder that holds a folder of the
     // other snapshot is the same as none of them and inside none of them; it may hold
     // several, though, so a paired folder stays available.
     let mut taken = vec![false; earlier.len()];
     let mut pairings = Vec::new();
     for (l, folder) in later.iter().enumerate() {
-        let parts = folders::parts(&folder.path);
+        let parts = path::parts(folder.path.as_os_str());
         let same = (0..earlier.len()).find(|&e| earlier_parts[e] == parts);
         let holds_later = (0..earlier.len()).find(|&e| is_inside(&parts, &earlier_parts[e]));
         let inside_later: Vec<usize> = (0..earlier.len())
@@ -560,7 +560,7 @@ fn pair_folders(earlier: &[SnapshotFolder], later: &[SnapshotFolder]) -> Vec<Pai
 
 /// Whether the folder whose path has the parts `nested` lies inside the folder whose
 /// path has the parts `wider`.
-fn is_inside(nested: &[Vec<u16>], wider: &[Vec<u16>]) -> bool {
+fn is_inside(nested: &[Folded], wider: &[Folded]) -> bool {
     nested.len() > wider.len() && nested.starts_with(wider)
 }
 
@@ -735,14 +735,11 @@ impl FolderLoading<'_> {
     }
 }
 
-/// The parts of the path of `nested` below the path of `wider`, upper-cased, as the parts
-/// of a path compare.
+/// The parts of the path of `nested` below the path of `wider`, as written
+/// ([`path::split`]).
 fn relative_parts(wider: &Path, nested: &Path) -> Vec<OsString> {
-    let depth = folders::parts(wider).len();
-    folders::parts(nested)[depth..]
-        .iter()
-        .map(|part| OsString::from_wide(part))
-        .collect()
+    let depth = path::split(wider.as_os_str()).len();
+    path::split(nested.as_os_str()).split_off(depth)
 }
 
 /// Where a folder stands in a tree.

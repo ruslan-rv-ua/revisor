@@ -15,12 +15,15 @@ use revisor_core::compare::Warning;
 use revisor_core::exclude::PatternError;
 use revisor_core::scan::EntryKind;
 use revisor_core::settings::{
-    AttributeFormat, FocusAfterComparison, FocusAfterSnapshot, Language, SizeFormat,
+    AttributeFormat, ChangeType, DifferenceView, FocusAfterComparison, FocusAfterSnapshot,
+    Language, SizeFormat, Theme, TreeNodeText,
 };
 
 use crate::commands::{CommandId, MenuId, Pane, Reason, SubmenuId};
 use crate::details::{Attribute, Inaccessibility, Property};
-use crate::difference::{Column, Field, InaccessibleIn, PairText, RowChange, SummaryText};
+use crate::difference::{
+    Column, Field, InaccessibleIn, NodeText, PairText, RowChange, SummaryText,
+};
 
 /// An interface language.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -70,6 +73,16 @@ fn in_sentence(text: &str) -> String {
     match chars.next() {
         Some(first) if !is_name => first.to_lowercase().chain(chars).collect(),
         _ => text.to_string(),
+    }
+}
+
+/// `text` with its first letter small, as words of a column read after a dash (TASK-33):
+/// "Додано теку" in «docs — додано теку».
+fn lower_first(text: &str) -> String {
+    let mut chars = text.chars();
+    match chars.next() {
+        Some(first) => first.to_lowercase().chain(chars).collect(),
+        None => String::new(),
     }
 }
 
@@ -148,11 +161,13 @@ macro_rules! strings {
 }
 
 strings! {
-/// All interface strings of one language.
+/// All interface strings of one language. A name with an access key is marked with "&"
+/// before its letter in English, and has the words only in Ukrainian (TASK-30): the
+/// `access` module writes the label, and `access::plain` gives the name as text.
 pub trait Strings {
     fn lang(&self) -> Lang;
 
-    /// A command's name as the menu shows it, without access key or ellipsis.
+    /// A command's name as the menu shows it, without ellipsis.
     fn command(&self, id: CommandId) -> &'static str;
     fn menu(&self, id: MenuId) -> &'static str;
     fn submenu(&self, id: SubmenuId) -> &'static str;
@@ -168,6 +183,9 @@ pub trait Strings {
     fn only_in(&self, pane: Pane) -> String;
     /// A key that works in one list: "Enter in the snapshot list".
     fn in_list(&self, key: &str, pane: Pane) -> String;
+    /// Two commands that share a shortcut, which switches between them (TASK-33): "List or
+    /// tree".
+    fn either(&self, first: &str, second: &str) -> String;
     fn navigation(&self) -> &'static str;
     fn switch_panes(&self) -> &'static str;
     fn context_menu(&self) -> &'static str;
@@ -175,16 +193,18 @@ pub trait Strings {
     // The main window.
     /// A pane's main list, as screen readers name it.
     fn pane(&self, pane: Pane) -> &'static str;
-    /// The label of the profile box, without access key or colon.
+    /// The label of the profile box, without colon.
     fn profile(&self) -> &'static str;
     /// Said when a list's context menu would have no items.
     fn no_actions(&self) -> &'static str;
-    /// Closes the «Help» windows; Esc does the same.
+    /// The action button of a question that closes revisor.
     fn close(&self) -> &'static str;
+    /// Closes the «Help» windows, with no access key; Esc does the same.
+    fn close_window(&self) -> &'static str;
     /// The «About revisor» text above the third-party licences.
     fn about(&self, version: &str) -> String;
 
-    // The profile window (TASK-7); labels come without access key or colon.
+    // The profile window (TASK-7); labels come without colon.
     fn profile_name(&self) -> &'static str;
     fn profile_folders(&self) -> &'static str;
     fn add_folder(&self) -> &'static str;
@@ -193,7 +213,14 @@ pub trait Strings {
     /// The button that makes a new profile.
     fn create(&self) -> &'static str;
     fn ok(&self) -> &'static str;
+    /// Cancel of a dialog, with no access key: Esc presses it.
     fn cancel(&self) -> &'static str;
+    /// Cancel of the progress row of the main window while it shows a snapshot, a
+    /// comparison or a comment waiting for the database (TASK-24).
+    fn cancel_job(&self) -> &'static str;
+    /// A check box under the difference list that shows or hides the rows of a type
+    /// (TASK-13 #22).
+    fn type_box(&self, kind: ChangeType) -> &'static str;
     /// The prompt of the folder picker.
     fn choose_folder(&self) -> &'static str;
     fn name_missing(&self) -> &'static str;
@@ -306,6 +333,11 @@ pub trait Strings {
     fn restart_now(&self) -> &'static str;
     fn later(&self) -> &'static str;
 
+    // The theme of the interface (TASK-34).
+    /// The label of the theme box, without access key or colon.
+    fn theme(&self) -> &'static str;
+    fn theme_option(&self, value: Theme) -> &'static str;
+
     // Comparisons (TASK-11).
     /// The progress field while the snapshots are compared.
     fn comparing(&self) -> &'static str;
@@ -373,6 +405,15 @@ pub trait Strings {
     /// The label of the setting «Розмір» (TASK-13), without access key or colon.
     fn size_format(&self) -> &'static str;
     fn size_option(&self, value: SizeFormat) -> &'static str;
+
+    // The difference tree (TASK-33).
+    /// What a node of the tree says: "a.txt — змінено: розмір", "docs — 12 змін".
+    fn tree_node(&self, node: &NodeText) -> String;
+    /// Said when Ctrl+T switches the view while the focus is not on the difference.
+    fn layout_shown(&self, layout: DifferenceView) -> &'static str;
+    /// The label of the setting «Вузли дерева», without access key or colon.
+    fn tree_nodes(&self) -> &'static str;
+    fn tree_node_option(&self, value: TreeNodeText) -> &'static str;
 
     // The details of a change (TASK-14).
     /// The name of a property, at the start of its line: "Розмір".
@@ -552,7 +593,7 @@ mod tests {
         );
         assert_eq!(
             En.compare_with_label("11/5/2026 12:00:00 PM"),
-            "Compare the snapshot 11/5/2026 12:00:00 PM with"
+            "Compare the snapshot 11/5/2026 12:00:00 PM &with"
         );
         assert_eq!(
             Uk.comparison_failed("знімок тим часом видалено"),
@@ -668,11 +709,11 @@ mod tests {
         }
         assert_eq!(En.size_unit(3), "GB");
         assert_eq!(Uk.comparison_field(), "Порівняння");
-        assert_eq!(En.comparison_field(), "Comparison");
+        assert_eq!(En.comparison_field(), "Co&mparison");
         assert_eq!(Uk.filter_field(), "Фільтр");
-        assert_eq!(En.filter_field(), "Filter");
+        assert_eq!(En.filter_field(), "Fi&lter");
         assert_eq!(Uk.size_format(), "Розмір");
-        assert_eq!(En.size_format(), "Size");
+        assert_eq!(En.size_format(), "&Size");
     }
 
     #[test]

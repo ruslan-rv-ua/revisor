@@ -110,9 +110,7 @@ fn prepare(input: &Input, db: &Path) -> Result<(), Box<dyn std::error::Error>> {
         .iter()
         .map(|pattern| SnapshotExclusion {
             pattern: pattern.to_string(),
-            applied: expand(pattern, &SystemEnvironment)
-                .applied()
-                .map(String::from),
+            applied: expand(pattern, &SystemEnvironment).applied(),
         })
         .collect();
     let started = Instant::now();

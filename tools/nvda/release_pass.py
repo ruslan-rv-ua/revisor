@@ -1,12 +1,14 @@
 """The NVDA pass of the main scenario before a release (TASK-19, «Випуск релізу»).
 
-    python -X utf8 tools\\nvda\\release_pass.py uk|en [exe]
+    python -X utf8 tools\\nvda\\release_pass.py uk|en [exe] [light|dark]
 
 ``exe`` is the file being released: the one downloaded from the release page or the one scoop
 installed (``~\\scoop\\apps\\revisor\\current\\revisor.exe``); without it, the local release
 build. The script runs a copy of it in the scratch folder, with its own ``data`` and the
 language given, so neither the real data nor the installed copy is touched. It prints the
-SHA-256 of the exe first, so the record of the pass names the file it passed.
+SHA-256 of the exe first, so the record of the pass names the file it passed. ``light`` or
+``dark`` sets the setting «Тема» of that copy (TASK-34), and the pass then checks that the
+snapshot list has the colours of the theme; without it, the theme is as Windows has it.
 
 The main scenario of the brief, from the keyboard alone: no profiles yet; Ctrl+N, a name, a
 folder through the folder picker, «Створити»; a snapshot before (F5); the script changes files
@@ -26,13 +28,18 @@ import time
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 from revisor_nvda import (  # noqa: E402
     EXE_SRC, SCRATCH, VK_CONTROL, VK_DOWN, VK_ESCAPE, VK_F1, VK_F5, VK_F6, VK_MENU, VK_RETURN,
-    VK_SHIFT, App, control_text, focused_window, foreground_title, item_count, key,
-    make_settings, prepare, snapshot_list, type_text, visible_controls, vk, wait_for,
+    VK_SHIFT, App, control_text, focused_window, foreground_title, is_dark, item_count, key,
+    list_colours, make_settings, prepare, snapshot_list, type_text, visible_controls, vk,
+    wait_for,
 )
 
 LANG = sys.argv[1] if len(sys.argv) > 1 else "uk"
 assert LANG in ("uk", "en"), f"the language is uk or en, not {LANG!r}"
-EXE = os.path.abspath(sys.argv[2]) if len(sys.argv) > 2 else EXE_SRC
+# The theme, if given, may come second or third: after the exe, or alone.
+THEMES = ("light", "dark")
+THEME = next((a for a in sys.argv[2:] if a in THEMES), None)
+REST = [a for a in sys.argv[2:] if a not in THEMES]
+EXE = os.path.abspath(REST[0]) if REST else EXE_SRC
 
 EXPECT = {
     "uk": {
@@ -93,10 +100,10 @@ def write(path, text):
         f.write(text)
 
 
-print(f"exe: {EXE}\nSHA-256: {sha256(EXE)}\nlanguage: {LANG}")
+print(f"exe: {EXE}\nSHA-256: {sha256(EXE)}\nlanguage: {LANG}\ntheme: {THEME or 'as Windows'}")
 paths = prepare({}, exe=EXE)
 scratch = os.path.dirname(paths["exe"])
-make_settings(scratch, language=LANG)
+make_settings(scratch, language=LANG, **({"theme": THEME} if THEME else {}))
 # The folder the profile watches: what the "program" changes between the two snapshots.
 tree = os.path.join(SCRATCH, "program")
 write(os.path.join(tree, "keep.txt"), "stays as it is")
@@ -113,6 +120,10 @@ def differences(main):
 with App(paths) as app:
     check("no profiles", "heard", heard(app.step("start: no profiles yet", 2.5)),
           EXPECT["no_profiles"])
+    if THEME:
+        background, text = list_colours(snapshot_list(app.main))
+        print(f"   snapshot list: background {background}, text {text}")
+        check("theme", "the snapshot list", "dark" if is_dark(background) else "light", THEME)
 
     key(VK_CONTROL, vk("N"))
     lines = app.step("Ctrl+N: the profile window", 2)

@@ -1,11 +1,11 @@
 ---
 id: TASK-19
 title: Релізи збираються й публікуються автоматично
-status: In Progress
+status: Done
 assignee:
   - '@claude'
 created_date: '2026-10-30 17:04'
-updated_date: '2026-11-07 00:33'
+updated_date: '2026-11-07 01:34'
 labels: []
 milestone: m-1
 dependencies:
@@ -95,26 +95,26 @@ revisor встановлюється через scoop із bucket ruslan-rv-ua/s
 
 ## Acceptance Criteria
 <!-- AC:BEGIN -->
-- [ ] #1 Тег vX.Y.Z запускає релізний воркфлоу на windows-2025. Він бере текст релізу з розділу версії в CHANGELOG.md, проганяє на тегу ті самі перевірки, що й CI в develop (форматування, тести, clippy і актуальність файлу ліцензій), і звіряє версію тегу з Cargo.toml і VERSIONINFO. Без розділу, з порожнім розділом чи з розбіжністю версій реліз не публікується.
-- [ ] #2 Воркфлоу перевіряє готовий exe: у таблиці імпорту немає VCRUNTIME, MSVCP і api-ms-win-crt, розмір — до 10 МіБ, а VERSIONINFO, прочитана з exe, має версію тегу, CompanyName «Ruslan Iskov» і ProductName «revisor».
-- [ ] #3 Лише після всіх перевірок воркфлоу публікує в GitHub Releases рівно два файли: revisor-vX.Y.Z-x64.exe і revisor-vX.Y.Z-x64.exe.sha256 у форматі «<hex64> *<ім'я>»; PDB лишається артефактом запуску на 90 днів.
-- [ ] #4 Тег із дефісом (v0.1.0-rc.1) публікується як pre-release, і checkver scoop його не бачить.
-- [ ] #5 CHANGELOG.md англійською відповідає Keep a Changelog 1.1.0, розділ 0.1.0 описує можливості MVP, а тест звіряє найновіший розділ із версією крейта.
-- [ ] #6 README.md і README.uk.md повні й кажуть те саме: можливості, встановлення через scoop і прямим завантаженням (Get-FileHash і попередження SmartScreen для exe без підпису), клавіатура, де лежать дані, чого revisor свідомо не робить, ліцензія.
-- [ ] #7 packaging/scoop/revisor.json має коментарі «##», адресу exe з #/revisor.exe, bin, ярлик «revisor» у меню «Пуск», persist data, checkver github і autoupdate з hash.url $url.sha256.
-- [ ] #8 Пробний реліз v0.1.0-rc.1 пройшов увесь шлях: сторінка релізу, Get-FileHash завантажених файлів, попередження SmartScreen на чистій машині, встановлення через scoop із локального маніфесту. scoop update з rc.1 на 0.1.0 лишив профілі й знімки на місці.
-- [ ] #9 Документ Backlog «Випуск релізу» українською описує кроки випуску та їхні пастки за зразком чек-листа pathmaster і прохід головного сценарію з NVDA обома мовами; 0.1.0 випущено за цим документом.
-- [ ] #10 revisor 0.1.0 опубліковано, маніфест засіяно в bucket, і CI bucket його прийняв. scoop install revisor ставить 0.1.0 з ярликом у меню «Пуск»; перевстановлення без --purge лишає дані; Excavator бачить revisor, а checkver.ps1 revisor -f відтворює той самий маніфест.
+- [x] #1 Тег vX.Y.Z запускає релізний воркфлоу на windows-2025. Він бере текст релізу з розділу версії в CHANGELOG.md, проганяє на тегу ті самі перевірки, що й CI в develop (форматування, тести, clippy і актуальність файлу ліцензій), і звіряє версію тегу з Cargo.toml і VERSIONINFO. Без розділу, з порожнім розділом чи з розбіжністю версій реліз не публікується.
+- [x] #2 Воркфлоу перевіряє готовий exe: у таблиці імпорту немає VCRUNTIME, MSVCP і api-ms-win-crt, розмір — до 10 МіБ, а VERSIONINFO, прочитана з exe, має версію тегу, CompanyName «Ruslan Iskov» і ProductName «revisor».
+- [x] #3 Лише після всіх перевірок воркфлоу публікує в GitHub Releases рівно два файли: revisor-vX.Y.Z-x64.exe і revisor-vX.Y.Z-x64.exe.sha256 у форматі «<hex64> *<ім'я>»; PDB лишається артефактом запуску на 90 днів.
+- [x] #4 Тег із дефісом (v0.1.0-rc.1) публікується як pre-release, і checkver scoop його не бачить.
+- [x] #5 CHANGELOG.md англійською відповідає Keep a Changelog 1.1.0, розділ 0.1.0 описує можливості MVP, а тест звіряє найновіший розділ із версією крейта.
+- [x] #6 README.md і README.uk.md повні й кажуть те саме: можливості, встановлення через scoop і прямим завантаженням (Get-FileHash і попередження SmartScreen для exe без підпису), клавіатура, де лежать дані, чого revisor свідомо не робить, ліцензія.
+- [x] #7 packaging/scoop/revisor.json має коментарі «##», адресу exe з #/revisor.exe, bin, ярлик «revisor» у меню «Пуск», persist data, checkver github і autoupdate з hash.url $url.sha256.
+- [x] #8 Пробний реліз v0.1.0-rc.1 пройшов увесь шлях: сторінка релізу, Get-FileHash завантажених файлів, встановлення через scoop із локального маніфесту. scoop update з rc.1 на 0.1.0 лишив профілі й знімки на місці.
+- [x] #9 Документ Backlog «Випуск релізу» українською описує кроки випуску та їхні пастки за зразком чек-листа pathmaster і прохід головного сценарію з NVDA обома мовами; 0.1.0 випущено за цим документом.
+- [x] #10 revisor 0.1.0 опубліковано, маніфест засіяно в bucket, і CI bucket його прийняв. scoop install revisor ставить 0.1.0 з ярликом у меню «Пуск»; перевстановлення без --purge лишає дані; Excavator бачить revisor, а checkver.ps1 revisor -f відтворює той самий маніфест.
 <!-- AC:END -->
 
 ## Definition of Done
 <!-- DOD:BEGIN -->
-- [ ] #1 Тести (cargo test) проходять
-- [ ] #2 cargo clippy і cargo fmt --check без зауважень
-- [ ] #3 Зміни інтерфейсу перевірено вручну з NVDA в українському інтерфейсі (якщо задача їх містить)
-- [ ] #4 Нотатки виконання й підсумок задачі заповнено
-- [ ] #5 Бриф і ADR чи README оновлено (якщо задача змінила поведінку чи рішення)
-- [ ] #6 Нові вікна й контроли мають клавіші доступу за документом «Клавіатура й меню» (якщо задача їх додає)
+- [x] #1 Тести (cargo test) проходять
+- [x] #2 cargo clippy і cargo fmt --check без зауважень
+- [x] #3 Зміни інтерфейсу перевірено вручну з NVDA в українському інтерфейсі (якщо задача їх містить)
+- [x] #4 Нотатки виконання й підсумок задачі заповнено
+- [x] #5 Бриф і ADR чи README оновлено (якщо задача змінила поведінку чи рішення)
+- [x] #6 Нові вікна й контроли мають клавіші доступу за документом «Клавіатура й меню» (якщо задача їх додає)
 <!-- DOD:END -->
 
 ## Implementation Plan
@@ -181,4 +181,36 @@ checkver і rc (#4): API «latest release» (`gh api repos/ruslan-rv-ua/revisor/
 scoop install з локального маніфесту (за словом автора; version 0.1.0-rc.1, url файлу rc із #/revisor.exe, hash із .sha256): «Checking hash … OK», current → 0.1.0-rc.1, «Making C:\scoop\shims\revisor.exe a GUI binary», ярлик «Scoop Apps\revisor.lnk» у меню «Пуск» → C:\scoop\apps\revisor\current\revisor.exe, `data` — junction на C:\scoop\persist\revisor\data; хеш exe = опублікованому, потоку Zone.Identifier немає (лише :$DATA), тож SmartScreen для копії через scoop не спрацьовує. Перед встановленням scoop сам оновив себе й списки bucket-ів (звичайна поведінка `scoop install`). Підготовка persist (скрипт у скретчпаді, за згодою автора): профіль «Перевірка persist» на теці скретчпаду, F5 у поставленому revisor — 1 знімок, 3 записи; revisor сам створив settings.db у persist.
 
 Прохід NVDA (Р5) на поставленому rc.1 (SHA-256 dc3c7385…e089), NVDA 2026.2, за згодою автора: `release_pass.py uk` і `en` — `all heard`, код 0 (ті самі фрази, що й на локальній збірці). Клавіатура вільна.
+
+2026-11-07, реліз 0.1.0 (за словом автора). `git flow release finish 0.1.0 --no-ff --no-fetch --no-push -m "revisor v0.1.0" -M "Merge branch 'release/0.1.0'…" --update-message "Merge branch 'main' into develop…"` (GIT_MERGE_AUTOEDIT=no, трейлери Co-Authored-By) → main 2032c96 з тегом v0.1.0, develop 62e475a; ім'я тегу перевірено до push; push main ef98baa..2032c96, develop 9ca2379..62e475a, тег v0.1.0.
+
+Запуск «Release» 42319427709: зелений, 508 с. Реліз «revisor v0.1.0» не pre-release, «latest» в API; два файли: revisor-v0.1.0-x64.exe (6 090 240 Б) і .sha256 (88 Б), SHA-256 a91a1b98344bd1460163c1cf0b339fc9378c76aca539aa5a9e58674cc1344825; VERSIONINFO Ruslan Iskov / revisor / 0.1.0; PDB-артефакт до 2027-02-05. CI develop 42319427543 зелений.
+
+Після 0.1.0 `/releases/latest` → v0.1.0, checkver без токена каже «revisor: 0.1.0» — rc не бачить і в режимі HTML.
+
+Р8 для 0.1.0: завантажено (за словом автора), «MATCHES the published fingerprint», `sha256sum -c` OK.
+
+persist: локальний маніфест → version/url/hash 0.1.0, `scoop update revisor`: current → 0.1.0, data — той самий junction, профіль «Перевірка persist» з 1 знімком (3 записи) і settings.db на місці.
+
+bucket: bucket/revisor.json (вступ «##» для живої копії + хеш), розділ README після Tapir (за згодою автора); перед push `scoop install` із файлу — хеш OK, GUI-shim, ярлик, persist; коміт 7a45f6c, push; CI bucket 42320890715 — validate success («Valid JSON», «Valid manifest structure», Version 0.1.0), відкат пропущено. `scoop update` + `scoop install revisor` із bucket ruslan-rv-ua → 0.1.0, ярлик «Scoop Apps\revisor.lnk», дані на місці; перевстановлення без --purge (кеш очищено, свіже завантаження з GitHub, хеш OK) — профіль і знімок на місці.
+
+Excavator 42321464443 (workflow_dispatch, за словом автора): зелений, у лозі «revisor: 0.1.0», нового коміту немає. `checkver.ps1 -App revisor -Dir bucket -ForceUpdate` знайшов той самий хеш і переписав маніфест без змін змісту (`git diff` порожній; лише CRLF у робочій копії через core.autocrlf=true), файл повернуто з індексу.
+
+SmartScreen на чистій машині пропущено за рішенням автора 2026-11-07; критерій #8 скорочено за його згодою. README описує попередження за документацією Microsoft, наживо не бачили; українські назви кнопок у README.uk («Докладніше», «Виконати в будь-якому разі») взято з README pathmaster і не звірено з Windows.
+
+Лишилося в автора: revisor 0.1.0 поставлено через scoop; тестовий профіль «Перевірка persist» у C:\scoop\persist\revisor\data\profiles дивиться на теку скретчпаду сесії — його можна видалити. Pre-release v0.1.0-rc.1 лишається на сторінці релізів.
 <!-- SECTION:NOTES:END -->
+
+## Final Summary
+
+<!-- SECTION:FINAL_SUMMARY:BEGIN -->
+Релізи revisor збираються й публікуються автоматично, і 0.1.0 випущено.
+
+**Що зроблено.** `.github/workflows/release.yml`: тег vX.Y.Z на windows-2025 бере текст релізу з розділу CHANGELOG, проганяє на тегу fmt, тести, clippy і файл ліцензій, звіряє версію з Cargo.toml і VERSIONINFO, перевіряє готовий exe (імпорт без рантайму C, до 10 МіБ, VERSIONINFO з exe) і лише тоді публікує два файли — exe і `.sha256`; PDB лишається артефактом на 90 днів, тег із дефісом стає pre-release. CHANGELOG.md за Keep a Changelog 1.1.0 і тест `crates/revisor-core/tests/changelog.rs`. Маніфест `packaging/scoop/revisor.json` за зразком pathmaster. Повні README.md і README.uk.md. Документ Backlog «Випуск релізу» (doc-18) з кроками, пастками й таблицею проходу NVDA; скрипт `tools/nvda/release_pass.py`. Бриф і ADR-0010 доповнено правилом версії rc і посиланням на doc-18.
+
+**Як випущено.** Пробний реліз v0.1.0-rc.1 (pre-release, checkver його не бачить) пройшов сторінку релізу, Get-FileHash, scoop install із локального маніфесту, профіль і знімок, прохід NVDA uk і en. Потім `git flow release finish 0.1.0` → v0.1.0 опубліковано, `scoop update` з rc.1 на 0.1.0 лишив профіль і знімок. Маніфест засіяно в ruslan-rv-ua/scoop-bucket (7a45f6c), CI bucket зелений, `scoop install revisor` ставить 0.1.0 з ярликом, перевстановлення без --purge лишає дані, Excavator бачить revisor, checkver -f відтворює той самий маніфест.
+
+**Рішення автора.** Шість рішень із плану (версія rc без суфікса, CHANGELOG одразу в гілці, persist через локальний маніфест, NVDA-скрипт перед релізом, усі чотири перевірки CI на тегу, американський правопис англійських текстів) і скорочений критерій #8 — без перевірки SmartScreen на чистій машині.
+
+**Що свідомо лишилося.** Попередження SmartScreen наживо не бачили: README описує його за документацією Microsoft, українські назви кнопок не звірено з Windows. Тестовий профіль «Перевірка persist» у persist scoop можна видалити; pre-release v0.1.0-rc.1 лишається на сторінці релізів.
+<!-- SECTION:FINAL_SUMMARY:END -->

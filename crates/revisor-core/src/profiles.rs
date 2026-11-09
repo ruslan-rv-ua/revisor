@@ -9,7 +9,7 @@ use std::path::{Path, PathBuf};
 use std::time::Duration;
 
 use crate::job::Cancel;
-use crate::names::eq_ignore_case;
+use crate::path::eq_ignore_case;
 use crate::store::{self, ProfileSettings, SnapshotInfo, Store, StoreError};
 
 /// Names Windows keeps for devices, with or without an extension.

@@ -3,8 +3,10 @@
 //! focus does when a snapshot ends, whether deleting snapshots asks first (TASK-9), the
 //! interface language (TASK-16), what the focus does when a comparison ends (TASK-11), how
 //! sizes are written, which rows the difference list shows in which order (TASK-13), how
-//! the details of a change write attributes, and whether showing a change in File Explorer
-//! warns when it is no longer on disk (TASK-14).
+//! the details of a change write attributes, whether showing a change in File Explorer
+//! warns when it is no longer on disk (TASK-14), whether the difference shows as a list or
+//! as a tree, with how much its nodes say (TASK-33), and the theme of the interface
+//! (TASK-34).
 //! Each setting is one row of a key–value table, read and written through typed methods,
 //! so a later setting needs no change of the schema.
 
@@ -44,6 +46,9 @@ const KEY_DIFFERENCE_SORT: &str = "difference_sort";
 const KEY_DIFFERENCE_DESCENDING: &str = "difference_descending";
 const KEY_ATTRIBUTE_FORMAT: &str = "attribute_format";
 const KEY_WARN_MISSING_ENTRY: &str = "warn_missing_entry";
+const KEY_DIFFERENCE_VIEW: &str = "difference_view";
+const KEY_TREE_NODE_TEXT: &str = "tree_node_text";
+const KEY_THEME: &str = "theme";
 
 #[derive(Debug)]
 pub enum SettingsError {
@@ -289,6 +294,58 @@ pub struct DifferenceSort {
     pub descending: bool,
 }
 
+/// How the difference is shown (TASK-33): as the list of TASK-13, or as a tree of its
+/// folders in the same place.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Hash)]
+pub enum DifferenceView {
+    #[default]
+    List,
+    Tree,
+}
+
+impl DifferenceView {
+    /// Every value, in the order of the menu «Різниця».
+    pub const ALL: [Self; 2] = [Self::List, Self::Tree];
+
+    /// The value as the database stores it.
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::List => "list",
+            Self::Tree => "tree",
+        }
+    }
+
+    pub fn parse(text: &str) -> Option<Self> {
+        Self::ALL.into_iter().find(|v| v.as_str() == text)
+    }
+}
+
+/// What a node of the difference tree says (TASK-33 #6): its name, its change and what
+/// changed, and for a folder how many changes it holds; or its name and change only.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub enum TreeNodeText {
+    #[default]
+    Long,
+    Short,
+}
+
+impl TreeNodeText {
+    /// Every value, in the order the settings window lists them.
+    pub const ALL: [Self; 2] = [Self::Long, Self::Short];
+
+    /// The value as the database stores it.
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::Long => "long",
+            Self::Short => "short",
+        }
+    }
+
+    pub fn parse(text: &str) -> Option<Self> {
+        Self::ALL.into_iter().find(|v| v.as_str() == text)
+    }
+}
+
 /// The interface language the user chose (TASK-16). The application maps it to a language
 /// of its strings when it starts; a new value takes effect at the next start.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
@@ -310,6 +367,35 @@ impl Language {
             Self::SameAsWindows => "windows",
             Self::English => "en",
             Self::Ukrainian => "uk",
+        }
+    }
+
+    pub fn parse(text: &str) -> Option<Self> {
+        Self::ALL.into_iter().find(|v| v.as_str() == text)
+    }
+}
+
+/// The theme of the interface the user chose (TASK-34). It takes effect at once, and a
+/// contrast theme of Windows always wins over it while it is on.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub enum Theme {
+    /// Light or dark as Windows is, following it as it switches.
+    #[default]
+    SameAsWindows,
+    Light,
+    Dark,
+}
+
+impl Theme {
+    /// Every value, in the order the settings window lists them.
+    pub const ALL: [Self; 3] = [Self::SameAsWindows, Self::Light, Self::Dark];
+
+    /// The value as the database stores it.
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::SameAsWindows => "windows",
+            Self::Light => "light",
+            Self::Dark => "dark",
         }
     }
 
@@ -523,6 +609,44 @@ impl Settings {
 
     pub fn set_warn_missing_entry(&self, warn: bool) -> Result<(), SettingsError> {
         self.set(KEY_WARN_MISSING_ENTRY, i64::from(warn))
+    }
+
+    /// Whether the difference shows as a list or as a tree; as a list when nothing is
+    /// stored (TASK-33).
+    pub fn difference_view(&self) -> Result<DifferenceView, SettingsError> {
+        Ok(match self.get(KEY_DIFFERENCE_VIEW)? {
+            Some(Value::Text(text)) => DifferenceView::parse(&text).unwrap_or_default(),
+            _ => DifferenceView::default(),
+        })
+    }
+
+    pub fn set_difference_view(&self, value: DifferenceView) -> Result<(), SettingsError> {
+        self.set(KEY_DIFFERENCE_VIEW, value.as_str())
+    }
+
+    /// What the nodes of the difference tree say; the long text when nothing is stored
+    /// (TASK-33 #6).
+    pub fn tree_node_text(&self) -> Result<TreeNodeText, SettingsError> {
+        Ok(match self.get(KEY_TREE_NODE_TEXT)? {
+            Some(Value::Text(text)) => TreeNodeText::parse(&text).unwrap_or_default(),
+            _ => TreeNodeText::default(),
+        })
+    }
+
+    pub fn set_tree_node_text(&self, value: TreeNodeText) -> Result<(), SettingsError> {
+        self.set(KEY_TREE_NODE_TEXT, value.as_str())
+    }
+
+    /// The theme of the interface; «Same as Windows» when nothing is stored (TASK-34).
+    pub fn theme(&self) -> Result<Theme, SettingsError> {
+        Ok(match self.get(KEY_THEME)? {
+            Some(Value::Text(text)) => Theme::parse(&text).unwrap_or_default(),
+            _ => Theme::default(),
+        })
+    }
+
+    pub fn set_theme(&self, value: Theme) -> Result<(), SettingsError> {
+        self.set(KEY_THEME, value.as_str())
     }
 
     fn get(&self, key: &str) -> Result<Option<Value>, SettingsError> {

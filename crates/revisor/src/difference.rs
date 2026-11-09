@@ -10,6 +10,10 @@
 //! and the path of its entry (TASK-14). The window keeps the list controls: they ask the
 //! model for the text of the rows they show, and put the focus where the model says after
 //! the view changes.
+//!
+//! The same rows can show as a tree of their folders instead (TASK-33, [`tree`]): the
+//! model then keeps the node with the focus too, and writes the text of the nodes, which
+//! the window's tree controls show.
 
 use std::cmp::Ordering;
 use std::collections::HashMap;
@@ -20,16 +24,24 @@ use std::thread;
 
 use revisor_core::compare::{Difference, Side, Warning};
 use revisor_core::diff::{self, Change, ChangeKind, Fields, Inaccessible};
-use revisor_core::names::upcase;
+use revisor_core::path::upcase;
 use revisor_core::profiles::ProfileFile;
 use revisor_core::scan::{Entry, EntryKind, VersionInfo};
 use revisor_core::settings::{
-    AttributeFormat, ChangeType, DifferenceSort, FocusAfterComparison, SizeFormat, SortColumn,
+    AttributeFormat, ChangeType, DifferenceSort, DifferenceView, FocusAfterComparison, SizeFormat,
+    SortColumn, TreeNodeText,
 };
 use revisor_core::store::{SnapshotInfo, Unavailable};
 
-use crate::details::{self, Formats, Inaccessibility, Unreadable};
+use crate::commands::Pane;
+use crate::details::{self, Formats, Inaccessibility, Property, Unreadable};
 use crate::i18n::Strings;
+use crate::keyboard::Focus;
+
+mod tree;
+
+pub use tree::NodeId;
+use tree::Tree;
 
 /// The user's regional formats, in which the model writes numbers and moments: those of
 /// Windows in the window, plain ones in the tests.
@@ -193,21 +205,55 @@ pub struct PairText {
 }
 
 /// Which rows the list shows and in which order (#21, #22, #28): the types shown,
-/// indexed by [`ChangeType`], and the order. The text filter is apart: it is not kept.
+/// indexed by [`ChangeType`], and the order; and whether they show as a list or as a
+/// tree (TASK-33). The text filter is apart: it is not kept.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct View {
     pub types: [bool; 4],
     pub sort: DifferenceSort,
+    pub layout: DifferenceView,
 }
 
 impl Default for View {
-    /// Every type, by path (#28).
+    /// Every type, by path, as a list (#28).
     fn default() -> Self {
         Self {
             types: [true; 4],
             sort: DifferenceSort::default(),
+            layout: DifferenceView::default(),
         }
     }
+}
+
+/// What a node of the difference tree says, for [`Strings::tree_node`] (TASK-33 #6).
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct NodeText {
+    /// The name of the node's entry; at the top level, the whole path of the folder.
+    pub name: String,
+    /// The node's own change, as the columns «Зміна» and «Що змінилося» say it — the
+    /// second empty for the short text —; none for a folder that is no change itself.
+    pub change: Option<(String, String)>,
+    /// How many changes and inaccessible entries the filter shows inside a folder, for
+    /// the long text; none when there are none.
+    pub inside: Option<(Counted, Counted)>,
+}
+
+/// Where «Показати в Провіднику» goes for the entry with the focus (TASK-14 #11, TASK-33
+/// #9): an entry, which File Explorer selects in its folder, or a folder of the tree that
+/// is no change itself, which it opens.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum Location {
+    Entry(PathBuf),
+    Folder(PathBuf),
+}
+
+/// What the window's state knows of the difference list (`AppState::of`, ADR-0013):
+/// whether it shows a difference, how many rows it shows and its view.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct ListState {
+    pub has_difference: bool,
+    pub rows: usize,
+    pub view: View,
 }
 
 /// `bytes` as `format` writes them (#17): as File Explorer does — `StrFormatByteSize`,
@@ -438,6 +484,10 @@ struct Folders {
     /// The keys, one after another, and where each starts and how long it is.
     keys: Vec<u16>,
     spans: Vec<(u32, u32)>,
+    /// What each folder is, as `ids` has it, and the folder it is in: [`NONE`] for a root,
+    /// and for the folder a root lies in (TASK-33).
+    entries: Vec<(u32, bool, u32)>,
+    parents: Vec<u32>,
 }
 
 impl Folders {
@@ -446,11 +496,13 @@ impl Folders {
         &self.keys[start as usize..(start + len) as usize]
     }
 
-    fn add(&mut self, at: (u32, bool, u32), key: &[u16]) -> u32 {
+    fn add(&mut self, at: (u32, bool, u32), key: &[u16], parent: u32) -> u32 {
         let id = self.spans.len() as u32;
         self.spans.push((self.keys.len() as u32, key.len() as u32));
         self.keys.extend_from_slice(key);
         self.ids.insert(at, id);
+        self.entries.push(at);
+        self.parents.push(parent);
         id
     }
 
@@ -461,17 +513,17 @@ impl Folders {
             return id;
         }
         let at = &tree[entry as usize];
-        let key = match at.parent {
+        let (key, parent) = match at.parent {
             Some(parent) => {
                 let parent = self.of_entry(tree, folder, side, parent);
                 let mut key = self.key(parent).to_vec();
                 push_part(&mut key, &at.name);
-                key
+                (key, parent)
             }
             // A root is named by its whole path.
-            None => path_key(&at.name),
+            None => (path_key(&at.name), NONE),
         };
-        self.add((folder, side, entry), &key)
+        self.add((folder, side, entry), &key, parent)
     }
 
     /// The folder the root of a tree lies in: the tree of `side` of the folder `folder` of
@@ -484,7 +536,7 @@ impl Folders {
             .parent()
             .map(|parent| path_key(parent.as_os_str()))
             .unwrap_or_default();
-        self.add((folder, side, NONE), &key)
+        self.add((folder, side, NONE), &key, NONE)
     }
 }
 
@@ -498,6 +550,9 @@ struct Index {
     name_at: Vec<u32>,
     /// The folder each row's entry is in.
     parent: Vec<u32>,
+    /// The folder each row's entry is, when it is one, else [`NONE`]: the tree puts what
+    /// is inside it under its row (TASK-33).
+    own_folder: Vec<u32>,
     folders: Folders,
     /// The place of each folder in path order; folders with the same path share it.
     folder_rank: Vec<u32>,
@@ -508,6 +563,7 @@ impl Index {
         let mut names = Vec::new();
         let mut name_at = Vec::with_capacity(rows.len() + 1);
         let mut parent = Vec::with_capacity(rows.len());
+        let mut own_folder = Vec::with_capacity(rows.len());
         let mut folders = Folders::default();
         for row in rows {
             let (tree, side, entry) = shown_entry(difference, row);
@@ -523,6 +579,10 @@ impl Index {
                     parent.push(folders.of_root(&at.name, row.folder, side));
                 }
             }
+            own_folder.push(match at.kind {
+                EntryKind::Dir => folders.of_entry(tree, row.folder, side, entry),
+                EntryKind::File | EntryKind::Link => NONE,
+            });
         }
         name_at.push(names.len() as u32);
         let mut by_path: Vec<u32> = (0..folders.spans.len() as u32).collect();
@@ -539,6 +599,7 @@ impl Index {
             names,
             name_at,
             parent,
+            own_folder,
             folders,
             folder_rank,
         }
@@ -547,6 +608,12 @@ impl Index {
     fn name(&self, row: u32) -> &[u16] {
         let row = row as usize;
         &self.names[self.name_at[row] as usize..self.name_at[row + 1] as usize]
+    }
+
+    /// Whether the entry of row `row` is the root of its tree, named by its whole path.
+    fn is_root(&self, row: u32) -> bool {
+        let folder = self.parent[row as usize];
+        self.folders.entries[folder as usize].2 == NONE
     }
 }
 
@@ -641,6 +708,47 @@ fn root_name(path: &OsStr) -> &OsStr {
     Path::new(path).file_name().unwrap_or(path)
 }
 
+/// An entry's name as the column «Ім'я» shows it: a root by its last part.
+fn entry_name(entry: &Entry) -> String {
+    match entry.parent {
+        Some(_) => entry.name.to_string_lossy().into_owned(),
+        None => root_name(&entry.name).to_string_lossy().into_owned(),
+    }
+}
+
+/// The whole path of the entry of the row `r`, as the list's columns show it: in the
+/// later snapshot, else in the earlier (TASK-14 #11).
+fn row_path(shown: &Shown, r: u32) -> PathBuf {
+    let (tree, _, at) = shown_entry(&shown.difference, &shown.rows[r as usize]);
+    diff::path(tree, at)
+}
+
+/// The tree of a snapshot and the entry there that a node of the difference tree is:
+/// its row's, or its folder's.
+fn node_entry<'a>(shown: &'a Shown, tree: &Tree, node: u32) -> (&'a [Entry], u32) {
+    match tree.row(node) {
+        Some(r) => {
+            let (entries, _, at) = shown_entry(&shown.difference, &shown.rows[r as usize]);
+            (entries, at)
+        }
+        None => {
+            let index = shown
+                .index
+                .as_ref()
+                .expect("the tree is made from the index");
+            let (folder, later, entry) = index.folders.entries[tree.folder(node) as usize];
+            let folder = &shown.difference.folders[folder as usize];
+            (if later { &folder.new } else { &folder.old }, entry)
+        }
+    }
+}
+
+/// The whole path of a folder of the tree that is no change itself.
+fn folder_path(shown: &Shown, tree: &Tree, node: u32) -> PathBuf {
+    let (entries, at) = node_entry(shown, tree, node);
+    diff::path(entries, at)
+}
+
 /// A difference shown, with all the model knows of it.
 struct Shown {
     difference: Difference,
@@ -652,9 +760,30 @@ struct Shown {
     order: Vec<u32>,
     /// The rows the filter lets through, in that order: what the list shows.
     visible: Vec<u32>,
+    /// Whether the filter lets each row through, by row.
+    passed: Vec<bool>,
     /// The row that has the focus, and its place in `visible`.
     current: Option<(u32, usize)>,
     index: Option<Index>,
+    /// The rows as a tree of their folders, made when the tree is first shown (TASK-33).
+    tree: Option<Tree>,
+    /// The node of the tree that has the focus.
+    tree_current: Option<u32>,
+}
+
+impl Shown {
+    /// Makes the tree of the rows when it is not made yet, and shows in it what the filter
+    /// lets through (TASK-33).
+    fn make_tree(&mut self) {
+        if self.tree.is_none() {
+            let index = self
+                .index
+                .get_or_insert_with(|| Index::new(&self.rows, &self.difference));
+            self.tree = Some(Tree::new(&self.rows, index));
+        }
+        let tree = self.tree.as_mut().expect("the tree was just made");
+        tree.filter(&self.rows, &self.passed);
+    }
 }
 
 /// The details of a row (TASK-14): the name of its entry, which the window's title shows,
@@ -672,6 +801,8 @@ pub struct List {
     size_format: SizeFormat,
     /// How the details write attributes (TASK-14 #7).
     attribute_format: AttributeFormat,
+    /// What the nodes of the tree say (TASK-33 #6).
+    node_text: TreeNodeText,
     view: View,
     /// The text filter as typed, and as the keys of paths hold it.
     text: String,
@@ -693,6 +824,7 @@ impl List {
             regional,
             size_format,
             attribute_format: AttributeFormat::default(),
+            node_text: TreeNodeText::default(),
             view,
             text: String::new(),
             needle: Vec::new(),
@@ -727,6 +859,15 @@ impl List {
         self.attribute_format = format;
     }
 
+    pub fn node_text(&self) -> TreeNodeText {
+        self.node_text
+    }
+
+    /// The nodes of the tree say what `text` says from now on (TASK-33 #6).
+    pub fn set_node_text(&mut self, text: TreeNodeText) {
+        self.node_text = text;
+    }
+
     pub fn has_difference(&self) -> bool {
         self.shown.is_some()
     }
@@ -755,11 +896,57 @@ impl List {
             counts,
             order: Vec::new(),
             visible: Vec::new(),
+            passed: Vec::new(),
             current: None,
             index: None,
+            tree: None,
+            tree_current: None,
         });
         self.sort();
         self.filter()
+    }
+
+    /// Shows the rows as a list or as a tree from now on (TASK-33 #5, #7): the focus goes
+    /// to the same entry in the other — from a row to its node, from a node to its row,
+    /// and from a folder that is no change itself to the first row shown inside it.
+    pub fn set_layout(&mut self, layout: DifferenceView) {
+        if self.view.layout == layout {
+            return;
+        }
+        self.view.layout = layout;
+        let Some(shown) = &mut self.shown else {
+            return;
+        };
+        match layout {
+            DifferenceView::Tree => {
+                shown.make_tree();
+                let tree = shown.tree.as_ref().expect("the tree was just made");
+                shown.tree_current = shown
+                    .current
+                    .map(|(row, _)| tree.node_of_row(row))
+                    .or_else(|| tree.first_row_node(&shown.passed));
+            }
+            DifferenceView::List => {
+                let row = shown.tree_current.and_then(|node| {
+                    let tree = shown.tree.as_ref()?;
+                    tree.first_row_in(node, &shown.passed)
+                });
+                if let Some(row) = row
+                    && let Some(place) = shown.visible.iter().position(|&r| r == row)
+                {
+                    shown.current = Some((row, place));
+                }
+            }
+        }
+    }
+
+    /// What the window's state knows of the list.
+    pub fn state(&self) -> ListState {
+        ListState {
+            has_difference: self.has_difference(),
+            rows: self.len(),
+            view: self.view,
+        }
     }
 
     /// How many rows the list shows.
@@ -834,10 +1021,7 @@ impl List {
         let (tree, _, at) = shown_entry(&shown.difference, row);
         let entry = &tree[at as usize];
         match column {
-            Column::Name => match entry.parent {
-                Some(_) => entry.name.to_string_lossy().into_owned(),
-                None => root_name(&entry.name).to_string_lossy().into_owned(),
-            },
+            Column::Name => entry_name(entry),
             Column::Change => s.change(row.change_type(), entry.kind).to_string(),
             Column::WhatChanged => what_changed_words(s, what_changed(&shown.difference, row)),
             Column::Size => match entry.kind {
@@ -860,8 +1044,7 @@ impl List {
     pub fn entry_path(&self, index: usize) -> Option<PathBuf> {
         let shown = self.shown.as_ref()?;
         let &r = shown.visible.get(index)?;
-        let (tree, _, at) = shown_entry(&shown.difference, &shown.rows[r as usize]);
-        Some(diff::path(tree, at))
+        Some(row_path(shown, r))
     }
 
     /// The details of the row at `index` of the list (TASK-14 #2–#10): the entry's name
@@ -869,6 +1052,46 @@ impl List {
     pub fn details(&self, index: usize) -> Option<Details> {
         let shown = self.shown.as_ref()?;
         let &r = shown.visible.get(index)?;
+        Some(self.row_details(shown, r))
+    }
+
+    /// The details of the entry with the focus, in the list or in the tree (TASK-33 #9):
+    /// a node that is a row has the row's, and a folder that is no change itself its path
+    /// and what changed inside it.
+    pub fn current_details(&self) -> Option<Details> {
+        let shown = self.shown.as_ref()?;
+        match self.view.layout {
+            DifferenceView::List => self.details(self.current()?),
+            DifferenceView::Tree => {
+                let node = shown.tree_current?;
+                let tree = shown.tree.as_ref()?;
+                Some(match tree.row(node) {
+                    Some(r) => self.row_details(shown, r),
+                    None => self.folder_details(shown, tree, node),
+                })
+            }
+        }
+    }
+
+    /// Where «Показати в Провіднику» goes for the entry with the focus (TASK-14 #11,
+    /// TASK-33 #9).
+    pub fn current_location(&self) -> Option<Location> {
+        let shown = self.shown.as_ref()?;
+        match self.view.layout {
+            DifferenceView::List => self.entry_path(self.current()?).map(Location::Entry),
+            DifferenceView::Tree => {
+                let node = shown.tree_current?;
+                let tree = shown.tree.as_ref()?;
+                Some(match tree.row(node) {
+                    Some(r) => Location::Entry(row_path(shown, r)),
+                    None => Location::Folder(folder_path(shown, tree, node)),
+                })
+            }
+        }
+    }
+
+    /// The details of the row `r`.
+    fn row_details(&self, shown: &Shown, r: u32) -> Details {
         let row = &shown.rows[r as usize];
         let folder = &shown.difference.folders[row.folder as usize];
         let old = (row.old != NONE).then(|| &folder.old[row.old as usize]);
@@ -890,7 +1113,7 @@ impl List {
             _ => String::new(),
         };
         let subject = details::Row {
-            path: self.entry_path(index)?.to_string_lossy().into_owned(),
+            path: row_path(shown, r).to_string_lossy().into_owned(),
             change: row.change_type(),
             what_changed,
             old,
@@ -902,10 +1125,138 @@ impl List {
             size: self.size_format,
             attributes: self.attribute_format,
         };
-        Some(Details {
-            name: self.cell(index, Column::Name),
+        let (tree, _, at) = shown_entry(&shown.difference, row);
+        Details {
+            name: entry_name(&tree[at as usize]),
             text: details::text(self.s, &*self.regional, formats, &subject),
+        }
+    }
+
+    /// The details of a folder of the tree that is no change itself (TASK-33 #9): its path
+    /// and the summary of every change inside it, as the field «Порівняння» sums up the
+    /// difference, with how many of them the filter shows when it hides some.
+    fn folder_details(&self, shown: &Shown, tree: &Tree, node: u32) -> Details {
+        let s = self.s;
+        let inside: Vec<&Row> = tree
+            .rows_in(node)
+            .map(|r| &shown.rows[r as usize])
+            .collect();
+        let all = inside.len() as u64;
+        let counts = count(inside.iter().copied(), &shown.difference);
+        let mut summary = s.summary(&self.summary_text(counts, 0));
+        let passed = tree.shown(node);
+        let passed = u64::from(passed.changes + passed.inaccessible);
+        if passed < all {
+            summary.push(' ');
+            summary.push_str(&s.showing(&self.count_text(passed), &self.count_text(all)));
+        }
+        let path = folder_path(shown, tree, node)
+            .to_string_lossy()
+            .into_owned();
+        Details {
+            name: self.node_name(shown, tree, node),
+            text: format!(
+                "{}: {path}\n{}: {summary}",
+                s.property(Property::Path),
+                s.property(Property::Inside)
+            ),
+        }
+    }
+
+    // --- The tree (TASK-33) -------------------------------------------------------------
+
+    /// The difference shown and its tree, once the tree has been made.
+    fn tree(&self) -> Option<(&Shown, &Tree)> {
+        let shown = self.shown.as_ref()?;
+        Some((shown, shown.tree.as_ref()?))
+    }
+
+    /// The nodes of the top level that the filter shows, in order: the folders of the
+    /// difference.
+    pub fn tree_roots(&self) -> Vec<NodeId> {
+        self.tree().map_or_else(Vec::new, |(_, tree)| {
+            tree.shown_roots().map(NodeId).collect()
         })
+    }
+
+    /// The nodes inside `node` that the filter shows, in order.
+    pub fn tree_children(&self, node: NodeId) -> Vec<NodeId> {
+        self.tree().map_or_else(Vec::new, |(_, tree)| {
+            tree.shown_children(node.0).map(NodeId).collect()
+        })
+    }
+
+    /// Whether the filter shows anything inside `node`.
+    pub fn tree_has_children(&self, node: NodeId) -> bool {
+        self.tree()
+            .is_some_and(|(_, tree)| tree.shown_children(node.0).next().is_some())
+    }
+
+    /// The nodes `node` is inside, from the top level down.
+    pub fn tree_path(&self, node: NodeId) -> Vec<NodeId> {
+        self.tree().map_or_else(Vec::new, |(_, tree)| {
+            tree.ancestors(node.0).map(NodeId).collect()
+        })
+    }
+
+    /// The node of the tree that has the focus.
+    pub fn tree_current(&self) -> Option<NodeId> {
+        self.shown.as_ref()?.tree_current.map(NodeId)
+    }
+
+    /// The focus of the tree has moved to `node`.
+    pub fn tree_focus(&mut self, node: NodeId) {
+        if let Some(shown) = &mut self.shown
+            && shown
+                .tree
+                .as_ref()
+                .is_some_and(|tree| tree.is_shown(node.0))
+        {
+            shown.tree_current = Some(node.0);
+        }
+    }
+
+    /// What `node` says, as the setting «Вузли дерева» wants (TASK-33 #6): its name, its
+    /// change in the words of the columns «Зміна» and «Що змінилося», and for a folder how
+    /// many changes the filter shows inside it; or its name and change only.
+    pub fn tree_label(&self, node: NodeId) -> String {
+        let Some((shown, tree)) = self.tree() else {
+            return String::new();
+        };
+        let s = self.s;
+        let long = self.node_text == TreeNodeText::Long;
+        let change = tree.row(node.0).map(|r| {
+            let row = &shown.rows[r as usize];
+            let (entries, _, at) = shown_entry(&shown.difference, row);
+            let words = s
+                .change(row.change_type(), entries[at as usize].kind)
+                .to_string();
+            let what = if long {
+                what_changed_words(s, what_changed(&shown.difference, row))
+            } else {
+                String::new()
+            };
+            (words, what)
+        });
+        let inside = tree.inside(node.0);
+        let inside = (long && inside.changes + inside.inaccessible > 0).then(|| {
+            (
+                self.counted(u64::from(inside.changes)),
+                self.counted(u64::from(inside.inaccessible)),
+            )
+        });
+        s.tree_node(&NodeText {
+            name: self.node_name(shown, tree, node.0),
+            change,
+            inside,
+        })
+    }
+
+    /// The name of a node: of its row's entry, or of its folder; at the top level, the
+    /// whole path of the folder of the difference.
+    fn node_name(&self, shown: &Shown, tree: &Tree, node: u32) -> String {
+        let (entries, at) = node_entry(shown, tree, node);
+        entries[at as usize].name.to_string_lossy().into_owned()
     }
 
     /// The profile of the difference shown, as last known.
@@ -1009,12 +1360,22 @@ impl List {
     }
 
     fn summary_line(&self, shown: &Shown) -> String {
-        let c = shown.counts;
+        let summary = self.summary_text(shown.counts, shown.difference.warnings.len());
+        let mut line = self.s.summary(&summary);
+        if shown.visible.len() < shown.rows.len() {
+            line.push(' ');
+            line.push_str(&self.showing());
+        }
+        line
+    }
+
+    /// What a summary of `counts` and `warnings` says.
+    fn summary_text(&self, c: Counts, warnings: usize) -> SummaryText {
         let size = |change: i128| {
             let bytes = u64::try_from(change.unsigned_abs()).unwrap_or(u64::MAX);
             format_size(bytes, self.size_format, self.s, &*self.regional)
         };
-        let summary = SummaryText {
+        SummaryText {
             changes: self.counted(c.added + c.deleted + c.modified),
             added: self.counted(c.added),
             deleted: self.counted(c.deleted),
@@ -1026,14 +1387,8 @@ impl List {
                 Ordering::Less => SizeChange::Decreased(size(c.size)),
                 Ordering::Equal => SizeChange::Unchanged,
             },
-            warnings: self.counted(shown.difference.warnings.len() as u64),
-        };
-        let mut line = self.s.summary(&summary);
-        if shown.visible.len() < shown.rows.len() {
-            line.push(' ');
-            line.push_str(&self.showing());
+            warnings: self.counted(warnings as u64),
         }
-        line
     }
 
     fn pair_line(&self, pair: &Pair) -> String {
@@ -1164,26 +1519,28 @@ impl List {
                 .get_or_insert_with(|| Index::new(&shown.rows, &shown.difference));
             text_matches(index, needle)
         });
-        let passes = |r: u32| {
-            types[shown.rows[r as usize].kind as usize]
-                && text.as_ref().is_none_or(|text| text[r as usize])
-        };
+        let passed: Vec<bool> = shown
+            .rows
+            .iter()
+            .enumerate()
+            .map(|(r, row)| types[row.kind as usize] && text.as_ref().is_none_or(|text| text[r]))
+            .collect();
         let focused = shown.current.map(|(row, _)| row);
         let mut visible = Vec::with_capacity(shown.order.len());
         let mut place = None;
         let mut after = None;
-        let mut passed = false;
+        let mut gone_by = false;
         for &r in &shown.order {
             let is_focused = Some(r) == focused;
-            if passes(r) {
+            if passed[r as usize] {
                 if is_focused {
                     place = Some(visible.len());
-                } else if passed && after.is_none() && place.is_none() {
+                } else if gone_by && after.is_none() && place.is_none() {
                     after = Some(visible.len());
                 }
                 visible.push(r);
             }
-            passed |= is_focused;
+            gone_by |= is_focused;
         }
         let place = match focused {
             Some(_) => place.or(after).or(visible.len().checked_sub(1)),
@@ -1191,6 +1548,18 @@ impl List {
         };
         shown.current = place.map(|i| (visible[i], i));
         shown.visible = visible;
+        shown.passed = passed;
+        // The tree shows what the list does; its focus stays on its node, or goes to the
+        // next node shown, else to the one before it, as the list's (TASK-33 #4); a new
+        // difference has it on its first change (#8).
+        if self.view.layout == DifferenceView::Tree || shown.tree.is_some() {
+            shown.make_tree();
+            let tree = shown.tree.as_ref().expect("the tree was just made");
+            shown.tree_current = match shown.tree_current {
+                Some(node) => tree.nearest_shown(node),
+                None => tree.first_row_node(&shown.passed),
+            };
+        }
         place
     }
 }
@@ -1282,7 +1651,7 @@ pub fn unavailable_reason(s: &dyn Strings, reason: &Unavailable) -> String {
         Unavailable::NotAFolder => s.folder_is_a_file().into(),
         Unavailable::Error(code) => {
             let error = std::io::Error::from_raw_os_error(*code);
-            s.failure(&crate::failure::of_io(&error))
+            crate::failure::reason(s, &error)
         }
     }
 }
@@ -1376,7 +1745,7 @@ fn what_changed(difference: &Difference, row: &Row) -> WhatChanged {
 
 /// The counts of the summary (#7, #10, #16): changes by type, the replaced among the
 /// modified, the inaccessible entries apart, and the change of the total size of files.
-fn count(rows: &[Row], difference: &Difference) -> Counts {
+fn count<'a>(rows: impl IntoIterator<Item = &'a Row>, difference: &Difference) -> Counts {
     let mut counts = Counts::default();
     for row in rows {
         let folder = &difference.folders[row.folder as usize];
@@ -1406,18 +1775,6 @@ fn count(rows: &[Row], difference: &Difference) -> Counts {
     counts
 }
 
-/// Where the keyboard focus is when a comparison ends.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub enum FocusPlace {
-    /// Where it was when the comparison started.
-    Unmoved,
-    /// On the comparison's progress field or its Cancel button, which go away with it.
-    Progress,
-    /// In the difference list.
-    DifferenceList,
-    Elsewhere,
-}
-
 /// What the window does with a difference that has just arrived.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Arrival {
@@ -1435,15 +1792,15 @@ pub enum Arrival {
 
 /// What happens when a comparison ends under the setting «Фокус після порівняння», with
 /// the focus at `focus` (TASK-11 #12, #13, #21).
-pub fn arrival(setting: FocusAfterComparison, focus: FocusPlace) -> Arrival {
-    match (setting, focus) {
-        (_, FocusPlace::DifferenceList) => Arrival::Focus,
-        (FocusAfterComparison::Always, _) => Arrival::Focus,
-        (FocusAfterComparison::Never, _) => Arrival::Replace,
-        (FocusAfterComparison::IfNotMoved, FocusPlace::Unmoved | FocusPlace::Progress) => {
-            Arrival::Focus
-        }
-        (FocusAfterComparison::IfNotMoved, FocusPlace::Elsewhere) => Arrival::Replace,
+/// The focus still where it was when the comparison started, or on its progress row,
+/// which goes away with it, counts as not moved.
+pub fn arrival(setting: FocusAfterComparison, focus: Focus) -> Arrival {
+    match setting {
+        _ if focus.in_list(Pane::Difference) => Arrival::Focus,
+        FocusAfterComparison::Always => Arrival::Focus,
+        FocusAfterComparison::Never => Arrival::Replace,
+        FocusAfterComparison::IfNotMoved if focus.unmoved || focus.progress => Arrival::Focus,
+        FocusAfterComparison::IfNotMoved => Arrival::Replace,
     }
 }
 
@@ -1454,13 +1811,13 @@ pub fn arrival(setting: FocusAfterComparison, focus: FocusPlace) -> Arrival {
 /// profile again, or when it is in the difference list already (TASK-11 #21).
 pub fn arrival_after_snapshot(
     setting: FocusAfterComparison,
-    focus: FocusPlace,
+    focus: Focus,
     of_open_profile: bool,
 ) -> Arrival {
-    match (setting, focus) {
+    match setting {
         _ if of_open_profile => arrival(setting, focus),
-        (FocusAfterComparison::Always, _) => Arrival::OpenProfileAndFocus,
-        (_, FocusPlace::DifferenceList) => Arrival::Focus,
+        FocusAfterComparison::Always => Arrival::OpenProfileAndFocus,
+        _ if focus.in_list(Pane::Difference) => Arrival::Focus,
         _ => Arrival::Replace,
     }
 }

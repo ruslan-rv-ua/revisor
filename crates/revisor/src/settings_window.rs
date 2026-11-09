@@ -1,31 +1,34 @@
 //! The settings window (TASK-9): the application's own settings (ADR-0007) that have a
-//! control of their own — the interface language (TASK-16), what the focus does when a
-//! snapshot ends, what it does when a comparison ends (TASK-11), how sizes are written
-//! (TASK-13), how the details of a change write attributes (TASK-14), whether deleting
-//! snapshots asks first, and whether showing a change no longer on disk in File Explorer
-//! asks first (TASK-14). The profile opened last and the view of the difference list are
+//! control of their own — the interface language (TASK-16), its theme (TASK-34), what the
+//! focus does when a snapshot ends, what it does when a comparison ends (TASK-11), how sizes
+//! are written (TASK-13), how the details of a change write attributes (TASK-14), what the
+//! nodes of the difference tree say (TASK-33), whether deleting snapshots asks first, and
+//! whether showing a change no longer on disk in File Explorer asks first (TASK-14). The
+//! profile opened last and the view of the difference — its types, order, list or tree — are
 //! kept without a control.
 
 use std::rc::Rc;
 
 use revisor_core::settings::{
-    AttributeFormat, FocusAfterComparison, FocusAfterSnapshot, Language, SizeFormat,
+    AttributeFormat, FocusAfterComparison, FocusAfterSnapshot, Language, SizeFormat, Theme,
+    TreeNodeText,
 };
 use wxdragon::prelude::*;
 
+use crate::access::{self, Act, Name, Target, field_label, plain};
 use crate::commands::CommandId;
 use crate::i18n::Strings;
-use crate::keys::Shortcut;
-use crate::menus::{button_label, field_label};
 
 /// The settings the window edits.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct Values {
     pub language: Language,
+    pub theme: Theme,
     pub focus_after_snapshot: FocusAfterSnapshot,
     pub focus_after_comparison: FocusAfterComparison,
     pub size_format: SizeFormat,
     pub attribute_format: AttributeFormat,
+    pub tree_node_text: TreeNodeText,
     pub confirm_snapshot_deletion: bool,
     pub warn_missing_entry: bool,
 }
@@ -33,73 +36,86 @@ pub struct Values {
 /// The labelled controls of the window. OK and Cancel are not among them: they have no
 /// access keys, as Enter and Esc press them.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
-enum Control {
+pub(crate) enum Control {
     Language,
+    Theme,
     FocusAfterSnapshot,
     FocusAfterComparison,
     SizeFormat,
     AttributeFormat,
+    TreeNodes,
     ConfirmDeletion,
     WarnMissingEntry,
 }
 
 impl Control {
-    const ALL: [Control; 7] = [
+    const ALL: [Control; 9] = [
         Self::Language,
+        Self::Theme,
         Self::FocusAfterSnapshot,
         Self::FocusAfterComparison,
         Self::SizeFormat,
         Self::AttributeFormat,
+        Self::TreeNodes,
         Self::ConfirmDeletion,
         Self::WarnMissingEntry,
     ];
 
-    /// The access key, as the document «Клавіатура й меню» lists it.
-    const fn access(self) -> u8 {
+    /// The name of the control's label or check box, whose English marks its access key.
+    fn name(self) -> Name {
         match self {
-            Self::Language => b'L',
-            Self::FocusAfterSnapshot => b'F',
-            Self::FocusAfterComparison => b'M',
-            Self::SizeFormat => b'S',
-            Self::AttributeFormat => b'A',
-            Self::ConfirmDeletion => b'C',
-            Self::WarnMissingEntry => b'W',
+            Self::Language => |s| s.language(),
+            Self::Theme => |s| s.theme(),
+            Self::FocusAfterSnapshot => |s| s.focus_after_snapshot(),
+            Self::FocusAfterComparison => |s| s.focus_after_comparison(),
+            Self::SizeFormat => |s| s.size_format(),
+            Self::AttributeFormat => |s| s.attribute_format(),
+            Self::TreeNodes => |s| s.tree_nodes(),
+            Self::ConfirmDeletion => |s| s.confirm_snapshot_deletion(),
+            Self::WarnMissingEntry => |s| s.warn_missing_entry(),
         }
     }
 
-    fn name(self, s: &dyn Strings) -> &'static str {
-        match self {
-            Self::Language => s.language(),
-            Self::FocusAfterSnapshot => s.focus_after_snapshot(),
-            Self::FocusAfterComparison => s.focus_after_comparison(),
-            Self::SizeFormat => s.size_format(),
-            Self::AttributeFormat => s.attribute_format(),
-            Self::ConfirmDeletion => s.confirm_snapshot_deletion(),
-            Self::WarnMissingEntry => s.warn_missing_entry(),
-        }
+    /// Whether the control is a check box, which its access key toggles, as an access key
+    /// on a check box does in Windows; the others are lists that take the focus.
+    fn is_check_box(self) -> bool {
+        matches!(self, Self::ConfirmDeletion | Self::WarnMissingEntry)
     }
 
     /// The text of the control's label or check box: "&Focus after a snapshot:",
     /// "Підтверджувати видалення знімків (&C)".
     fn label(self, s: &dyn Strings) -> String {
-        let (name, access) = (self.name(s), self.access());
-        match self {
-            Self::Language
-            | Self::FocusAfterSnapshot
-            | Self::FocusAfterComparison
-            | Self::SizeFormat
-            | Self::AttributeFormat => field_label(s, name, access),
-            Self::ConfirmDeletion | Self::WarnMissingEntry => button_label(s, name, access, false),
+        if self.is_check_box() {
+            access::label(s, self.name())
+        } else {
+            field_label(s, self.name())
         }
     }
 }
 
+/// The access keys of the window: a check box is pressed, a list takes the focus.
+pub(crate) fn targets() -> Vec<Target<Control>> {
+    Control::ALL
+        .into_iter()
+        .map(|c| {
+            let act = if c.is_check_box() {
+                Act::Press
+            } else {
+                Act::Focus
+            };
+            Target::of(c.name(), act, c)
+        })
+        .collect()
+}
+
 struct Window {
     language: Choice,
+    theme: Choice,
     focus: Choice,
     comparison_focus: Choice,
     size_format: Choice,
     attribute_format: Choice,
+    tree_nodes: Choice,
     confirm: CheckBox,
     warn_missing: CheckBox,
 }
@@ -107,7 +123,7 @@ struct Window {
 /// Shows the window with the `initial` values and returns the new ones once the user
 /// confirms, or `None` when they cancel.
 pub fn show(parent: &Frame, s: &'static dyn Strings, initial: Values) -> Option<Values> {
-    let dialog = Dialog::builder(parent, s.command(CommandId::Settings)).build();
+    let dialog = Dialog::builder(parent, &plain(s.command(CommandId::Settings))).build();
     // Made in tab order. The label comes right before its control, so screen readers name
     // the control after it.
     let language_label = StaticText::builder(&dialog)
@@ -122,6 +138,18 @@ pub fn show(parent: &Frame, s: &'static dyn Strings, initial: Values) -> Option<
         .position(|&v| v == initial.language)
         .unwrap_or(0);
     language.set_selection(chosen as u32);
+    let theme_label = StaticText::builder(&dialog)
+        .with_label(&Control::Theme.label(s))
+        .build();
+    let theme = Choice::builder(&dialog).build();
+    for value in Theme::ALL {
+        theme.append(s.theme_option(value));
+    }
+    let chosen = Theme::ALL
+        .iter()
+        .position(|&v| v == initial.theme)
+        .unwrap_or(0);
+    theme.set_selection(chosen as u32);
     let focus_label = StaticText::builder(&dialog)
         .with_label(&Control::FocusAfterSnapshot.label(s))
         .build();
@@ -170,6 +198,18 @@ pub fn show(parent: &Frame, s: &'static dyn Strings, initial: Values) -> Option<
         .position(|&v| v == initial.attribute_format)
         .unwrap_or(0);
     attribute_format.set_selection(chosen as u32);
+    let tree_nodes_label = StaticText::builder(&dialog)
+        .with_label(&Control::TreeNodes.label(s))
+        .build();
+    let tree_nodes = Choice::builder(&dialog).build();
+    for value in TreeNodeText::ALL {
+        tree_nodes.append(s.tree_node_option(value));
+    }
+    let chosen = TreeNodeText::ALL
+        .iter()
+        .position(|&v| v == initial.tree_node_text)
+        .unwrap_or(0);
+    tree_nodes.set_selection(chosen as u32);
     let confirm = CheckBox::builder(&dialog)
         .with_label(&Control::ConfirmDeletion.label(s))
         .build();
@@ -193,6 +233,8 @@ pub fn show(parent: &Frame, s: &'static dyn Strings, initial: Values) -> Option<
     let side = SizerFlag::Left | SizerFlag::Right;
     sizer.add(&language_label, 0, side | SizerFlag::Top, 12);
     sizer.add(&language, 0, SizerFlag::Expand | SizerFlag::All, 12);
+    sizer.add(&theme_label, 0, side, 12);
+    sizer.add(&theme, 0, SizerFlag::Expand | SizerFlag::All, 12);
     sizer.add(&focus_label, 0, side, 12);
     sizer.add(&focus, 0, SizerFlag::Expand | SizerFlag::All, 12);
     sizer.add(&comparison_focus_label, 0, side, 12);
@@ -201,6 +243,8 @@ pub fn show(parent: &Frame, s: &'static dyn Strings, initial: Values) -> Option<
     sizer.add(&size_format, 0, SizerFlag::Expand | SizerFlag::All, 12);
     sizer.add(&attribute_label, 0, side, 12);
     sizer.add(&attribute_format, 0, SizerFlag::Expand | SizerFlag::All, 12);
+    sizer.add(&tree_nodes_label, 0, side, 12);
+    sizer.add(&tree_nodes, 0, SizerFlag::Expand | SizerFlag::All, 12);
     sizer.add(&confirm, 0, side | SizerFlag::Bottom, 12);
     sizer.add(&warn_missing, 0, side | SizerFlag::Bottom, 12);
     let commit_row = BoxSizer::builder(Orientation::Horizontal).build();
@@ -216,24 +260,19 @@ pub fn show(parent: &Frame, s: &'static dyn Strings, initial: Values) -> Option<
 
     let window = Rc::new(Window {
         language,
+        theme,
         focus,
         comparison_focus,
         size_format,
         attribute_format,
+        tree_nodes,
         confirm,
         warn_missing,
     });
     // Access keys by the key's position, so they work in the Ukrainian layout too
     // (document «Клавіатура й меню»).
     let w = Rc::clone(&window);
-    dialog.on_char_hook(move |data| {
-        if let WindowEventData::Keyboard(key) = data {
-            let handled = Shortcut::from_event(&key)
-                .access_letter()
-                .is_some_and(|letter| w.access_key(letter));
-            key.event.skip(!handled);
-        }
-    });
+    access::bind(&dialog, targets(), move |control| w.access_key(control));
 
     dialog.centre();
     window.language.set_focus();
@@ -246,18 +285,16 @@ pub fn show(parent: &Frame, s: &'static dyn Strings, initial: Values) -> Option<
 }
 
 impl Window {
-    /// Acts on the access key `letter`; returns whether it is one of the window's. The
-    /// check box's key toggles it, as an access key on a check box does in Windows.
-    fn access_key(&self, letter: u8) -> bool {
-        let Some(control) = Control::ALL.into_iter().find(|c| c.access() == letter) else {
-            return false;
-        };
+    /// Acts on the access key of `control`. The check box's key toggles it.
+    fn access_key(&self, control: Control) {
         match control {
             Control::Language => self.language.set_focus(),
+            Control::Theme => self.theme.set_focus(),
             Control::FocusAfterSnapshot => self.focus.set_focus(),
             Control::FocusAfterComparison => self.comparison_focus.set_focus(),
             Control::SizeFormat => self.size_format.set_focus(),
             Control::AttributeFormat => self.attribute_format.set_focus(),
+            Control::TreeNodes => self.tree_nodes.set_focus(),
             Control::ConfirmDeletion => {
                 self.confirm.set_value(!self.confirm.get_value());
                 self.confirm.set_focus();
@@ -267,17 +304,19 @@ impl Window {
                 self.warn_missing.set_focus();
             }
         }
-        true
     }
 
     fn values(&self) -> Values {
         let language = self.language.get_selection().unwrap_or(0) as usize;
+        let theme = self.theme.get_selection().unwrap_or(0) as usize;
         let chosen = self.focus.get_selection().unwrap_or(0) as usize;
         let comparison = self.comparison_focus.get_selection().unwrap_or(0) as usize;
         let size = self.size_format.get_selection().unwrap_or(0) as usize;
         let attributes = self.attribute_format.get_selection().unwrap_or(0) as usize;
+        let tree_nodes = self.tree_nodes.get_selection().unwrap_or(0) as usize;
         Values {
             language: Language::ALL.get(language).copied().unwrap_or_default(),
+            theme: Theme::ALL.get(theme).copied().unwrap_or_default(),
             focus_after_snapshot: FocusAfterSnapshot::ALL
                 .get(chosen)
                 .copied()
@@ -289,6 +328,10 @@ impl Window {
             size_format: SizeFormat::ALL.get(size).copied().unwrap_or_default(),
             attribute_format: AttributeFormat::ALL
                 .get(attributes)
+                .copied()
+                .unwrap_or_default(),
+            tree_node_text: TreeNodeText::ALL
+                .get(tree_nodes)
                 .copied()
                 .unwrap_or_default(),
             confirm_snapshot_deletion: self.confirm.get_value(),
@@ -303,22 +346,12 @@ mod tests {
     use crate::i18n::{En, Uk};
 
     #[test]
-    fn each_labelled_control_has_its_own_latin_access_key() {
-        for (i, control) in Control::ALL.into_iter().enumerate() {
-            let letter = char::from(control.access());
-            assert!(
-                control.name(&En).to_ascii_uppercase().contains(letter),
-                "{control:?}"
-            );
-            assert!(
-                Control::ALL[..i]
-                    .iter()
-                    .all(|c| c.access() != control.access()),
-                "{control:?}"
-            );
-        }
+    fn the_labels_mark_their_letters_in_both_languages() {
         assert_eq!(Control::Language.label(&En), "&Language:");
         assert_eq!(Control::Language.label(&Uk), "Мова (&L):");
+        // TASK-34 #1: T is the tree nodes'.
+        assert_eq!(Control::Theme.label(&En), "T&heme:");
+        assert_eq!(Control::Theme.label(&Uk), "Тема (&H):");
         assert_eq!(
             Control::FocusAfterSnapshot.label(&En),
             "&Focus after a snapshot:"
@@ -348,6 +381,9 @@ mod tests {
         // TASK-14 #7, #13.
         assert_eq!(Control::AttributeFormat.label(&En), "&Attributes:");
         assert_eq!(Control::AttributeFormat.label(&Uk), "Атрибути (&A):");
+        // TASK-33 #6.
+        assert_eq!(Control::TreeNodes.label(&En), "&Tree nodes:");
+        assert_eq!(Control::TreeNodes.label(&Uk), "Вузли дерева (&T):");
         assert_eq!(
             Control::WarnMissingEntry.label(&En),
             "&Warn when the entry is no longer on disk"
@@ -389,6 +425,25 @@ mod tests {
     }
 
     #[test]
+    fn the_tree_node_options_are_named_in_both_languages_in_setting_order() {
+        // TASK-33 #6; the first, the long text, is the default.
+        let uk: Vec<&str> = TreeNodeText::ALL
+            .iter()
+            .map(|&v| Uk.tree_node_option(v))
+            .collect();
+        assert_eq!(uk, ["Ім'я, зміна й що змінилося", "Лише ім'я й зміна"]);
+        let en: Vec<&str> = TreeNodeText::ALL
+            .iter()
+            .map(|&v| En.tree_node_option(v))
+            .collect();
+        assert_eq!(
+            en,
+            ["Name, change, and what changed", "Name and change only"]
+        );
+        assert_eq!(TreeNodeText::ALL[0], TreeNodeText::default());
+    }
+
+    #[test]
     fn each_language_is_named_in_itself_whatever_the_interface_speaks() {
         // WCAG 2.2, 3.1.2: a reader of either language finds their own by its name.
         let uk: Vec<&str> = Language::ALL
@@ -402,6 +457,16 @@ mod tests {
             .collect();
         assert_eq!(en, ["Same as Windows", "English", "Українська"]);
         assert_eq!(Language::ALL[0], Language::default());
+    }
+
+    #[test]
+    fn the_theme_options_are_named_in_both_languages_in_setting_order() {
+        // TASK-34 #1; the first, as Windows is, is the default.
+        let uk: Vec<&str> = Theme::ALL.iter().map(|&v| Uk.theme_option(v)).collect();
+        assert_eq!(uk, ["Як у Windows", "Світла", "Темна"]);
+        let en: Vec<&str> = Theme::ALL.iter().map(|&v| En.theme_option(v)).collect();
+        assert_eq!(en, ["Same as Windows", "Light", "Dark"]);
+        assert_eq!(Theme::ALL[0], Theme::default());
     }
 
     #[test]

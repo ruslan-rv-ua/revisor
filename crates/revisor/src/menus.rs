@@ -1,71 +1,44 @@
 //! What the menus show, built from the command table: item labels with their access keys
 //! and shortcuts, the menu bar layout, the context menus and the «Keyboard shortcuts» text.
 
+use crate::access::{compose, plain};
 use crate::commands::{
     COMMANDS, Command, CommandId, MenuId, Pane, SubmenuId, command, context_items,
 };
-use crate::i18n::{Lang, Strings};
+use crate::i18n::{En, Strings};
 use crate::keys::{Key, Shortcut};
 use crate::state::AppState;
 
-/// A label with its access key: "&File" in English, where the letter is underlined, and
-/// "Файл (&F)" in Ukrainian, where the Latin letter follows in parentheses.
-fn with_access(s: &dyn Strings, name: &str, access: u8, ellipsis: bool) -> String {
-    let name = name.replace('&', "&&");
-    let mut label = match s.lang() {
-        Lang::En => {
-            let letter = char::from(access).to_ascii_lowercase();
-            let matches = |(i, c): &(usize, char)| {
-                c.to_ascii_lowercase() == letter && (*i == 0 || name[..*i].ends_with(' '))
-            };
-            let at = name
-                .char_indices()
-                .find(matches)
-                .or_else(|| {
-                    name.char_indices()
-                        .find(|(_, c)| c.to_ascii_lowercase() == letter)
-                })
-                .map_or(0, |(i, _)| i);
-            format!("{}&{}", &name[..at], &name[at..])
-        }
-        Lang::Uk => format!("{name} (&{})", char::from(access)),
-    };
+/// A menu item's label with its access key and, if `ellipsis`, the ellipsis after it:
+/// "&New profile…", "Новий профіль (&N)…".
+fn item_label(s: &dyn Strings, english: &str, words: &str, ellipsis: bool) -> String {
+    let mut label = compose(s, english, words);
     if ellipsis {
         label.push('…');
     }
     label
 }
 
-/// A label of the main window or a dialog: "P&rofile:" or "Профіль (&R):".
-pub fn field_label(s: &dyn Strings, name: &str, access: u8) -> String {
-    format!("{}:", with_access(s, name, access, false))
-}
-
-/// A button of a dialog: "&Add folder…" or "Додати теку (&A)…".
-pub fn button_label(s: &dyn Strings, name: &str, access: u8, ellipsis: bool) -> String {
-    with_access(s, name, access, ellipsis)
-}
-
 /// A menu bar item: name, access key, ellipsis and, after a tab, the shortcut.
 pub fn menu_label(s: &dyn Strings, c: &Command) -> String {
     let label = context_label(s, c);
     match c.shortcut {
-        Some(shortcut) => format!("{label}\t{}", shortcut.name(s)),
+        Some(shortcut) => format!("{label}	{}", shortcut.name(s)),
         None => label,
     }
 }
 
 /// A context menu item: like the menu bar's, but without the shortcut.
 pub fn context_label(s: &dyn Strings, c: &Command) -> String {
-    with_access(s, c.name(s), c.access, c.ellipsis)
+    item_label(s, En.command(c.id), s.command(c.id), c.ellipsis)
 }
 
 pub fn top_menu_label(s: &dyn Strings, menu: MenuId) -> String {
-    with_access(s, s.menu(menu), menu.access(), false)
+    compose(s, En.menu(menu), s.menu(menu))
 }
 
 pub fn submenu_label(s: &dyn Strings, submenu: SubmenuId) -> String {
-    with_access(s, s.submenu(submenu), submenu.access(), false)
+    compose(s, En.submenu(submenu), s.submenu(submenu))
 }
 
 /// The position of the menu item whose access key is `letter`, in item texts as Win32
@@ -128,27 +101,38 @@ pub fn window_title(profile: Option<&str>) -> String {
 }
 
 /// The text of the «Keyboard shortcuts» window: every command with a shortcut, by menu.
+/// The two radio items that share a shortcut, which switches between them, take one line:
+/// «Списком чи деревом — Ctrl+T» (TASK-33).
 pub fn shortcuts_text(s: &dyn Strings) -> String {
     let mut text = String::new();
     for menu in MenuId::ALL {
-        let mut lines = COMMANDS
+        let commands: Vec<&Command> = COMMANDS
             .iter()
-            .filter(|c| c.place.menu == menu)
-            .filter_map(|c| {
-                let shortcut = c.shortcut?;
-                let mut keys = shortcut.name(s);
-                if let Some(pane) = c.scope {
-                    keys = format!("{keys} {}", s.only_in(pane));
-                }
-                if let Some((pane, key)) = c.list_key {
-                    keys = format!("{keys}, {}", s.in_list(&key.name(s), pane));
-                }
-                Some(format!("{} — {keys}", c.spoken_name(s)))
-            });
-        if let Some(first) = lines.next() {
-            text.push_str(s.menu(menu));
+            .filter(|c| c.place.menu == menu && c.shortcut.is_some())
+            .collect();
+        let mut lines = Vec::new();
+        let mut at = 0;
+        while let Some(c) = commands.get(at) {
+            let shortcut = c.shortcut.expect("only commands with a shortcut");
+            let mut name = c.spoken_name(s);
+            if let Some(other) = commands.get(at + 1).filter(|o| o.shortcut == c.shortcut) {
+                name = s.either(&name, &other.spoken_name(s));
+                at += 1;
+            }
+            let mut keys = shortcut.name(s);
+            if let Some(pane) = c.scope {
+                keys = format!("{keys} {}", s.only_in(pane));
+            }
+            if let Some((pane, key)) = c.list_key {
+                keys = format!("{keys}, {}", s.in_list(&key.name(s), pane));
+            }
+            lines.push(format!("{name} — {keys}"));
+            at += 1;
+        }
+        if !lines.is_empty() {
+            text.push_str(&plain(s.menu(menu)));
             text.push('\n');
-            for line in std::iter::once(first).chain(lines) {
+            for line in lines {
                 text.push_str(&line);
                 text.push('\n');
             }
@@ -179,7 +163,7 @@ pub fn shortcuts_text(s: &dyn Strings) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::i18n::{En, Uk};
+    use crate::i18n::Uk;
 
     #[test]
     fn context_menus_hold_only_available_commands_with_the_enter_action_first() {
@@ -248,8 +232,10 @@ mod tests {
             "Зробити знімок — F5",
             "Видалити знімки — Delete (лише в переліку знімків)",
             "Порівняти з попереднім — F7, Enter у переліку знімків",
-            "Подробиці — Alt+Enter, Enter у списку різниці",
+            "Подробиці — Alt+Enter, Enter у списку чи дереві різниці",
             "Додані — Ctrl+1",
+            // Two items, one key, one line (TASK-33).
+            "Списком чи деревом — Ctrl+T",
             "Гарячі клавіші — F1",
             "Перейти між переліком знімків і списком різниці — F6, Shift+F6",
             "Контекстне меню — Shift+F10, Клавіша контекстного меню",
@@ -269,16 +255,34 @@ mod tests {
                 .lines()
                 .any(|l| l == "Take snapshot — F5")
         );
+        assert!(
+            shortcuts_text(&En)
+                .lines()
+                .any(|l| l == "List or tree — Ctrl+T")
+        );
+        assert!(!uk.contains("Деревом"), "the pair takes one line");
     }
 
     #[test]
-    fn english_labels_underline_a_letter_of_the_name() {
+    fn the_view_items_show_ctrl_t_and_their_letters() {
+        // TASK-33 #7, #10: both items have the key that switches between them.
+        assert_eq!(
+            menu_label(&En, command(CommandId::ViewAsList)),
+            "&List\tCtrl+T"
+        );
+        assert_eq!(
+            menu_label(&Uk, command(CommandId::ViewAsTree)),
+            "Деревом (&R)\tCtrl+T"
+        );
+    }
+
+    #[test]
+    fn english_labels_underline_the_marked_letter() {
         assert_eq!(
             menu_label(&En, command(CommandId::NewProfile)),
             "&New profile…\tCtrl+N"
         );
         assert_eq!(menu_label(&En, command(CommandId::Exit)), "E&xit\tAlt+F4");
-        // A word-initial letter is preferred over an earlier one inside a word.
         assert_eq!(
             menu_label(&En, command(CommandId::SnapshotAndCompare)),
             "Snapshot &and compare\tCtrl+F5"
@@ -307,12 +311,6 @@ mod tests {
         );
         assert_eq!(top_menu_label(&Uk, MenuId::File), "Файл (&F)");
         assert_eq!(submenu_label(&Uk, SubmenuId::SortBy), "Сортувати за (&S)");
-    }
-
-    #[test]
-    fn field_labels_end_in_a_colon() {
-        assert_eq!(field_label(&En, "Profile", b'R'), "P&rofile:");
-        assert_eq!(field_label(&Uk, "Профіль", b'R'), "Профіль (&R):");
     }
 
     #[test]
