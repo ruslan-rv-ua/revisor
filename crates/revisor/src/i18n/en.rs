@@ -7,6 +7,7 @@ use revisor_core::settings::{
     AttributeFormat, ChangeType, DifferenceView, FocusAfterComparison, FocusAfterSnapshot,
     Language, SizeFormat, Theme, TreeNodeText,
 };
+use revisor_core::typical::TypicalFolder;
 
 use super::plural::{Category, category};
 use super::{Failure, Lang, Strings, error_code, in_sentence, lower_first};
@@ -226,6 +227,30 @@ impl Strings for En {
 
     fn remove_folder(&self) -> &'static str {
         "&Remove folder"
+    }
+
+    fn add_typical_folders(&self) -> &'static str {
+        "Add &typical folders"
+    }
+
+    fn typical_folder(&self, folder: TypicalFolder) -> &'static str {
+        match folder {
+            TypicalFolder::ProgramFiles => "Program Files",
+            TypicalFolder::ProgramFilesX86 => "Program Files (x86)",
+            TypicalFolder::ProgramData => "ProgramData",
+            TypicalFolder::AppData => "User AppData",
+            TypicalFolder::Windows => "Windows",
+            TypicalFolder::Desktop => "User desktop",
+            TypicalFolder::PublicDesktop => "Public desktop",
+        }
+    }
+
+    fn add(&self) -> &'static str {
+        "Add"
+    }
+
+    fn typical_folders_in_profile(&self) -> &'static str {
+        "All typical folders are in the profile already."
     }
 
     fn profile_exclusions(&self) -> &'static str {

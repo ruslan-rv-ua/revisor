@@ -8,6 +8,7 @@ use revisor_core::settings::{
     AttributeFormat, ChangeType, DifferenceView, FocusAfterComparison, FocusAfterSnapshot,
     Language, SizeFormat, Theme, TreeNodeText,
 };
+use revisor_core::typical::TypicalFolder;
 
 use super::plural::{Category, category};
 use super::{Failure, Lang, Strings, error_code, in_sentence, lower_first};
@@ -230,6 +231,30 @@ impl Strings for Uk {
 
     fn remove_folder(&self) -> &'static str {
         "Прибрати теку"
+    }
+
+    fn add_typical_folders(&self) -> &'static str {
+        "Додати типові теки"
+    }
+
+    fn typical_folder(&self, folder: TypicalFolder) -> &'static str {
+        match folder {
+            TypicalFolder::ProgramFiles => "Program Files",
+            TypicalFolder::ProgramFilesX86 => "Program Files (x86)",
+            TypicalFolder::ProgramData => "ProgramData",
+            TypicalFolder::AppData => "AppData користувача",
+            TypicalFolder::Windows => "Windows",
+            TypicalFolder::Desktop => "Робочий стіл користувача",
+            TypicalFolder::PublicDesktop => "Загальний робочий стіл",
+        }
+    }
+
+    fn add(&self) -> &'static str {
+        "Додати"
+    }
+
+    fn typical_folders_in_profile(&self) -> &'static str {
+        "Усі типові теки вже є в профілі."
     }
 
     fn profile_exclusions(&self) -> &'static str {

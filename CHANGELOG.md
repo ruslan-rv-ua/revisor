@@ -9,6 +9,15 @@ release that section becomes the version's own, and the release page publishes i
 
 ## [Unreleased]
 
+### Added
+
+- **A profile can take in the typical folders programs write to at once.** Add typical
+  folders in the profile window lists Program Files, Program Files (x86), ProgramData, the
+  user's AppData, Windows, the user's desktop and the public desktop, with their paths on this
+  computer, all checked. The checked ones join the profile's folders as plain paths; a folder
+  the profile already has or covers is not listed, and a typical folder replaces the profile's
+  folders inside it without asking.
+
 ### Fixed
 
 - **A screen reader says the focused node of a new difference tree once.** When a comparison

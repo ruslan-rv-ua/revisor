@@ -12,10 +12,11 @@ use windows_sys::Win32::Foundation::{HWND, LPARAM, LRESULT, POINT, RECT, WPARAM}
 use windows_sys::Win32::Graphics::Gdi::{ClientToScreen, InvalidateRect};
 use windows_sys::Win32::UI::Controls::{
     EMF_CENTERED, HDF_SORTDOWN, HDF_SORTUP, HDI_FORMAT, HDITEMW, HDM_GETITEMCOUNT, HDM_GETITEMW,
-    HDM_SETITEMW, LVIR_BOUNDS, LVIS_FOCUSED, LVIS_SELECTED, LVITEMW, LVM_ENSUREVISIBLE,
-    LVM_GETHEADER, LVM_GETITEMRECT, LVM_GETITEMSTATE, LVM_GETNEXTITEM, LVM_GETSELECTEDCOUNT,
-    LVM_SETEXTENDEDLISTVIEWSTYLE, LVM_SETITEMSTATE, LVN_GETEMPTYMARKUP, LVNI_FOCUSED,
-    LVNI_SELECTED, LVS_EX_FULLROWSELECT, LVS_NOSORTHEADER, NMHDR, NMLVEMPTYMARKUP,
+    HDM_SETITEMW, LVIR_BOUNDS, LVIS_FOCUSED, LVIS_SELECTED, LVIS_STATEIMAGEMASK, LVITEMW,
+    LVM_ENSUREVISIBLE, LVM_GETHEADER, LVM_GETITEMRECT, LVM_GETITEMSTATE, LVM_GETNEXTITEM,
+    LVM_GETSELECTEDCOUNT, LVM_SETEXTENDEDLISTVIEWSTYLE, LVM_SETITEMSTATE, LVN_GETEMPTYMARKUP,
+    LVNI_FOCUSED, LVNI_SELECTED, LVS_EX_CHECKBOXES, LVS_EX_FULLROWSELECT, LVS_NOSORTHEADER, NMHDR,
+    NMLVEMPTYMARKUP,
 };
 use windows_sys::Win32::UI::Shell::{DefSubclassProc, RemoveWindowSubclass, SetWindowSubclass};
 use windows_sys::Win32::UI::WindowsAndMessaging::{
@@ -136,6 +137,37 @@ pub fn full_row_select(list: *mut c_void) {
             LVS_EX_FULLROWSELECT as LPARAM,
         );
     }
+}
+
+/// Gives every row of a report list a check box, as the list of typical folders has
+/// (TASK-36); Space toggles the check box of the focused row.
+pub fn enable_check_boxes(list: *mut c_void) {
+    let style = LVS_EX_CHECKBOXES | LVS_EX_FULLROWSELECT;
+    // SAFETY: a plain message to a live list-view window.
+    unsafe {
+        SendMessageW(
+            list,
+            LVM_SETEXTENDEDLISTVIEWSTYLE,
+            style as WPARAM,
+            style as LPARAM,
+        )
+    };
+}
+
+/// The state image of a checked check box; 1 is an unchecked one.
+const CHECKED: u32 = 2;
+
+/// Checks or unchecks the check box of `row` of a list with check boxes.
+pub fn set_checked(list: *mut c_void, row: usize, checked: bool) {
+    let image = if checked { CHECKED } else { 1 };
+    set_row_state(list, row as isize, image << 12, LVIS_STATEIMAGEMASK);
+}
+
+/// Whether the check box of `row` of a list with check boxes is checked.
+pub fn is_checked(list: *mut c_void, row: usize) -> bool {
+    // SAFETY: a plain list-view message to a live list-view window.
+    let state = unsafe { SendMessageW(list, LVM_GETITEMSTATE, row, LVIS_STATEIMAGEMASK as LPARAM) };
+    (state as u32 & LVIS_STATEIMAGEMASK) >> 12 == CHECKED
 }
 
 /// Shows the sort arrow of a list's column headers on `column`, up for ascending and down

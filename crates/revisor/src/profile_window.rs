@@ -11,6 +11,7 @@ use revisor_core::exclude::parse_lines;
 use revisor_core::folders::{Addition, LocateError, ProfileFolder, check_addition, locate};
 use revisor_core::profiles::ProfileFile;
 use revisor_core::store::{ProfileSettings, Scope, Unavailable};
+use revisor_core::typical;
 use wxdragon::prelude::*;
 
 use crate::access::{self, Act, Name, Target, field_label, plain};
@@ -18,6 +19,7 @@ use crate::commands::CommandId;
 use crate::failure;
 use crate::i18n::Strings;
 use crate::message_box::{confirm, tell};
+use crate::typical_folders_window;
 
 /// What the window is opened for.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -33,15 +35,17 @@ pub(crate) enum Control {
     Name,
     Folders,
     AddFolder,
+    AddTypicalFolders,
     RemoveFolder,
     Exclusions,
 }
 
 impl Control {
-    const ALL: [Control; 5] = [
+    const ALL: [Control; 6] = [
         Self::Name,
         Self::Folders,
         Self::AddFolder,
+        Self::AddTypicalFolders,
         Self::RemoveFolder,
         Self::Exclusions,
     ];
@@ -52,6 +56,7 @@ impl Control {
             Self::Name => |s| s.profile_name(),
             Self::Folders => |s| s.profile_folders(),
             Self::AddFolder => |s| s.add_folder(),
+            Self::AddTypicalFolders => |s| s.add_typical_folders(),
             Self::RemoveFolder => |s| s.remove_folder(),
             Self::Exclusions => |s| s.profile_exclusions(),
         }
@@ -60,7 +65,9 @@ impl Control {
     /// The text of the control's label or button: "&Name:", "Додати теку (&A)…".
     fn label(self, s: &dyn Strings) -> String {
         match self {
-            Self::AddFolder => format!("{}…", access::label(s, self.name())),
+            Self::AddFolder | Self::AddTypicalFolders => {
+                format!("{}…", access::label(s, self.name()))
+            }
             Self::RemoveFolder => access::label(s, self.name()),
             Self::Name | Self::Folders | Self::Exclusions => field_label(s, self.name()),
         }
@@ -69,7 +76,7 @@ impl Control {
     /// What its access key does: a field or list takes the focus, a button is pressed.
     fn act(self) -> Act {
         match self {
-            Self::AddFolder | Self::RemoveFolder => Act::Press,
+            Self::AddFolder | Self::AddTypicalFolders | Self::RemoveFolder => Act::Press,
             Self::Name | Self::Folders | Self::Exclusions => Act::Focus,
         }
     }
@@ -94,6 +101,7 @@ struct Window {
     name: TextCtrl,
     folders: ListBox,
     add: Button,
+    add_typical: Button,
     remove: Button,
     exclusions: TextCtrl,
     entries: RefCell<Vec<ProfileFolder>>,
@@ -136,6 +144,9 @@ pub fn show(
     let add = Button::builder(&dialog)
         .with_label(&Control::AddFolder.label(s))
         .build();
+    let add_typical = Button::builder(&dialog)
+        .with_label(&Control::AddTypicalFolders.label(s))
+        .build();
     let remove = Button::builder(&dialog)
         .with_label(&Control::RemoveFolder.label(s))
         .build();
@@ -165,6 +176,7 @@ pub fn show(
     folders_row.add(&folders, 1, SizerFlag::Expand | SizerFlag::All, 8);
     let folder_buttons = BoxSizer::builder(Orientation::Vertical).build();
     folder_buttons.add(&add, 0, SizerFlag::Expand | SizerFlag::Bottom, 4);
+    folder_buttons.add(&add_typical, 0, SizerFlag::Expand | SizerFlag::Bottom, 4);
     folder_buttons.add(&remove, 0, SizerFlag::Expand, 0);
     folders_row.add_sizer(&folder_buttons, 0, SizerFlag::Top | SizerFlag::Right, 8);
     sizer.add_sizer(&folders_row, 1, SizerFlag::Expand, 0);
@@ -191,6 +203,7 @@ pub fn show(
         name,
         folders,
         add,
+        add_typical,
         remove,
         exclusions,
         entries: RefCell::new(entries),
@@ -217,6 +230,8 @@ impl Window {
         let w = Rc::clone(self);
         self.add.on_click(move |_| w.add_folder());
         let w = Rc::clone(self);
+        self.add_typical.on_click(move |_| w.add_typical_folders());
+        let w = Rc::clone(self);
         self.remove.on_click(move |_| w.remove_folder());
         let w = Rc::clone(self);
         ok.on_click(move |event| {
@@ -238,6 +253,7 @@ impl Window {
             Control::Name => self.name.set_focus(),
             Control::Folders => self.folders.set_focus(),
             Control::AddFolder => self.add_folder(),
+            Control::AddTypicalFolders => self.add_typical_folders(),
             Control::RemoveFolder if self.remove.is_enabled() => self.remove_folder(),
             Control::RemoveFolder => {}
             Control::Exclusions => self.exclusions.set_focus(),
@@ -336,6 +352,23 @@ impl Window {
         self.folders.set_focus();
     }
 
+    /// Offers the typical folders the profile can take in and adds the checked ones; a
+    /// typical folder replaces the profile's folders inside it without asking (TASK-36).
+    fn add_typical_folders(&self) {
+        let s = self.s;
+        let offered = typical::offer(&self.entries.borrow(), &typical::on_this_computer());
+        if offered.is_empty() {
+            tell(&self.dialog, s, &self.title, s.typical_folders_in_profile());
+            return;
+        }
+        let chosen = typical_folders_window::show(&self.dialog, s, &offered);
+        let first = typical::add(&mut self.entries.borrow_mut(), &chosen);
+        if let Some(first) = first {
+            self.show_folders(Some(first));
+            self.folders.set_focus();
+        }
+    }
+
     fn remove_folder(&self) {
         let Some(selected) = self.folders.get_selection().map(|i| i as usize) else {
             return;
@@ -430,6 +463,14 @@ mod tests {
         assert_eq!(Control::AddFolder.label(&En), "&Add folder…");
         assert_eq!(Control::AddFolder.label(&Uk), "Додати теку (&A)…");
         assert_eq!(Control::RemoveFolder.label(&Uk), "Прибрати теку (&R)");
+        assert_eq!(
+            Control::AddTypicalFolders.label(&En),
+            "Add &typical folders…"
+        );
+        assert_eq!(
+            Control::AddTypicalFolders.label(&Uk),
+            "Додати типові теки (&T)…"
+        );
         assert_eq!(Control::Exclusions.label(&Uk), "Винятки (&E):");
     }
 }
