@@ -1,16 +1,17 @@
 //! The settings window (TASK-9): the application's own settings (ADR-0007) that have a
-//! control of their own — the interface language (TASK-16), what the focus does when a
-//! snapshot ends, what it does when a comparison ends (TASK-11), how sizes are written
-//! (TASK-13), how the details of a change write attributes (TASK-14), what the nodes of the
-//! difference tree say (TASK-33), whether deleting snapshots asks first, and whether
-//! showing a change no longer on disk in File Explorer asks first (TASK-14). The profile
-//! opened last and the view of the difference — its types, order, list or tree — are kept
-//! without a control.
+//! control of their own — the interface language (TASK-16), its theme (TASK-34), what the
+//! focus does when a snapshot ends, what it does when a comparison ends (TASK-11), how sizes
+//! are written (TASK-13), how the details of a change write attributes (TASK-14), what the
+//! nodes of the difference tree say (TASK-33), whether deleting snapshots asks first, and
+//! whether showing a change no longer on disk in File Explorer asks first (TASK-14). The
+//! profile opened last and the view of the difference — its types, order, list or tree — are
+//! kept without a control.
 
 use std::rc::Rc;
 
 use revisor_core::settings::{
-    AttributeFormat, FocusAfterComparison, FocusAfterSnapshot, Language, SizeFormat, TreeNodeText,
+    AttributeFormat, FocusAfterComparison, FocusAfterSnapshot, Language, SizeFormat, Theme,
+    TreeNodeText,
 };
 use wxdragon::prelude::*;
 
@@ -22,6 +23,7 @@ use crate::i18n::Strings;
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct Values {
     pub language: Language,
+    pub theme: Theme,
     pub focus_after_snapshot: FocusAfterSnapshot,
     pub focus_after_comparison: FocusAfterComparison,
     pub size_format: SizeFormat,
@@ -36,6 +38,7 @@ pub struct Values {
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(crate) enum Control {
     Language,
+    Theme,
     FocusAfterSnapshot,
     FocusAfterComparison,
     SizeFormat,
@@ -46,8 +49,9 @@ pub(crate) enum Control {
 }
 
 impl Control {
-    const ALL: [Control; 8] = [
+    const ALL: [Control; 9] = [
         Self::Language,
+        Self::Theme,
         Self::FocusAfterSnapshot,
         Self::FocusAfterComparison,
         Self::SizeFormat,
@@ -61,6 +65,7 @@ impl Control {
     fn name(self) -> Name {
         match self {
             Self::Language => |s| s.language(),
+            Self::Theme => |s| s.theme(),
             Self::FocusAfterSnapshot => |s| s.focus_after_snapshot(),
             Self::FocusAfterComparison => |s| s.focus_after_comparison(),
             Self::SizeFormat => |s| s.size_format(),
@@ -105,6 +110,7 @@ pub(crate) fn targets() -> Vec<Target<Control>> {
 
 struct Window {
     language: Choice,
+    theme: Choice,
     focus: Choice,
     comparison_focus: Choice,
     size_format: Choice,
@@ -132,6 +138,18 @@ pub fn show(parent: &Frame, s: &'static dyn Strings, initial: Values) -> Option<
         .position(|&v| v == initial.language)
         .unwrap_or(0);
     language.set_selection(chosen as u32);
+    let theme_label = StaticText::builder(&dialog)
+        .with_label(&Control::Theme.label(s))
+        .build();
+    let theme = Choice::builder(&dialog).build();
+    for value in Theme::ALL {
+        theme.append(s.theme_option(value));
+    }
+    let chosen = Theme::ALL
+        .iter()
+        .position(|&v| v == initial.theme)
+        .unwrap_or(0);
+    theme.set_selection(chosen as u32);
     let focus_label = StaticText::builder(&dialog)
         .with_label(&Control::FocusAfterSnapshot.label(s))
         .build();
@@ -215,6 +233,8 @@ pub fn show(parent: &Frame, s: &'static dyn Strings, initial: Values) -> Option<
     let side = SizerFlag::Left | SizerFlag::Right;
     sizer.add(&language_label, 0, side | SizerFlag::Top, 12);
     sizer.add(&language, 0, SizerFlag::Expand | SizerFlag::All, 12);
+    sizer.add(&theme_label, 0, side, 12);
+    sizer.add(&theme, 0, SizerFlag::Expand | SizerFlag::All, 12);
     sizer.add(&focus_label, 0, side, 12);
     sizer.add(&focus, 0, SizerFlag::Expand | SizerFlag::All, 12);
     sizer.add(&comparison_focus_label, 0, side, 12);
@@ -240,6 +260,7 @@ pub fn show(parent: &Frame, s: &'static dyn Strings, initial: Values) -> Option<
 
     let window = Rc::new(Window {
         language,
+        theme,
         focus,
         comparison_focus,
         size_format,
@@ -268,6 +289,7 @@ impl Window {
     fn access_key(&self, control: Control) {
         match control {
             Control::Language => self.language.set_focus(),
+            Control::Theme => self.theme.set_focus(),
             Control::FocusAfterSnapshot => self.focus.set_focus(),
             Control::FocusAfterComparison => self.comparison_focus.set_focus(),
             Control::SizeFormat => self.size_format.set_focus(),
@@ -286,6 +308,7 @@ impl Window {
 
     fn values(&self) -> Values {
         let language = self.language.get_selection().unwrap_or(0) as usize;
+        let theme = self.theme.get_selection().unwrap_or(0) as usize;
         let chosen = self.focus.get_selection().unwrap_or(0) as usize;
         let comparison = self.comparison_focus.get_selection().unwrap_or(0) as usize;
         let size = self.size_format.get_selection().unwrap_or(0) as usize;
@@ -293,6 +316,7 @@ impl Window {
         let tree_nodes = self.tree_nodes.get_selection().unwrap_or(0) as usize;
         Values {
             language: Language::ALL.get(language).copied().unwrap_or_default(),
+            theme: Theme::ALL.get(theme).copied().unwrap_or_default(),
             focus_after_snapshot: FocusAfterSnapshot::ALL
                 .get(chosen)
                 .copied()
@@ -325,6 +349,9 @@ mod tests {
     fn the_labels_mark_their_letters_in_both_languages() {
         assert_eq!(Control::Language.label(&En), "&Language:");
         assert_eq!(Control::Language.label(&Uk), "Мова (&L):");
+        // TASK-34 #1: T is the tree nodes'.
+        assert_eq!(Control::Theme.label(&En), "T&heme:");
+        assert_eq!(Control::Theme.label(&Uk), "Тема (&H):");
         assert_eq!(
             Control::FocusAfterSnapshot.label(&En),
             "&Focus after a snapshot:"
@@ -430,6 +457,16 @@ mod tests {
             .collect();
         assert_eq!(en, ["Same as Windows", "English", "Українська"]);
         assert_eq!(Language::ALL[0], Language::default());
+    }
+
+    #[test]
+    fn the_theme_options_are_named_in_both_languages_in_setting_order() {
+        // TASK-34 #1; the first, as Windows is, is the default.
+        let uk: Vec<&str> = Theme::ALL.iter().map(|&v| Uk.theme_option(v)).collect();
+        assert_eq!(uk, ["Як у Windows", "Світла", "Темна"]);
+        let en: Vec<&str> = Theme::ALL.iter().map(|&v| En.theme_option(v)).collect();
+        assert_eq!(en, ["Same as Windows", "Light", "Dark"]);
+        assert_eq!(Theme::ALL[0], Theme::default());
     }
 
     #[test]

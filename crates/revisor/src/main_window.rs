@@ -23,6 +23,7 @@ use revisor_core::job::{Cancel, Lost, Outcome};
 use revisor_core::profiles::{self, ProfileError, ProfileFile, Unreadable};
 use revisor_core::settings::{
     DifferenceSort, DifferenceView, FocusAfterComparison, FocusAfterSnapshot, Language, Settings,
+    Theme,
 };
 use revisor_core::snapshot::{Phase, Report, SnapshotError};
 use revisor_core::store::{
@@ -55,6 +56,7 @@ use crate::snapshots::{Arrival, arrival, arrival_after_comparison};
 use crate::state::{AppState, ChangeType, SortColumn, Sources};
 use crate::status::Announcer;
 use crate::text_window;
+use crate::theme;
 use crate::win32;
 use crate::win32::format::{Locale, RegionalFormat};
 use crate::win32::frame::MainFrame;
@@ -578,11 +580,18 @@ impl MainWindow {
         // activations are left to wx, which restores whatever had the focus last.
         // A button or check box pressed by its access key acts once Alt is up, in an event
         // of its own (TASK-30).
+        // Once the system colours have changed, the theme is looked at again, so a contrast
+        // theme of Windows switched on wins over a dark theme, and the theme chosen comes
+        // back when it is switched off (TASK-34 #6); nothing in the state changes, and
+        // nothing is said.
         let w = Rc::clone(self);
         let focus_pending = Cell::new(true);
         self.frame.on_idle(move |data| {
             if focus_pending.replace(false) {
                 w.snapshots.set_focus();
+            }
+            if w.main_frame.colours_changed() {
+                theme::apply(w.theme());
             }
             if let Some(label) = w.access_keys.ready(win32::focus::alt_down()) {
                 w.event(Source::Navigation, || w.act_on(label));
@@ -1363,6 +1372,15 @@ impl MainWindow {
             .unwrap_or_default()
     }
 
+    /// The theme chosen (TASK-34); as Windows is when the settings cannot be read.
+    fn theme(&self) -> Theme {
+        self.settings
+            .as_ref()
+            .ok()
+            .and_then(|settings| settings.theme().ok())
+            .unwrap_or_default()
+    }
+
     /// Whether «Показати в Провіднику» asks before it opens the folder of an entry no
     /// longer on disk (TASK-14 #13); off by default.
     fn warn_missing_entry(&self) -> bool {
@@ -1373,14 +1391,15 @@ impl MainWindow {
             .unwrap_or(false)
     }
 
-    /// Shows the settings window and keeps what the user confirmed. When the language
-    /// setting makes the next start speak another language, offers to restart now
-    /// (TASK-16 #3).
+    /// Shows the settings window and keeps what the user confirmed. A new theme shows at
+    /// once (TASK-34 #3). When the language setting makes the next start speak another
+    /// language, offers to restart now (TASK-16 #3).
     fn settings(&self) {
         let s = self.s;
         let title = &plain(s.command(CommandId::Settings));
         let initial = Values {
             language: self.language(),
+            theme: self.theme(),
             focus_after_snapshot: self.focus_after_snapshot(),
             focus_after_comparison: self.focus_after_comparison(),
             size_format: self.difference_list.borrow().size_format(),
@@ -1395,6 +1414,7 @@ impl MainWindow {
         let saved = match &self.settings {
             Ok(settings) => settings
                 .set_language(values.language)
+                .and_then(|()| settings.set_theme(values.theme))
                 .and_then(|()| settings.set_focus_after_snapshot(values.focus_after_snapshot))
                 .and_then(|()| settings.set_focus_after_comparison(values.focus_after_comparison))
                 .and_then(|()| settings.set_size_format(values.size_format))
@@ -1414,6 +1434,9 @@ impl MainWindow {
                 return;
             }
         }
+        // Every window in the new theme at once, the focus where it was; nothing is said
+        // of it but that the settings are saved (TASK-34 #3).
+        theme::apply(values.theme);
         // Sizes in the list and the summary as the setting «Розмір» says (TASK-13 #17),
         // attributes in the details as «Атрибути» says (TASK-14 #7), and the tree's nodes
         // as «Вузли дерева» says (TASK-33 #6).

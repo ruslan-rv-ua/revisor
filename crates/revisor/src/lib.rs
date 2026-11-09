@@ -24,6 +24,7 @@ mod snapshots;
 mod state;
 mod status;
 mod text_window;
+mod theme;
 mod win32;
 
 use std::ffi::OsStr;
@@ -36,19 +37,30 @@ use revisor_core::settings::{Language, Settings};
 
 pub use i18n::catalog::catalog;
 
-/// Starts revisor: reads the language, opens the main window and runs the GUI.
+/// Starts revisor: reads the language and the theme, opens the main window and runs the
+/// GUI.
 pub fn run() {
     let data_dir = data_dir();
-    let strings: &'static dyn Strings = match interface_language(&data_dir) {
+    // Both are read before any window is made; the main window opens the settings itself.
+    let settings = Settings::open(&data_dir.join(main_window::SETTINGS_FILE)).ok();
+    let strings: &'static dyn Strings = match interface_language(settings.as_ref()) {
         Lang::Uk => &Uk,
         Lang::En => &En,
     };
+    // A settings file that cannot be read gives the theme of Windows (TASK-34).
+    let theme = settings
+        .as_ref()
+        .and_then(|settings| settings.theme().ok())
+        .unwrap_or_default();
+    drop(settings);
     // An administrator reads with the backup privilege (TASK-8); a standard user has no
     // such privilege, and nothing changes for them.
     let _ = elevation::enable_backup_privilege();
     let elevated = elevation::is_elevated();
     let open = profile_argument();
     wxdragon::main(move |_| {
+        // The theme first, so that no window ever shows in another one.
+        theme::apply(theme);
         // The frame's event handlers hold the window, so it lives as long as the frame.
         MainWindow::open(strings, elevated, data_dir, open);
     })
@@ -58,9 +70,9 @@ pub fn run() {
 /// The language the interface speaks for this run (TASK-16): the setting «Language», read
 /// before any window is made; «Same as Windows», and a settings file that cannot be read,
 /// take the interface language of Windows. The main window reports the unusable file.
-fn interface_language(data_dir: &Path) -> Lang {
-    let chosen = Settings::open(&data_dir.join(main_window::SETTINGS_FILE))
-        .and_then(|settings| settings.language())
+fn interface_language(settings: Option<&Settings>) -> Lang {
+    let chosen = settings
+        .and_then(|settings| settings.language().ok())
         .unwrap_or_default();
     language_of(chosen, win32::language::ui_language)
 }

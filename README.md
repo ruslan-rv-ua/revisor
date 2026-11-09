@@ -58,6 +58,8 @@ The main scenario takes four steps, all from the keyboard:
   cannot run now says why in the status bar, which screen readers read without moving the
   focus.
 - **English and Ukrainian**, following Windows or chosen in Settings.
+- **Light or dark**, following Windows or chosen in Settings; a contrast theme of Windows
+  always keeps its colors.
 - **Portable.** One executable without DLLs, and everything it saves lives in a `data` folder
   beside it.
 

@@ -4,8 +4,9 @@
 //! interface language (TASK-16), what the focus does when a comparison ends (TASK-11), how
 //! sizes are written, which rows the difference list shows in which order (TASK-13), how
 //! the details of a change write attributes, whether showing a change in File Explorer
-//! warns when it is no longer on disk (TASK-14), and whether the difference shows as a
-//! list or as a tree, with how much its nodes say (TASK-33).
+//! warns when it is no longer on disk (TASK-14), whether the difference shows as a list or
+//! as a tree, with how much its nodes say (TASK-33), and the theme of the interface
+//! (TASK-34).
 //! Each setting is one row of a key–value table, read and written through typed methods,
 //! so a later setting needs no change of the schema.
 
@@ -47,6 +48,7 @@ const KEY_ATTRIBUTE_FORMAT: &str = "attribute_format";
 const KEY_WARN_MISSING_ENTRY: &str = "warn_missing_entry";
 const KEY_DIFFERENCE_VIEW: &str = "difference_view";
 const KEY_TREE_NODE_TEXT: &str = "tree_node_text";
+const KEY_THEME: &str = "theme";
 
 #[derive(Debug)]
 pub enum SettingsError {
@@ -373,6 +375,35 @@ impl Language {
     }
 }
 
+/// The theme of the interface the user chose (TASK-34). It takes effect at once, and a
+/// contrast theme of Windows always wins over it while it is on.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub enum Theme {
+    /// Light or dark as Windows is, following it as it switches.
+    #[default]
+    SameAsWindows,
+    Light,
+    Dark,
+}
+
+impl Theme {
+    /// Every value, in the order the settings window lists them.
+    pub const ALL: [Self; 3] = [Self::SameAsWindows, Self::Light, Self::Dark];
+
+    /// The value as the database stores it.
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::SameAsWindows => "windows",
+            Self::Light => "light",
+            Self::Dark => "dark",
+        }
+    }
+
+    pub fn parse(text: &str) -> Option<Self> {
+        Self::ALL.into_iter().find(|v| v.as_str() == text)
+    }
+}
+
 /// The settings database, open for the life of the window.
 pub struct Settings {
     conn: Connection,
@@ -604,6 +635,18 @@ impl Settings {
 
     pub fn set_tree_node_text(&self, value: TreeNodeText) -> Result<(), SettingsError> {
         self.set(KEY_TREE_NODE_TEXT, value.as_str())
+    }
+
+    /// The theme of the interface; «Same as Windows» when nothing is stored (TASK-34).
+    pub fn theme(&self) -> Result<Theme, SettingsError> {
+        Ok(match self.get(KEY_THEME)? {
+            Some(Value::Text(text)) => Theme::parse(&text).unwrap_or_default(),
+            _ => Theme::default(),
+        })
+    }
+
+    pub fn set_theme(&self, value: Theme) -> Result<(), SettingsError> {
+        self.set(KEY_THEME, value.as_str())
     }
 
     fn get(&self, key: &str) -> Result<Option<Value>, SettingsError> {

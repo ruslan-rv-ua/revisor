@@ -19,7 +19,7 @@ use revisor_core::exclude::PatternError;
 use revisor_core::scan::EntryKind;
 use revisor_core::settings::{
     AttributeFormat, ChangeType, DifferenceView, FocusAfterComparison, FocusAfterSnapshot,
-    Language, SizeFormat, TreeNodeText,
+    Language, SizeFormat, Theme, TreeNodeText,
 };
 use revisor_core::store::Unavailable;
 
@@ -488,6 +488,17 @@ fn entries_in(en: &dyn Strings, uk: &dyn Strings) -> Vec<Entry> {
     });
     c.add("restart_now", |s| plain(s.restart_now()));
     c.add("later", |s| plain(s.later()));
+
+    c.add("theme", |s| plain(s.theme()));
+    for value in all!(Theme {
+        SameAsWindows,
+        Light,
+        Dark
+    }) {
+        c.add(format!("theme_option.{value:?}"), |s| {
+            s.theme_option(value).into()
+        });
+    }
 
     c.add("comparing", |s| s.comparing().into());
     c.add("comparing_percent", |s| s.comparing_percent(45));

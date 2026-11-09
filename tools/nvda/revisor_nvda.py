@@ -14,10 +14,12 @@ import os
 import re
 import shutil
 import sqlite3
+import struct
 import subprocess
 import sys
 import tempfile
 import time
+import zlib
 
 REPO = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 EXE_SRC = os.path.join(REPO, "target", "release", "revisor.exe")
@@ -271,6 +273,146 @@ def focused_class():
 
 def foreground_title():
     return window_text(u32.GetForegroundWindow())
+
+
+def popup_menu():
+    """The open popup menu (class ``#32768``) on screen, or None."""
+    found = []
+
+    def cb(h, _):
+        if u32.IsWindowVisible(h) and class_name(h) == "#32768":
+            found.append(h)
+        return True
+
+    u32.EnumWindows(EnumWindowsProc(cb), 0)
+    return found[0] if found else None
+
+
+# --- colours and screenshots (TASK-34) ------------------------------------------------------
+LVM_GETBKCOLOR, LVM_GETTEXTCOLOR, TVM_GETBKCOLOR = 0x1000, 0x1023, 0x111F
+SPI_GETHIGHCONTRAST, HCF_HIGHCONTRASTON = 0x0042, 0x1
+
+
+def colour(value):
+    """A COLORREF (0x00BBGGRR) as ``(r, g, b)``; None for -1, «the system colour»."""
+    value &= 0xFFFFFFFF
+    if value == 0xFFFFFFFF:
+        return None
+    return value & 0xFF, (value >> 8) & 0xFF, (value >> 16) & 0xFF
+
+
+def list_colours(h):
+    """The background and text colours of the list view `h`, as ``(r, g, b)`` each."""
+    return (colour(u32.SendMessageW(h, LVM_GETBKCOLOR, 0, 0)),
+            colour(u32.SendMessageW(h, LVM_GETTEXTCOLOR, 0, 0)))
+
+
+def is_dark(rgb):
+    """Whether a colour is dark: its relative luminance (WCAG) is under a half."""
+    if rgb is None:
+        return False
+
+    def channel(c):
+        c /= 255
+        return c / 12.92 if c <= 0.04045 else ((c + 0.055) / 1.055) ** 2.4
+
+    r, g, b = (channel(c) for c in rgb)
+    return 0.2126 * r + 0.7152 * g + 0.0722 * b < 0.5
+
+
+class HIGHCONTRASTW(ctypes.Structure):
+    _fields_ = [("cbSize", wt.UINT), ("dwFlags", wt.DWORD), ("lpszDefaultScheme", wt.LPWSTR)]
+
+
+def high_contrast():
+    """Whether a contrast theme of Windows is on."""
+    hc = HIGHCONTRASTW(ctypes.sizeof(HIGHCONTRASTW), 0, None)
+    u32.SystemParametersInfoW(SPI_GETHIGHCONTRAST, hc.cbSize, ctypes.byref(hc), 0)
+    return bool(hc.dwFlags & HCF_HIGHCONTRASTON)
+
+
+gdi = ctypes.windll.gdi32
+gdi.CreateCompatibleDC.restype = wt.HDC
+gdi.CreateCompatibleDC.argtypes = [wt.HDC]
+gdi.CreateCompatibleBitmap.restype = wt.HBITMAP
+gdi.CreateCompatibleBitmap.argtypes = [wt.HDC, ctypes.c_int, ctypes.c_int]
+gdi.SelectObject.restype = wt.HGDIOBJ
+gdi.SelectObject.argtypes = [wt.HDC, wt.HGDIOBJ]
+gdi.BitBlt.argtypes = [wt.HDC, ctypes.c_int, ctypes.c_int, ctypes.c_int, ctypes.c_int, wt.HDC,
+                       ctypes.c_int, ctypes.c_int, wt.DWORD]
+gdi.GetDIBits.argtypes = [wt.HDC, wt.HBITMAP, wt.UINT, wt.UINT, ctypes.c_void_p, ctypes.c_void_p,
+                          wt.UINT]
+gdi.DeleteObject.argtypes = [wt.HGDIOBJ]
+gdi.DeleteDC.argtypes = [wt.HDC]
+u32.GetDC.restype = wt.HDC
+u32.GetDC.argtypes = [wt.HWND]
+u32.ReleaseDC.argtypes = [wt.HWND, wt.HDC]
+u32.PrintWindow.argtypes = [wt.HWND, wt.HDC, wt.UINT]
+u32.SetThreadDpiAwarenessContext.restype = ctypes.c_void_p
+u32.SetThreadDpiAwarenessContext.argtypes = [ctypes.c_void_p]
+PW_RENDERFULLCONTENT, SRCCOPY = 2, 0x00CC0020
+PER_MONITOR_AWARE_V2 = ctypes.c_void_p(-4)
+
+
+class BITMAPINFOHEADER(ctypes.Structure):
+    _fields_ = [
+        ("biSize", wt.DWORD), ("biWidth", wt.LONG), ("biHeight", wt.LONG),
+        ("biPlanes", wt.WORD), ("biBitCount", wt.WORD), ("biCompression", wt.DWORD),
+        ("biSizeImage", wt.DWORD), ("biXPelsPerMeter", wt.LONG), ("biYPelsPerMeter", wt.LONG),
+        ("biClrUsed", wt.DWORD), ("biClrImportant", wt.DWORD),
+    ]
+
+
+def write_png(path, width, height, bgra):
+    """Write 32-bit BGRA pixels, top row first, as an RGB PNG, with the standard library."""
+    rgb = bytearray(width * height * 3)
+    rgb[0::3] = bgra[2::4]
+    rgb[1::3] = bgra[1::4]
+    rgb[2::3] = bgra[0::4]
+    stride = width * 3
+    raw = b"".join(b"\0" + bytes(rgb[y * stride:(y + 1) * stride]) for y in range(height))
+
+    def chunk(tag, data):
+        return (struct.pack(">I", len(data)) + tag + data
+                + struct.pack(">I", zlib.crc32(tag + data)))
+
+    with open(path, "wb") as f:
+        f.write(b"\x89PNG\r\n\x1a\n")
+        f.write(chunk(b"IHDR", struct.pack(">IIBBBBB", width, height, 8, 2, 0, 0, 0)))
+        f.write(chunk(b"IDAT", zlib.compress(raw, 6)))
+        f.write(chunk(b"IEND", b""))
+
+
+def screenshot(h, path, from_screen=False):
+    """Save the window `h` as a PNG at `path` and return the path. The window draws itself
+    (PrintWindow), so nothing else on the screen gets into the picture; `from_screen` copies
+    its rectangle from the screen instead, for a popup menu, which does not draw itself so."""
+    old = u32.SetThreadDpiAwarenessContext(PER_MONITOR_AWARE_V2)
+    try:
+        rect = wt.RECT()
+        u32.GetWindowRect(h, ctypes.byref(rect))
+        width, height = rect.right - rect.left, rect.bottom - rect.top
+        screen = u32.GetDC(None)
+        mem = gdi.CreateCompatibleDC(screen)
+        bitmap = gdi.CreateCompatibleBitmap(screen, width, height)
+        previous = gdi.SelectObject(mem, bitmap)
+        if from_screen:
+            gdi.BitBlt(mem, 0, 0, width, height, screen, rect.left, rect.top, SRCCOPY)
+        else:
+            u32.PrintWindow(h, mem, PW_RENDERFULLCONTENT)
+        info = BITMAPINFOHEADER(ctypes.sizeof(BITMAPINFOHEADER), width, -height, 1, 32, 0, 0, 0,
+                                0, 0, 0)
+        pixels = ctypes.create_string_buffer(width * height * 4)
+        gdi.SelectObject(mem, previous)
+        gdi.GetDIBits(mem, bitmap, 0, height, pixels, ctypes.byref(info), 0)
+        gdi.DeleteObject(bitmap)
+        gdi.DeleteDC(mem)
+        u32.ReleaseDC(None, screen)
+    finally:
+        u32.SetThreadDpiAwarenessContext(old)
+    os.makedirs(os.path.dirname(path), exist_ok=True)
+    write_png(path, width, height, pixels.raw)
+    return path
 
 
 # --- keys ---------------------------------------------------------------------------------
