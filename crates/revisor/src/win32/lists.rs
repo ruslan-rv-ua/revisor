@@ -14,13 +14,14 @@ use windows_sys::Win32::UI::Controls::{
     EMF_CENTERED, HDF_SORTDOWN, HDF_SORTUP, HDI_FORMAT, HDITEMW, HDM_GETITEMCOUNT, HDM_GETITEMW,
     HDM_SETITEMW, LVIR_BOUNDS, LVIS_FOCUSED, LVIS_SELECTED, LVIS_STATEIMAGEMASK, LVITEMW,
     LVM_ENSUREVISIBLE, LVM_GETHEADER, LVM_GETITEMRECT, LVM_GETITEMSTATE, LVM_GETNEXTITEM,
-    LVM_GETSELECTEDCOUNT, LVM_SETEXTENDEDLISTVIEWSTYLE, LVM_SETITEMSTATE, LVN_GETEMPTYMARKUP,
-    LVNI_FOCUSED, LVNI_SELECTED, LVS_EX_CHECKBOXES, LVS_EX_FULLROWSELECT, LVS_NOSORTHEADER, NMHDR,
-    NMLVEMPTYMARKUP,
+    LVM_GETSELECTEDCOUNT, LVM_SETCOLUMNWIDTH, LVM_SETEXTENDEDLISTVIEWSTYLE, LVM_SETITEMSTATE,
+    LVN_GETEMPTYMARKUP, LVNI_FOCUSED, LVNI_SELECTED, LVS_EX_CHECKBOXES, LVS_EX_FULLROWSELECT,
+    LVS_NOSORTHEADER, NMHDR, NMLVEMPTYMARKUP,
 };
 use windows_sys::Win32::UI::Shell::{DefSubclassProc, RemoveWindowSubclass, SetWindowSubclass};
 use windows_sys::Win32::UI::WindowsAndMessaging::{
-    GWL_STYLE, GetWindowLongPtrW, SendMessageW, SetWindowLongPtrW, WM_NCDESTROY, WM_NOTIFY,
+    GWL_STYLE, GetClientRect, GetWindowLongPtrW, SendMessageW, SetWindowLongPtrW, WM_NCDESTROY,
+    WM_NOTIFY, WM_SIZE,
 };
 
 /// The row of a list that has the focus rectangle: the current snapshot (TASK-9).
@@ -152,6 +153,55 @@ pub fn enable_check_boxes(list: *mut c_void) {
             style as LPARAM,
         )
     };
+}
+
+/// The id of the fill-width subclass among a list's subclasses.
+const FILL_WIDTH_SUBCLASS: usize = 2;
+
+/// Keeps the one column of a report list as wide as the list, or `min_width` when that is
+/// wider, now and whenever the list is resized: a selected row is then highlighted across
+/// the list, and no row is cut off (TASK-36).
+pub fn fill_width(list: *mut c_void, min_width: i32) {
+    let data = usize::try_from(min_width).unwrap_or(0);
+    // SAFETY: a live window of this thread; the procedure is a plain function, and its data
+    // is a plain number.
+    unsafe { SetWindowSubclass(list, Some(fill_width_proc), FILL_WIDTH_SUBCLASS, data) };
+    set_fill_width(list, data);
+}
+
+fn set_fill_width(list: HWND, min_width: usize) {
+    let mut client = RECT {
+        left: 0,
+        top: 0,
+        right: 0,
+        bottom: 0,
+    };
+    // SAFETY: a live window and a valid RECT.
+    unsafe { GetClientRect(list, &mut client) };
+    let width = usize::try_from(client.right).unwrap_or(0).max(min_width);
+    // SAFETY: a plain list-view message to a live list-view window.
+    unsafe { SendMessageW(list, LVM_SETCOLUMNWIDTH, 0, width as LPARAM) };
+}
+
+unsafe extern "system" fn fill_width_proc(
+    hwnd: HWND,
+    msg: u32,
+    wparam: WPARAM,
+    lparam: LPARAM,
+    _id: usize,
+    data: usize,
+) -> LRESULT {
+    if msg == WM_NCDESTROY {
+        // SAFETY: the subclass installed in `fill_width`, removed as the window goes, as
+        // the subclassing rules ask.
+        unsafe { RemoveWindowSubclass(hwnd, Some(fill_width_proc), FILL_WIDTH_SUBCLASS) };
+    }
+    // SAFETY: passes the message on to wx's own window procedure.
+    let result = unsafe { DefSubclassProc(hwnd, msg, wparam, lparam) };
+    if msg == WM_SIZE {
+        set_fill_width(hwnd, data);
+    }
+    result
 }
 
 /// The state image of a checked check box; 1 is an unchecked one.
