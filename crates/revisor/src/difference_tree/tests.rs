@@ -258,6 +258,8 @@ impl Control for Mock {
     fn select(&self, item: &usize) {
         self.selected.set(Some(*item));
     }
+
+    fn freeze(&self, _on: bool) {}
 }
 
 /// A folder `docs` with a file and a folder `img` of two files, and a file at the top.

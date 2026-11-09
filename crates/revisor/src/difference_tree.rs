@@ -117,6 +117,10 @@ pub trait Control {
     /// Makes `item` the selected one, with the focus rectangle, scrolled into view; the
     /// keyboard focus stays where it is.
     fn select(&self, item: &Self::Item);
+    /// Stops drawing the control while many of its items change, or draws it again: an
+    /// item put under an expanded one, or taken from there, otherwise moves the scroll
+    /// bar each time.
+    fn freeze(&self, on: bool);
 }
 
 /// An item of the control as the view knows it.
@@ -280,7 +284,11 @@ impl<C: Control> TreeView<C> {
     /// `current`, expanding the way to it (#4). A level shown by pages shows one page
     /// again: that of the node on the way to `current`, or the first (TASK-37 #8).
     pub fn refresh(&self, source: &dyn Source, current: Option<NodeId>) {
-        self.while_busy(|| self.show(source, current));
+        self.while_busy(|| {
+            self.control.freeze(true);
+            self.show(source, current);
+            self.control.freeze(false);
+        });
     }
 
     fn show(&self, source: &dyn Source, current: Option<NodeId>) {
@@ -363,6 +371,7 @@ impl<C: Control> TreeView<C> {
         };
         let focus = *wanted.get(focus)?;
         self.while_busy(|| {
+            self.control.freeze(true);
             self.sync_nodes(more.parent, &wanted, window.clone(), source, None);
             // Before the item «Ще…» with the focus goes, so the control does not move
             // the focus itself.
@@ -370,6 +379,7 @@ impl<C: Control> TreeView<C> {
                 self.control.select(&item);
             }
             self.sync_more(more.parent, wanted.len(), window, source);
+            self.control.freeze(false);
         });
         self.more.set(None);
         Some(focus)
@@ -452,7 +462,9 @@ impl<C: Control> TreeView<C> {
             )
         };
         let keep: HashSet<NodeId> = wanted.iter().copied().collect();
-        for &node in old.iter().filter(|node| !keep.contains(node)) {
+        // From the last one: the control moves its selection from an item taken out to
+        // the next one, and would do so again for every item of a page.
+        for &node in old.iter().rev().filter(|node| !keep.contains(node)) {
             if let Some(item) = self.item(node) {
                 self.control.delete(&item);
             }
@@ -717,6 +729,14 @@ impl Control for Native {
     fn select(&self, item: &TreeItemId) {
         self.tree.select_item(item);
         self.tree.ensure_visible(item);
+    }
+
+    fn freeze(&self, on: bool) {
+        if on {
+            self.tree.freeze();
+        } else {
+            self.tree.thaw();
+        }
     }
 }
 
