@@ -4,8 +4,9 @@ title: Вузол у фокусі нового дерева різниці зв�
 status: Draft
 assignee: []
 created_date: '2026-11-08 16:03'
+updated_date: '2026-11-09 17:02'
 labels: []
-milestone: m-2
+milestone: m-4
 dependencies:
   - TASK-33
 references:
