@@ -9,6 +9,8 @@ release that section becomes the version's own, and the release page publishes i
 
 ## [Unreleased]
 
+## [0.2.0] - 2026-11-09
+
 ### Added
 
 - **The difference can be viewed as a tree of its folders.** `Ctrl+T`, or List and Tree in
@@ -111,5 +113,6 @@ keyboard and with a screen reader.
 - **Error messages** name the causes revisor recognizes in its own words—what happened, why,
   and what to do—and give the Windows or SQLite text and its code for the rest.
 
-[Unreleased]: https://github.com/ruslan-rv-ua/revisor/compare/v0.1.0...HEAD
+[Unreleased]: https://github.com/ruslan-rv-ua/revisor/compare/v0.2.0...HEAD
+[0.2.0]: https://github.com/ruslan-rv-ua/revisor/compare/v0.1.0...v0.2.0
 [0.1.0]: https://github.com/ruslan-rv-ua/revisor/releases/tag/v0.1.0
