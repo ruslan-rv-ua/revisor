@@ -22,6 +22,7 @@ use revisor_core::settings::{
     Language, SizeFormat, Theme, TreeNodeText,
 };
 use revisor_core::store::Unavailable;
+use revisor_core::typical::TypicalFolder;
 
 use super::{En, Failure, Strings, Uk};
 use crate::access::plain;
@@ -244,6 +245,25 @@ fn entries_in(en: &dyn Strings, uk: &dyn Strings) -> Vec<Entry> {
     c.add("profile_folders", |s| plain(s.profile_folders()));
     c.add("add_folder", |s| plain(s.add_folder()));
     c.add("remove_folder", |s| plain(s.remove_folder()));
+    c.add("add_typical_folders", |s| plain(s.add_typical_folders()));
+    let typical = all!(TypicalFolder {
+        ProgramFiles,
+        ProgramFilesX86,
+        ProgramData,
+        AppData,
+        Windows,
+        Desktop,
+        PublicDesktop
+    });
+    for folder in typical {
+        c.add(format!("typical_folder.{folder:?}"), |s| {
+            s.typical_folder(folder).into()
+        });
+    }
+    c.add("add", |s| s.add().into());
+    c.add("typical_folders_in_profile", |s| {
+        s.typical_folders_in_profile().into()
+    });
     c.add("profile_exclusions", |s| plain(s.profile_exclusions()));
     c.add("create", |s| s.create().into());
     c.add("ok", |s| s.ok().into());

@@ -25,6 +25,7 @@ mod state;
 mod status;
 mod text_window;
 mod theme;
+mod typical_folders_window;
 mod win32;
 
 use std::ffi::OsStr;
