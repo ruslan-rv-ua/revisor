@@ -61,12 +61,20 @@ impl Source for Model {
         path.reverse();
         path
     }
+
+    fn more_label(&self, count: usize, above: bool) -> String {
+        if above {
+            format!("ще {count} вище")
+        } else {
+            format!("ще {count}")
+        }
+    }
 }
 
 /// An item of the mock control.
 #[derive(Clone, Debug)]
 struct MockItem {
-    node: NodeId,
+    entry: Entry,
     text: String,
     has_children: bool,
     expanded: bool,
@@ -135,15 +143,31 @@ impl Mock {
 
     fn selected_node(&self) -> Option<NodeId> {
         let i = self.selected.get()?;
-        self.items.borrow()[i].as_ref().map(|item| item.node)
+        match self.items.borrow()[i].as_ref()?.entry {
+            Entry::Node(node) => Some(node),
+            Entry::More(_) => None,
+        }
+    }
+
+    /// The texts of the items under the item of `parent`, or of the top level, in order.
+    fn level(&self, parent: Option<u32>) -> Vec<String> {
+        let parent = parent.map_or(usize::MAX, |node| self.item_of(node).expect("an item"));
+        let order = self.order.borrow();
+        let items = self.items.borrow();
+        order.get(&parent).map_or_else(Vec::new, |level| {
+            level
+                .iter()
+                .map(|&i| items[i].as_ref().expect("an item").text.clone())
+                .collect()
+        })
     }
 
     /// The number of the item of `node`.
     fn item_of(&self, node: u32) -> Option<usize> {
-        self.items
-            .borrow()
-            .iter()
-            .position(|item| item.as_ref().is_some_and(|item| item.node == NodeId(node)))
+        self.items.borrow().iter().position(|item| {
+            item.as_ref()
+                .is_some_and(|item| item.entry == Entry::Node(NodeId(node)))
+        })
     }
 }
 
@@ -164,14 +188,14 @@ impl Control for Mock {
         &self,
         parent: Option<&usize>,
         after: Option<&usize>,
-        node: NodeId,
+        entry: Entry,
         text: &str,
         has_children: bool,
     ) -> Option<usize> {
         self.note(format!("insert {text}"));
         let i = self.items.borrow().len();
         self.items.borrow_mut().push(Some(MockItem {
-            node,
+            entry,
             text: text.into(),
             has_children,
             expanded: false,
@@ -429,4 +453,178 @@ fn clearing_takes_every_item_out() {
     // A fill afterwards starts afresh.
     view.fill(&model, None);
     assert_eq!(view.control().outline().len(), 2);
+}
+
+// --- A level of more than a page (TASK-37) ---------------------------------------------
+
+/// A folder `big`, the node 0, of `files` files, the nodes 1 and on, `f1` and on.
+fn big(files: u32) -> Model {
+    let names: Vec<String> = (1..=files).map(|i| format!("f{i}")).collect();
+    let mut nodes = vec![(0, u32::MAX, "big")];
+    nodes.extend((1..=files).map(|i| (i, 0, names[i as usize - 1].as_str())));
+    Model::of(&nodes)
+}
+
+/// The first and the last of `texts`, and how many they are.
+fn ends(texts: &[String]) -> (&str, &str, usize) {
+    (
+        texts.first().map_or("", String::as_str),
+        texts.last().map_or("", String::as_str),
+        texts.len(),
+    )
+}
+
+const BELOW: More = More {
+    parent: Some(NodeId(0)),
+    above: false,
+};
+const ABOVE: More = More {
+    parent: Some(NodeId(0)),
+    above: true,
+};
+
+#[test]
+fn a_folder_of_more_than_a_page_opens_with_its_first_page() {
+    let model = big(2500);
+    let view = TreeView::new(Mock::default());
+    view.fill(&model, Some(NodeId(0)));
+    view.control().take_calls();
+    view.expanding(NodeId(0), &model);
+    let level = view.control().level(Some(0));
+    assert_eq!(ends(&level), ("f1", "ще 1500", PAGE + 1));
+    assert_eq!(level[PAGE - 1], "f1000");
+    assert_eq!(
+        view.control().take_calls().len(),
+        PAGE + 1,
+        "no more is put"
+    );
+    // A page exactly: all of it, and no node «Ще…».
+    let model = big(PAGE as u32);
+    let view = TreeView::new(Mock::default());
+    view.fill(&model, Some(NodeId(1)));
+    assert_eq!(ends(&view.control().level(Some(0))), ("f1", "f1000", PAGE));
+}
+
+#[test]
+fn the_next_page_comes_before_the_node_more_and_takes_the_focus() {
+    let model = big(2500);
+    let view = TreeView::new(Mock::default());
+    view.fill(&model, Some(NodeId(1)));
+    assert_eq!(view.more(), None);
+    // The focus on the node «Ще…»: the model keeps the node above it.
+    assert_eq!(
+        view.focus_moved(Entry::More(BELOW)),
+        Some(NodeId(PAGE as u32))
+    );
+    assert_eq!(view.more(), Some(BELOW));
+    view.control().take_calls();
+    assert_eq!(view.turn(BELOW, &model), Some(NodeId(1001)));
+    assert_eq!(view.more(), None);
+    assert!(!view.busy());
+    let calls = view.control().take_calls();
+    assert_eq!(calls.len(), PAGE + 1);
+    assert_eq!(calls[0], "insert f1001");
+    assert_eq!(calls[PAGE], "text ще 500", "the node stays, with less");
+    let level = view.control().level(Some(0));
+    assert_eq!(ends(&level), ("f1", "ще 500", 2 * PAGE + 1));
+    assert_eq!(level[PAGE], "f1001");
+    assert_eq!(view.control().selected_node(), Some(NodeId(1001)));
+    // The last page: the node «Ще…» goes.
+    assert_eq!(view.turn(BELOW, &model), Some(NodeId(2001)));
+    assert_eq!(ends(&view.control().level(Some(0))), ("f1", "f2500", 2500));
+    assert_eq!(view.control().selected_node(), Some(NodeId(2001)));
+    assert_eq!(view.turn(BELOW, &model), None);
+}
+
+#[test]
+fn a_focus_beyond_the_first_page_shows_its_page_under_a_node_more() {
+    let model = big(2500);
+    let view = TreeView::new(Mock::default());
+    view.fill(&model, Some(NodeId(1500)));
+    let level = view.control().level(Some(0));
+    assert_eq!(ends(&level), ("ще 1000 вище", "ще 500", PAGE + 2));
+    assert_eq!((&*level[1], &*level[PAGE]), ("f1001", "f2000"));
+    assert_eq!(view.control().selected_node(), Some(NodeId(1500)));
+    // The focus on the node «Ще… вище»: the model keeps the node under it.
+    assert_eq!(view.focus_moved(Entry::More(ABOVE)), Some(NodeId(1001)));
+    // The page before comes above, and the focus goes to its last node.
+    assert_eq!(view.turn(ABOVE, &model), Some(NodeId(1000)));
+    let level = view.control().level(Some(0));
+    assert_eq!(ends(&level), ("f1", "ще 500", 2 * PAGE + 1));
+    assert_eq!((&*level[PAGE - 1], &*level[PAGE]), ("f1000", "f1001"));
+    assert_eq!(view.control().selected_node(), Some(NodeId(1000)));
+    assert_eq!(view.turn(ABOVE, &model), None);
+    // A page in the middle, both ways.
+    let model = big(3500);
+    let view = TreeView::new(Mock::default());
+    view.fill(&model, Some(NodeId(2001)));
+    assert_eq!(
+        ends(&view.control().level(Some(0))),
+        ("ще 2000 вище", "ще 500", PAGE + 2)
+    );
+    assert_eq!(view.turn(ABOVE, &model), Some(NodeId(2000)));
+    let level = view.control().level(Some(0));
+    assert_eq!(ends(&level), ("ще 1000 вище", "ще 500", 2 * PAGE + 2));
+    assert_eq!(level[1], "f1001");
+}
+
+#[test]
+fn a_filter_change_leaves_one_page_the_first_or_that_of_the_focus() {
+    let mut model = big(2500);
+    let view = TreeView::new(Mock::default());
+    view.fill(&model, Some(NodeId(1)));
+    view.turn(BELOW, &model);
+    assert_eq!(view.control().level(Some(0)).len(), 2 * PAGE + 1);
+    // Ten files of the first page go: the node with the focus is on the first page now.
+    model.hidden.extend(1..=10);
+    view.refresh(&model, Some(NodeId(1001)));
+    let level = view.control().level(Some(0));
+    assert_eq!(ends(&level), ("f11", "ще 1490", PAGE + 1));
+    assert_eq!(level[PAGE - 1], "f1010");
+    assert_eq!(view.control().selected_node(), Some(NodeId(1001)));
+    // They come back: it is on the second page again, the only one shown.
+    model.hidden.clear();
+    view.refresh(&model, Some(NodeId(1001)));
+    let level = view.control().level(Some(0));
+    assert_eq!(ends(&level), ("ще 1000 вище", "ще 500", PAGE + 2));
+    assert_eq!(level[1], "f1001");
+    assert_eq!(view.control().selected_node(), Some(NodeId(1001)));
+    // The focus elsewhere: the first page.
+    view.refresh(&model, Some(NodeId(0)));
+    assert_eq!(
+        ends(&view.control().level(Some(0))),
+        ("f1", "ще 1500", PAGE + 1)
+    );
+    // Fewer than a page left: all of them, without a node «Ще…».
+    model.hidden.extend(501..=2500);
+    view.refresh(&model, Some(NodeId(0)));
+    assert_eq!(ends(&view.control().level(Some(0))), ("f1", "f500", 500));
+}
+
+#[test]
+fn the_top_level_shows_by_pages_too() {
+    let names: Vec<String> = (0..1200).map(|i| format!("r{i}")).collect();
+    let nodes: Vec<(u32, u32, &str)> = (0..1200u32)
+        .map(|i| (i, u32::MAX, names[i as usize].as_str()))
+        .collect();
+    let model = Model::of(&nodes);
+    let view = TreeView::new(Mock::default());
+    view.fill(&model, Some(NodeId(1100)));
+    assert_eq!(
+        ends(&view.control().level(None)),
+        ("ще 1000 вище", "r1199", 201)
+    );
+    let top = More {
+        parent: None,
+        above: true,
+    };
+    assert_eq!(view.focus_moved(Entry::More(top)), Some(NodeId(1000)));
+    assert_eq!(view.turn(top, &model), Some(NodeId(999)));
+    assert_eq!(ends(&view.control().level(None)), ("r0", "r1199", 1200));
+    // A new difference starts with the first page.
+    view.fill(&model, Some(NodeId(0)));
+    assert_eq!(
+        ends(&view.control().level(None)),
+        ("r0", "ще 200", PAGE + 1)
+    );
 }

@@ -35,7 +35,7 @@ use crate::access::{Dispatcher, Name, Target, compose, field_label, plain};
 use crate::commands::{COMMANDS, CommandId, CommandKind, MenuId, Pane, Reason, command};
 use crate::compare_window;
 use crate::difference::{self, Column, List, Location, View};
-use crate::difference_tree::{self, TreeView};
+use crate::difference_tree::{self, Entry, More, TreeView};
 use crate::explorer::{self, Reveal};
 use crate::failure::reason;
 use crate::help;
@@ -727,8 +727,9 @@ impl MainWindow {
             );
         }
         // The difference trees (TASK-33): a node gets its children as it first expands
-        // (#2), the focus picks the node selected, and a right click selects the node under
-        // the mouse, for the context menu that follows.
+        // (#2), the focus picks the node selected, a right click selects the node under
+        // the mouse, for the context menu that follows, and a double click on a node
+        // «Ще…» turns its page (TASK-37 #5).
         for (i, view) in self.trees.iter().enumerate() {
             let tree = view.control().tree();
             self.bind(
@@ -745,6 +746,15 @@ impl MainWindow {
                 Source::Navigation,
                 |f| tree.on_item_right_click(f),
                 move |w, event| w.tree_right_clicked(i, event.get_item()),
+            );
+            self.bind(
+                Source::Navigation,
+                |f| tree.on_item_activated(f),
+                move |w, event| {
+                    if !w.tree_activated(i, event.get_item()) {
+                        event.event.skip(true);
+                    }
+                },
             );
         }
         self.bind(
@@ -841,6 +851,7 @@ impl MainWindow {
                 .flags(open.as_ref().map(|p| p.path.as_path())),
             difference: self.difference_list.borrow().state(),
             elevated: self.elevated,
+            more_node: self.more_node().is_some(),
         };
         *self.state.borrow_mut() = AppState::of(sources);
         self.refresh_menus();
@@ -931,6 +942,14 @@ impl MainWindow {
     /// The difference tree shown, or that shown last while the difference is a list.
     fn tree(&self) -> &TreeView<difference_tree::Native> {
         &self.trees[self.shown_tree.get()]
+    }
+
+    /// The node «Ще…» of the difference tree that has its focus, while the difference
+    /// shows as a tree (TASK-37).
+    fn more_node(&self) -> Option<More> {
+        (self.layout() == DifferenceView::Tree)
+            .then(|| self.tree().more())
+            .flatten()
     }
 
     /// Whether the difference shows as a list or as a tree (TASK-33).
@@ -1923,20 +1942,51 @@ impl MainWindow {
         if view.busy() {
             return;
         }
-        let Some(node) = item.and_then(|item| view.control().node_of(&item)) else {
+        let Some(Entry::Node(node)) = item.and_then(|item| view.control().entry_of(&item)) else {
             return;
         };
         let model = self.difference_list.borrow();
         view.expanding(node, &*model);
     }
 
-    /// The focus of the tree `tree` has moved to `item`: the model keeps its node.
+    /// The focus of the tree `tree` has moved to `item`: the model keeps its node, or
+    /// the node shown next to a node «Ще…» (TASK-37).
     fn tree_selected(&self, tree: usize, item: Option<TreeItemId>) {
         let view = &self.trees[tree];
         if view.busy() || tree != self.shown_tree.get() {
             return;
         }
-        if let Some(node) = item.and_then(|item| view.control().node_of(&item)) {
+        let entry = item.and_then(|item| view.control().entry_of(&item));
+        if let Some(node) = entry.and_then(|entry| view.focus_moved(entry)) {
+            self.difference_list.borrow_mut().tree_focus(node);
+        }
+    }
+
+    /// A double click on `item` of the tree `tree`, which a node «Ще…» answers by
+    /// turning its page (TASK-37 #5). Says whether it did.
+    fn tree_activated(&self, tree: usize, item: Option<TreeItemId>) -> bool {
+        let view = &self.trees[tree];
+        if view.busy() || tree != self.shown_tree.get() {
+            return false;
+        }
+        match item.and_then(|item| view.control().entry_of(&item)) {
+            Some(Entry::More(more)) => {
+                self.turn_page(more);
+                true
+            }
+            _ => false,
+        }
+    }
+
+    /// Enter, a double click or «Подробиці» on the node `more` of the tree shown: the
+    /// next page of its folder comes, or the previous one, and the focus goes to the
+    /// node next to those shown before, which screen readers say (TASK-37 #5, #6).
+    fn turn_page(&self, more: More) {
+        let node = {
+            let model = self.difference_list.borrow();
+            self.tree().turn(more, &*model)
+        };
+        if let Some(node) = node {
             self.difference_list.borrow_mut().tree_focus(node);
         }
     }
@@ -2191,6 +2241,11 @@ impl MainWindow {
     /// inside it (TASK-33 #9).
     fn show_details(&self) {
         let s = self.s;
+        // A node «Ще…» has no details: the command turns its page (TASK-37 #5).
+        if let Some(more) = self.more_node() {
+            self.turn_page(more);
+            return;
+        }
         let details = self.difference_list.borrow().current_details();
         let Some(details) = details else {
             return;
@@ -2816,9 +2871,11 @@ impl MainWindow {
     }
 
     /// Opens a list's context menu at `at` (screen coordinates), or by its focused row.
+    /// A node «Ще…» of the difference tree has no menu (TASK-37 #7).
     fn show_context_menu(&self, pane: Pane, at: Option<(i32, i32)>) {
         let menu_items = context_menu(pane, &self.state.borrow());
-        if menu_items.groups.is_empty() {
+        let more_node = pane == Pane::Difference && self.more_node().is_some();
+        if menu_items.groups.is_empty() || more_node {
             self.say(self.s.no_actions());
             return;
         }

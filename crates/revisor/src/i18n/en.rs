@@ -138,6 +138,7 @@ impl Strings for En {
             Reason::AlreadyAdmin => "revisor is already running as administrator",
             Reason::NoChangeShown => "the difference list shows no changes",
             Reason::TreeSortedByName => "the tree is always sorted by name",
+            Reason::MoreNode => "a “more” node is not a file or a folder",
         }
     }
 
@@ -1019,6 +1020,14 @@ impl Strings for En {
         match layout {
             DifferenceView::List => "The difference is shown as a list.",
             DifferenceView::Tree => "The difference is shown as a tree.",
+        }
+    }
+
+    fn tree_more(&self, count: &str, above: bool) -> String {
+        if above {
+            format!("{count} more above — press Enter to show the previous 1,000")
+        } else {
+            format!("{count} more — press Enter to show the next 1,000")
         }
     }
 

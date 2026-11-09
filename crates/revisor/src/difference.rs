@@ -1252,6 +1252,12 @@ impl List {
         })
     }
 
+    /// What the node «Ще…» says that stands for `count` nodes of a folder shown by pages,
+    /// those before the pages shown when `above`, else those after them (TASK-37).
+    pub fn tree_more_label(&self, count: usize, above: bool) -> String {
+        self.s.tree_more(&self.count_text(count as u64), above)
+    }
+
     /// The name of a node: of its row's entry, or of its folder; at the top level, the
     /// whole path of the folder of the difference.
     fn node_name(&self, shown: &Shown, tree: &Tree, node: u32) -> String {

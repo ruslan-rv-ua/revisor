@@ -419,6 +419,10 @@ pub trait Strings {
     // The difference tree (TASK-33).
     /// What a node of the tree says: "a.txt — змінено: розмір", "docs — 12 змін".
     fn tree_node(&self, node: &NodeText) -> String;
+    /// What the node «Ще…» of a folder shown by pages says (TASK-37): how many nodes are
+    /// not shown after the pages shown, or before them when `above`, and that Enter shows
+    /// the next page of them, of `difference_tree::PAGE` nodes.
+    fn tree_more(&self, count: &str, above: bool) -> String;
     /// Said when Ctrl+T switches the view while the focus is not on the difference.
     fn layout_shown(&self, layout: DifferenceView) -> &'static str;
     /// The label of the setting «Вузли дерева», without access key or colon.

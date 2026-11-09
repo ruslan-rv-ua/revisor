@@ -411,3 +411,27 @@ fn the_tree_keeps_up_with_a_million_rows() {
     println!("worst: {:.3} s", worst.as_secs_f64());
     assert!(worst.as_secs_f64() < 2.0, "{worst:?}");
 }
+
+#[test]
+fn a_node_more_says_how_many_nodes_it_stands_for_and_what_enter_shows() {
+    // TASK-37 #5, #6. The texts name the page's size themselves.
+    assert_eq!(crate::difference_tree::PAGE, 1000);
+    let list = tree_showing(difference(vec![sample()], Vec::new()));
+    assert_eq!(
+        list.tree_more_label(59000, false),
+        "59000 more — press Enter to show the next 1,000"
+    );
+    assert_eq!(
+        list.tree_more_label(39000, true),
+        "39000 more above — press Enter to show the previous 1,000"
+    );
+    use crate::i18n::{Strings, Uk};
+    assert_eq!(
+        Uk.tree_more("59 000", false),
+        "Ще 59 000 — клавіша Enter покаже наступні 1000"
+    );
+    assert_eq!(
+        Uk.tree_more("39 000", true),
+        "Ще 39 000 вище — клавіша Enter покаже попередні 1000"
+    );
+}
