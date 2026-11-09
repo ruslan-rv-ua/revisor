@@ -4,8 +4,9 @@ title: Хеш вмісту як опція профілю
 status: Draft
 assignee: []
 created_date: '2026-10-30 16:50'
+updated_date: '2026-11-09 17:02'
 labels: []
-milestone: m-2
+milestone: m-5
 dependencies: []
 documentation:
   - backlog/docs/doc-2 - Бриф-продукту.md

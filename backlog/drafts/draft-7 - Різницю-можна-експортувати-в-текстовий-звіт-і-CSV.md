@@ -4,9 +4,9 @@ title: Різницю можна експортувати в текстовий 
 status: Draft
 assignee: []
 created_date: '2026-10-30 15:48'
-updated_date: '2026-11-01 13:05'
+updated_date: '2026-11-09 17:02'
 labels: []
-milestone: m-2
+milestone: m-6
 dependencies: []
 documentation:
   - backlog/docs/doc-2 - Бриф-продукту.md

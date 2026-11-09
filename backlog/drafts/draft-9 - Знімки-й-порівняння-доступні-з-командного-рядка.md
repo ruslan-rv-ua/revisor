@@ -4,9 +4,9 @@ title: Знімки й порівняння доступні з командно
 status: Draft
 assignee: []
 created_date: '2026-10-30 15:57'
-updated_date: '2026-10-30 16:52'
+updated_date: '2026-11-09 17:02'
 labels: []
-milestone: m-2
+milestone: m-6
 dependencies: []
 documentation:
   - backlog/docs/doc-2 - Бриф-продукту.md
