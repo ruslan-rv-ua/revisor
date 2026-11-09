@@ -255,6 +255,15 @@ impl Control for Mock {
         self.items.borrow_mut()[*item].as_mut().unwrap().expanded = true;
     }
 
+    fn is_expanded(&self, item: &usize) -> bool {
+        self.items.borrow()[*item].as_ref().unwrap().expanded
+    }
+
+    fn selected(&self) -> Option<Entry> {
+        let i = self.selected.get()?;
+        Some(self.items.borrow()[i].as_ref()?.entry)
+    }
+
     fn select(&self, item: &usize) {
         self.selected.set(Some(*item));
     }
@@ -629,4 +638,95 @@ fn the_top_level_shows_by_pages_too() {
         ends(&view.control().level(None)),
         ("r0", "ще 200", PAGE + 1)
     );
+}
+
+#[test]
+fn a_tree_filled_anew_keeps_the_folders_open() {
+    let model = Model::of(&[
+        (0, u32::MAX, "docs"),
+        (1, 0, "a.txt"),
+        (2, 0, "img"),
+        (3, 2, "b.png"),
+        (4, u32::MAX, "new"),
+        (5, 4, "n.txt"),
+        (6, u32::MAX, "old"),
+        (7, 6, "o.txt"),
+        (8, 6, "sub"),
+        (9, 8, "s.txt"),
+        (10, u32::MAX, "x.txt"),
+    ]);
+    let view = TreeView::new(Mock::default());
+    view.fill(&model, Some(NodeId(1)));
+    // «img» inside «docs» is opened by hand, and «sub» inside «old», which is then
+    // closed: it keeps «sub» open inside.
+    for node in [2, 6, 8] {
+        view.expanding(NodeId(node), &model);
+        let item = view.control().item_of(node).unwrap();
+        view.control().expand(&item);
+    }
+    let old = view.control().item_of(6).unwrap();
+    view.control().items.borrow_mut()[old]
+        .as_mut()
+        .unwrap()
+        .expanded = false;
+    assert!(view.shows(Some(NodeId(1))));
+    assert!(!view.shows(Some(NodeId(5))));
+
+    let open = view.open();
+    // Another tree takes them, as the window fills the tree not shown.
+    let view = TreeView::new(Mock::default());
+    view.fill_open(&model, Some(NodeId(5)), &open);
+    assert_eq!(
+        view.control().outline(),
+        [
+            "-docs",
+            "   a.txt",
+            "  -img",
+            "     b.png",
+            "-new",
+            "   n.txt *",
+            "+old",
+            " x.txt"
+        ]
+    );
+    assert!(view.shows(Some(NodeId(5))));
+    // «sub» is still open inside the closed «old».
+    let sub = view.control().item_of(8).unwrap();
+    assert!(view.control().is_expanded(&sub));
+    assert_eq!(view.control().level(Some(8)), ["s.txt"]);
+    assert!(!view.busy());
+}
+
+#[test]
+fn a_folder_the_filter_hides_is_not_opened_again() {
+    let mut model = example();
+    let view = TreeView::new(Mock::default());
+    view.fill(&model, Some(NodeId(3)));
+    let open = view.open();
+    model.hidden.extend([2, 3, 4]);
+    view.fill_open(&model, Some(NodeId(5)), &open);
+    assert_eq!(
+        view.control().outline(),
+        ["-docs — 3 зміни", "   a.txt — додано", " x.txt — додано *"]
+    );
+}
+
+#[test]
+fn an_item_more_selected_is_not_the_node_of_the_model() {
+    let model = big(2500);
+    let view = TreeView::new(Mock::default());
+    view.fill(&model, Some(NodeId(1)));
+    assert!(view.shows(Some(NodeId(1))));
+    let more = view
+        .control()
+        .items
+        .borrow()
+        .iter()
+        .position(|item| {
+            item.as_ref()
+                .is_some_and(|i| matches!(i.entry, Entry::More(_)))
+        })
+        .unwrap();
+    view.control().select(&more);
+    assert!(!view.shows(Some(NodeId(1))));
 }

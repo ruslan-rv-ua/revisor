@@ -35,7 +35,7 @@ use crate::access::{Dispatcher, Name, Target, compose, field_label, plain};
 use crate::commands::{COMMANDS, CommandId, CommandKind, MenuId, Pane, Reason, command};
 use crate::compare_window;
 use crate::difference::{self, Column, List, Location, View};
-use crate::difference_tree::{self, Entry, More, TreeView};
+use crate::difference_tree::{self, Entry, More, Open, TreeView};
 use crate::explorer::{self, Reveal};
 use crate::failure::reason;
 use crate::help;
@@ -1880,8 +1880,13 @@ impl MainWindow {
             return;
         }
         let here = self.focus().in_list(Pane::Difference);
-        // A tree not filled yet gets the focus empty (TASK-35).
-        let mut fill_after_focus = false;
+        // A tree not filled yet gets the focus empty (TASK-35). A filled one that is to
+        // select another node would raise a focus event for it before it has the focus,
+        // and so would emptying it; so the tree not shown takes its place empty, as for a
+        // new difference, and is filled once it has the focus, with the folders that
+        // were open in the old one (TASK-38).
+        let mut fill_after_focus = None;
+        let mut replaced = None;
         self.difference_list.borrow_mut().set_layout(layout);
         if let Ok(settings) = &self.settings {
             let _ = settings.set_difference_view(layout);
@@ -1893,14 +1898,19 @@ impl MainWindow {
                 // A tree shown before keeps what was expanded in it.
                 if view.is_empty() {
                     if here {
-                        fill_after_focus = true;
+                        fill_after_focus = Some(Open::default());
                     } else {
                         view.fill(&*model, model.tree_current());
                     }
+                } else if here && !view.shows(model.tree_current()) {
+                    fill_after_focus = Some(view.open());
+                    let next = 1 - self.shown_tree.get();
+                    debug_assert!(self.trees[next].is_empty());
+                    replaced = Some(self.shown_tree.replace(next));
                 } else {
                     view.refresh(&*model, model.tree_current());
                 }
-                view.control().tree().enable(true);
+                self.tree().control().tree().enable(true);
             }
             DifferenceView::List => {
                 let list = self.difference();
@@ -1922,8 +1932,12 @@ impl MainWindow {
         self.describe_difference();
         if here {
             self.focus_list(Pane::Difference);
-            if fill_after_focus {
-                self.fill_tree(self.tree());
+            if let Some(open) = fill_after_focus {
+                let model = self.difference_list.borrow();
+                self.tree().fill_open(&*model, model.tree_current(), &open);
+            }
+            if let Some(old) = replaced {
+                self.trees[old].clear();
             }
         } else {
             self.say(self.s.layout_shown(layout));
