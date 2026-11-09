@@ -21,6 +21,14 @@ release that section becomes the version's own, and the release page publishes i
   tree too, and Details and Show in File Explorer act on a node as on a row: for a folder that
   did not change itself, Details gives its path and the summary of its contents, and File
   Explorer opens it. Sorting stays with the list.
+- **A dark theme.** The new setting Theme shows revisor as Windows has it, which is the
+  default, light or dark. A new theme shows at once, without a restart, and with Same as
+  Windows revisor follows Windows as it switches. While a contrast theme of Windows is on,
+  revisor keeps its colors whatever the setting says. NVDA reads every window the same in
+  either theme. In the dark theme an empty list does not show its hint, which NVDA still reads
+  as the list's name, and the selected node of the tree is faint while the tree does not have
+  the focus; a contrast theme switched on while revisor is dark leaves the column headers
+  faint until revisor is restarted.
 
 ### Changed
 
