@@ -6,7 +6,7 @@ The language goes into the settings file of the scratch folder. The profile «Sm
 folders ``C:\\Program Files\\Common Files`` (inside Program Files) and ``C:\\Users\\Public``
 (which covers the public desktop). The steps, with the Ukrainian layout on:
 
-- «Змінити профіль…», Alt+T: the list of typical folders opens with the focus on its first
+- «Редагувати профіль…», Alt+T: the list of typical folders opens with the focus on its first
   row; every row is checked (read through LVM_GETITEMSTATE) and the public desktop is not
   among them; the arrows read each row with its name, path and check state;
 - Esc closes the list and adds nothing;
@@ -35,7 +35,7 @@ assert LANG in ("uk", "en"), "the first argument is uk or en"
 
 WORDS = {
     "uk": {
-        "edit": "Змінити профіль", "title": "Додати типові теки", "folders": "Теки",
+        "edit": "Редагувати профіль", "title": "Додати типові теки", "folders": "Теки",
         "checked": "позначено", "unchecked": "не позначено", "checkbox": "прапорець",
         "program_files": "Program Files (C:\\Program Files)", "x86": "Program Files (x86)",
         "program_data": "ProgramData", "app_data": "AppData користувача", "windows": "Windows (",
@@ -99,7 +99,7 @@ with App(paths, paths["Small"]) as app:
     alt("F")
     time.sleep(0.4)
     key(vk("E"))
-    heard(app.step("Alt+F, E: «Змінити профіль…»", 2.5), "edit")
+    heard(app.step("Alt+F, E: «Редагувати профіль…»", 2.5), "edit")
 
     # --- the list opens, all checked -----------------------------------------------------------
     alt("T")

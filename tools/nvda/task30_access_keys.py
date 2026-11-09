@@ -10,7 +10,7 @@ Ukrainian layout on in the main window so the keys work by their position:
   «Змінені» once Alt is up, and F6 after it leads to the snapshot list, so no key is lost in
   the window menu;
   during a snapshot of C:\\Windows Alt+N presses «Скасувати (N)»;
-- profile window (Змінити профіль…): Alt+F, Alt+E, Alt+N move the focus; Alt+A opens the
+- profile window (Редагувати профіль…): Alt+F, Alt+E, Alt+N move the focus; Alt+A opens the
   folder picker, Esc closes it, and Alt+R removes the folder;
 - settings: Alt+F moves the focus, Alt+C toggles the check box twice;
 - «Порівняти з…»: from its button, Alt+W puts the focus back in the list;
@@ -40,7 +40,7 @@ WORDS = {
     "uk": {
         "profile": "Профіль", "comparison": "Порівняння", "no_difference": "різниці ще немає",
         "file_menu": "Файл", "modified": "Змінені", "snapshots": "Знімки", "cancelled": "скасовано",
-        "edit": "Змінити профіль", "folders": "Теки", "exclusions": "Винятки", "name": "Назва",
+        "edit": "Редагувати профіль", "folders": "Теки", "exclusions": "Винятки", "name": "Назва",
         "picker": "Виберіть теку", "add": "Додати теку", "settings": "Налаштування",
         "focus": "Фокус після знімка", "confirm": "Підтверджувати видалення знімків",
         "compare_with": "Порівняти з", "compare_label": "зі знімком (W)", "comment": "Коментар до знімка",
@@ -145,7 +145,7 @@ with App(paths, paths["Small"]) as app:
     alt("F")
     time.sleep(0.4)
     key(vk("E"))
-    heard(app.step("Alt+F, E: «Змінити профіль…»", 2.5), "edit")
+    heard(app.step("Alt+F, E: «Редагувати профіль…»", 2.5), "edit")
     alt("F")
     heard(app.step("Alt+F: the folders", 1.5), "folders")
     alt("E")
