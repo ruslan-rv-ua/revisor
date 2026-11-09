@@ -9,6 +9,12 @@ release that section becomes the version's own, and the release page publishes i
 
 ## [Unreleased]
 
+### Fixed
+
+- **A screen reader says the focused node of a new difference tree once.** When a comparison
+  showed its difference as a tree, or the first `Ctrl+T` after it switched to the tree, NVDA
+  said the focused node twice.
+
 ## [0.2.0] - 2026-11-09
 
 ### Added
