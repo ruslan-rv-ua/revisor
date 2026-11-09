@@ -1792,14 +1792,16 @@ impl MainWindow {
     }
 
     /// The difference just put in the model goes into the tree not shown, which takes the
-    /// place of the shown one (TASK-33 #8), as with the lists.
+    /// place of the shown one (TASK-33 #8), as with the lists. A tree the focus goes to is
+    /// filled only once it has the focus (TASK-35): see [`Self::fill_tree`].
     fn show_difference_tree(&self, focus: bool) {
         let old = self.tree();
         let next = 1 - self.shown_tree.get();
         let new = &self.trees[next];
-        {
-            let model = self.difference_list.borrow();
-            new.fill(&*model, model.tree_current());
+        // The tree not shown is always empty: the old one is emptied at every change.
+        debug_assert!(new.is_empty());
+        if !focus {
+            self.fill_tree(new);
         }
         new.control().tree().enable(true);
         self.shown_tree.set(next);
@@ -1807,9 +1809,22 @@ impl MainWindow {
         self.describe_difference();
         if focus {
             new.control().tree().set_focus();
+            self.fill_tree(new);
         }
         old.control().tree().enable(false);
         old.clear();
+    }
+
+    /// Fills `view` with the difference, the way to its current node expanded and that
+    /// node selected. Selecting an item raises a focus event for it even in a tree that is
+    /// disabled and without the focus, and a screen reader that takes the event once the
+    /// focus has come to the tree says the item twice; so a tree the focus goes to is
+    /// focused empty and filled then (TASK-35). Filling it without a selection and
+    /// selecting after the focus does not do: a tree focused with no item selected
+    /// selects its first.
+    fn fill_tree(&self, view: &TreeView<difference_tree::Native>) {
+        let model = self.difference_list.borrow();
+        view.fill(&*model, model.tree_current());
     }
 
     /// The control the difference shows in fills the panel of the difference lists; the
@@ -1846,6 +1861,8 @@ impl MainWindow {
             return;
         }
         let here = self.focus().in_list(Pane::Difference);
+        // A tree not filled yet gets the focus empty (TASK-35).
+        let mut fill_after_focus = false;
         self.difference_list.borrow_mut().set_layout(layout);
         if let Ok(settings) = &self.settings {
             let _ = settings.set_difference_view(layout);
@@ -1856,7 +1873,11 @@ impl MainWindow {
                 let model = self.difference_list.borrow();
                 // A tree shown before keeps what was expanded in it.
                 if view.is_empty() {
-                    view.fill(&*model, model.tree_current());
+                    if here {
+                        fill_after_focus = true;
+                    } else {
+                        view.fill(&*model, model.tree_current());
+                    }
                 } else {
                     view.refresh(&*model, model.tree_current());
                 }
@@ -1882,6 +1903,9 @@ impl MainWindow {
         self.describe_difference();
         if here {
             self.focus_list(Pane::Difference);
+            if fill_after_focus {
+                self.fill_tree(self.tree());
+            }
         } else {
             self.say(self.s.layout_shown(layout));
         }
