@@ -114,6 +114,9 @@ pub trait Control {
     fn set_text(&self, item: &Self::Item, text: &str);
     fn set_has_children(&self, item: &Self::Item, has_children: bool);
     fn expand(&self, item: &Self::Item);
+    fn is_expanded(&self, item: &Self::Item) -> bool;
+    /// What the selected item stands for, when there is one.
+    fn selected(&self) -> Option<Entry>;
     /// Makes `item` the selected one, with the focus rectangle, scrolled into view; the
     /// keyboard focus stays where it is.
     fn select(&self, item: &Self::Item);
@@ -208,6 +211,12 @@ impl<I> Mirror<I> {
     }
 }
 
+/// The folders that had their children in the control, each one after the folders it is
+/// inside, and whether they were expanded: what [`TreeView::open`] reads from a tree and
+/// [`TreeView::fill_open`] gives to one filled anew.
+#[derive(Default)]
+pub struct Open(Vec<(NodeId, bool)>);
+
 /// The way to the node the focus goes to: for each level on it, the node of that level
 /// the way goes through. The key is the level's parent.
 type Way = HashMap<Option<NodeId>, NodeId>;
@@ -277,6 +286,75 @@ impl<C: Control> TreeView<C> {
             self.control.clear();
             *self.mirror.borrow_mut() = Mirror::default();
             self.show(source, current);
+        });
+    }
+
+    /// Whether the item selected in the control is that of `current`.
+    pub fn shows(&self, current: Option<NodeId>) -> bool {
+        match (self.control.selected(), current) {
+            (Some(Entry::Node(node)), Some(current)) => node == current,
+            (None, None) => true,
+            _ => false,
+        }
+    }
+
+    /// The folders that are open, for [`Self::fill_open`] to open them again in a tree
+    /// filled anew (TASK-38).
+    pub fn open(&self) -> Open {
+        let mut open = Vec::new();
+        {
+            let mirror = self.mirror.borrow();
+            let mut levels = vec![&mirror.top];
+            while let Some(level) = levels.pop() {
+                for node in &level.nodes {
+                    let Some(item) = mirror.items.get(node) else {
+                        continue;
+                    };
+                    if let Some(children) = &item.children {
+                        open.push((*node, self.control.is_expanded(&item.item)));
+                        levels.push(children);
+                    }
+                }
+            }
+        }
+        Open(open)
+    }
+
+    /// Shows `source` as [`Self::fill`] does, with the folders of `open` that it still
+    /// shows open again (TASK-38). A folder shown by pages shows one page, as after
+    /// [`Self::refresh`], and a folder not on the page shown stays closed.
+    pub fn fill_open(&self, source: &dyn Source, current: Option<NodeId>, open: &Open) {
+        self.while_busy(|| {
+            self.control.clear();
+            *self.mirror.borrow_mut() = Mirror::default();
+            self.more.set(None);
+            let way = way_to(current, source);
+            self.sync(None, source.roots(), source, &way);
+            // The children come while their folder is closed, and the folders open from
+            // the deepest one: an item put under an expanded one moves the scroll bar.
+            for &(node, _) in &open.0 {
+                if source.has_children(node) {
+                    self.populate(node, source, &way);
+                }
+            }
+            for &(node, expanded) in open.0.iter().rev() {
+                if !expanded {
+                    continue;
+                }
+                let filled = self
+                    .mirror
+                    .borrow()
+                    .items
+                    .get(&node)
+                    .is_some_and(|item| item.children.is_some());
+                if let (true, Some(item)) = (filled, self.item(node)) {
+                    self.control.expand(&item);
+                }
+            }
+            // Last, so the item selected is in view once the folders above it are open.
+            if let Some(node) = current {
+                self.reveal(node, source, &way);
+            }
         });
     }
 
@@ -724,6 +802,14 @@ impl Control for Native {
 
     fn expand(&self, item: &TreeItemId) {
         self.tree.expand(item);
+    }
+
+    fn is_expanded(&self, item: &TreeItemId) -> bool {
+        self.tree.is_expanded(item)
+    }
+
+    fn selected(&self) -> Option<Entry> {
+        self.entry_of(&self.tree.get_selection()?)
     }
 
     fn select(&self, item: &TreeItemId) {
