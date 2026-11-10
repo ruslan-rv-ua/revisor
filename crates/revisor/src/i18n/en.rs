@@ -7,6 +7,7 @@ use revisor_core::settings::{
     AttributeFormat, ChangeType, DifferenceView, FocusAfterComparison, FocusAfterSnapshot,
     Language, SizeFormat, Theme, TreeNodeText,
 };
+use revisor_core::typical::TypicalFolder;
 
 use super::plural::{Category, category};
 use super::{Failure, Lang, Strings, error_code, in_sentence, lower_first};
@@ -137,6 +138,7 @@ impl Strings for En {
             Reason::AlreadyAdmin => "revisor is already running as administrator",
             Reason::NoChangeShown => "the difference list shows no changes",
             Reason::TreeSortedByName => "the tree is always sorted by name",
+            Reason::MoreNode => "a “more” node is not a file or a folder",
         }
     }
 
@@ -226,6 +228,30 @@ impl Strings for En {
 
     fn remove_folder(&self) -> &'static str {
         "&Remove folder"
+    }
+
+    fn add_typical_folders(&self) -> &'static str {
+        "Add &typical folders"
+    }
+
+    fn typical_folder(&self, folder: TypicalFolder) -> &'static str {
+        match folder {
+            TypicalFolder::ProgramFiles => "Program Files",
+            TypicalFolder::ProgramFilesX86 => "Program Files (x86)",
+            TypicalFolder::ProgramData => "ProgramData",
+            TypicalFolder::AppData => "User AppData",
+            TypicalFolder::Windows => "Windows",
+            TypicalFolder::Desktop => "User desktop",
+            TypicalFolder::PublicDesktop => "Public desktop",
+        }
+    }
+
+    fn add(&self) -> &'static str {
+        "Add"
+    }
+
+    fn typical_folders_in_profile(&self) -> &'static str {
+        "All typical folders are in the profile already."
     }
 
     fn profile_exclusions(&self) -> &'static str {
@@ -994,6 +1020,14 @@ impl Strings for En {
         match layout {
             DifferenceView::List => "The difference is shown as a list.",
             DifferenceView::Tree => "The difference is shown as a tree.",
+        }
+    }
+
+    fn tree_more(&self, count: &str, above: bool) -> String {
+        if above {
+            format!("{count} more above — press Enter to show the previous 1,000")
+        } else {
+            format!("{count} more — press Enter to show the next 1,000")
         }
     }
 

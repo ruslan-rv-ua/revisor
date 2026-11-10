@@ -18,6 +18,7 @@ use revisor_core::settings::{
     AttributeFormat, ChangeType, DifferenceView, FocusAfterComparison, FocusAfterSnapshot,
     Language, SizeFormat, Theme, TreeNodeText,
 };
+use revisor_core::typical::TypicalFolder;
 
 use crate::commands::{CommandId, MenuId, Pane, Reason, SubmenuId};
 use crate::details::{Attribute, Inaccessibility, Property};
@@ -209,6 +210,15 @@ pub trait Strings {
     fn profile_folders(&self) -> &'static str;
     fn add_folder(&self) -> &'static str;
     fn remove_folder(&self) -> &'static str;
+    /// The button that opens the list of typical folders, and the title of its window
+    /// (TASK-36).
+    fn add_typical_folders(&self) -> &'static str;
+    /// A typical folder in its list, before its path.
+    fn typical_folder(&self, folder: TypicalFolder) -> &'static str;
+    /// The button of the list of typical folders that adds the checked ones.
+    fn add(&self) -> &'static str;
+    /// Said instead of the list when no typical folder is left to add.
+    fn typical_folders_in_profile(&self) -> &'static str;
     fn profile_exclusions(&self) -> &'static str;
     /// The button that makes a new profile.
     fn create(&self) -> &'static str;
@@ -409,6 +419,10 @@ pub trait Strings {
     // The difference tree (TASK-33).
     /// What a node of the tree says: "a.txt — змінено: розмір", "docs — 12 змін".
     fn tree_node(&self, node: &NodeText) -> String;
+    /// What the node «Ще…» of a folder shown by pages says (TASK-37): how many nodes are
+    /// not shown after the pages shown, or before them when `above`, and that Enter shows
+    /// the next page of them, of `difference_tree::PAGE` nodes.
+    fn tree_more(&self, count: &str, above: bool) -> String;
     /// Said when Ctrl+T switches the view while the focus is not on the difference.
     fn layout_shown(&self, layout: DifferenceView) -> &'static str;
     /// The label of the setting «Вузли дерева», without access key or colon.

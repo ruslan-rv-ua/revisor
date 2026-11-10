@@ -28,25 +28,29 @@ first.
 
 The main scenario takes four steps, all from the keyboard:
 
-1. Create a profile (`Ctrl+N`) with the folders to watch, such as `C:\Program Files`,
-   `C:\ProgramData` and your user folder.
+1. Create a profile (`Ctrl+N`) with the folders to watch: Add typical folders puts in
+   `C:\Program Files`, `C:\ProgramData`, your `AppData`, `C:\Windows` and the desktops at once.
 2. Take a snapshot (`F5`) before you install or run the program.
 3. Install or run it.
 4. Press `Ctrl+F5`: revisor takes a second snapshot and shows the difference.
 
 - **Snapshots of what matters.** A profile names the folders to watch and the exclusions to
-  leave out. A new profile starts with 63 default exclusions for caches, logs and temporary
-  files, which you can edit. A snapshot records every file, folder and link with its dates,
-  attributes, size and NTFS file ID, and the version of `.exe` and `.dll` files, without
-  reading file contents or downloading files that are only in the cloud.
+  leave out. Add typical folders offers the folders installers and programs write to, all
+  checked: Program Files, Program Files (x86), ProgramData, your AppData (hidden, so hard to
+  reach in the folder picker), Windows, your desktop and the public desktop. A new profile
+  starts with 63 default exclusions for caches, logs and temporary files, which you can edit.
+  A snapshot records every file, folder and link with its dates, attributes, size and NTFS
+  file ID, and the version of `.exe` and `.dll` files, without reading file contents or
+  downloading files that are only in the cloud.
 - **Compare any two.** The current snapshot with the previous one (`F7`), with any other
   snapshot of the profile (`Ctrl+F7`), or a new snapshot with the one before it in a single
   command (`Ctrl+F5`). The difference always runs from the earlier snapshot to the later one.
 - **Read the difference.** A list of added, deleted, modified and inaccessible entries, with
   what changed in each and a summary above it, or the same entries as a tree of their folders
-  (`Ctrl+T`), where a folder opens when you expand it. Filter it by type and by text, sort the
-  list by any column, read the details of a change, before and after (`Alt+Enter`), or show it
-  in File Explorer (`Ctrl+Enter`). A difference of a million rows reads without delay.
+  (`Ctrl+T`), where a folder opens when you expand it, and a folder of more than a thousand
+  entries shows them a thousand at a time. Filter it by type and by text, sort the list by any
+  column, read the details of a change, before and after (`Alt+Enter`), or show it in File
+  Explorer (`Ctrl+Enter`). A difference of a million rows reads without delay.
 - **In the background.** Snapshots and comparisons show their progress and can be canceled,
   and the window keeps responding.
 - **Nothing hidden by permissions.** An entry revisor cannot read is kept, marked inaccessible,

@@ -8,6 +8,7 @@ use revisor_core::settings::{
     AttributeFormat, ChangeType, DifferenceView, FocusAfterComparison, FocusAfterSnapshot,
     Language, SizeFormat, Theme, TreeNodeText,
 };
+use revisor_core::typical::TypicalFolder;
 
 use super::plural::{Category, category};
 use super::{Failure, Lang, Strings, error_code, in_sentence, lower_first};
@@ -67,7 +68,7 @@ impl Strings for Uk {
     fn command(&self, id: CommandId) -> &'static str {
         match id {
             CommandId::NewProfile => "Новий профіль",
-            CommandId::EditProfile => "Змінити профіль",
+            CommandId::EditProfile => "Редагувати профіль",
             CommandId::DeleteProfile => "Видалити профіль",
             CommandId::Settings => "Налаштування",
             CommandId::RestartAsAdmin => "Перезапустити від імені адміністратора",
@@ -141,6 +142,7 @@ impl Strings for Uk {
             Reason::AlreadyAdmin => "revisor уже працює від імені адміністратора",
             Reason::NoChangeShown => "у списку різниці немає змін",
             Reason::TreeSortedByName => "у дереві вузли завжди впорядковано за ім'ям",
+            Reason::MoreNode => "вузол «Ще…» — не файл і не тека",
         }
     }
 
@@ -230,6 +232,30 @@ impl Strings for Uk {
 
     fn remove_folder(&self) -> &'static str {
         "Прибрати теку"
+    }
+
+    fn add_typical_folders(&self) -> &'static str {
+        "Додати типові теки"
+    }
+
+    fn typical_folder(&self, folder: TypicalFolder) -> &'static str {
+        match folder {
+            TypicalFolder::ProgramFiles => "Program Files",
+            TypicalFolder::ProgramFilesX86 => "Program Files (x86)",
+            TypicalFolder::ProgramData => "ProgramData",
+            TypicalFolder::AppData => "AppData користувача",
+            TypicalFolder::Windows => "Windows",
+            TypicalFolder::Desktop => "Робочий стіл користувача",
+            TypicalFolder::PublicDesktop => "Загальний робочий стіл",
+        }
+    }
+
+    fn add(&self) -> &'static str {
+        "Додати"
+    }
+
+    fn typical_folders_in_profile(&self) -> &'static str {
+        "Усі типові теки вже є в профілі."
     }
 
     fn profile_exclusions(&self) -> &'static str {
@@ -997,6 +1023,14 @@ impl Strings for Uk {
         match layout {
             DifferenceView::List => "Різницю показано списком.",
             DifferenceView::Tree => "Різницю показано деревом.",
+        }
+    }
+
+    fn tree_more(&self, count: &str, above: bool) -> String {
+        if above {
+            format!("Ще {count} вище — клавіша Enter покаже попередні 1000")
+        } else {
+            format!("Ще {count} — клавіша Enter покаже наступні 1000")
         }
     }
 

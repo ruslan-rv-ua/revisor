@@ -14,6 +14,7 @@ pub mod snapshot;
 pub mod store;
 #[cfg(test)]
 mod testing;
+pub mod typical;
 
 /// Version of revisor, shared by every front end.
 pub fn version() -> &'static str {

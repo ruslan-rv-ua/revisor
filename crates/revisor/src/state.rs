@@ -21,6 +21,8 @@ pub struct Sources {
     pub difference: ListState,
     /// Whether revisor runs as administrator (TASK-8).
     pub elevated: bool,
+    /// Whether the difference shows as a tree whose focus is on a node «Ще…» (TASK-37).
+    pub more_node: bool,
 }
 
 #[derive(Clone, Debug, Default)]
@@ -64,6 +66,9 @@ pub struct AppState {
     pub sort: DifferenceSort,
     /// Whether the difference shows as a list or as a tree (TASK-33).
     pub layout: DifferenceView,
+    /// Whether the focus of the difference tree is on a node «Ще…», which stands for the
+    /// nodes of a page not shown: File Explorer has nothing to show for it (TASK-37 #7).
+    pub more_node: bool,
 }
 
 impl AppState {
@@ -83,6 +88,7 @@ impl AppState {
             jobs,
             difference,
             elevated,
+            more_node,
         } = sources;
         let Flags {
             snapshot_running,
@@ -111,6 +117,7 @@ impl AppState {
             shown_types: difference.view.types,
             sort: difference.view.sort,
             layout: difference.view.layout,
+            more_node,
         }
     }
 
@@ -156,6 +163,7 @@ mod tests {
                 },
             },
             elevated: true,
+            more_node: true,
         };
         let state = AppState::of(sources.clone());
         assert_eq!(state.profile.as_deref(), Some("Документи"));
@@ -179,6 +187,7 @@ mod tests {
         assert!(state.sort.descending);
         assert_eq!(state.layout, DifferenceView::Tree);
         assert!(state.elevated);
+        assert!(state.more_node);
     }
 
     #[test]
