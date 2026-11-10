@@ -9,6 +9,8 @@ release that section becomes the version's own, and the release page publishes i
 
 ## [Unreleased]
 
+## [0.3.0] - 2026-11-10
+
 ### Added
 
 - **A profile can take in the typical folders programs write to at once.** Add typical
@@ -18,11 +20,21 @@ release that section becomes the version's own, and the release page publishes i
   the profile already has or covers is not listed, and a typical folder replaces the profile's
   folders inside it without asking.
 
+### Changed
+
+- **The difference tree shows a big folder a thousand entries at a time.** A folder of more
+  than 1,000 entries shows them in pages of 1,000, with a node that says how many more there
+  are; `Enter` on it shows the next page, or the previous one. A folder of tens of thousands
+  of files no longer stops the window for many seconds while a screen reader stays silent.
+
 ### Fixed
 
 - **A screen reader says the focused node of a new difference tree once.** When a comparison
   showed its difference as a tree, or the first `Ctrl+T` after it switched to the tree, NVDA
   said the focused node twice.
+- **A screen reader says the tree node once after `Ctrl+T` from the list onto another entry.**
+  When the difference had been shown as a tree before and the list moved to another row, NVDA
+  said the node twice. The folders that were open in the tree stay open.
 
 ## [0.2.0] - 2026-11-09
 
@@ -128,6 +140,7 @@ keyboard and with a screen reader.
 - **Error messages** name the causes revisor recognizes in its own words—what happened, why,
   and what to do—and give the Windows or SQLite text and its code for the rest.
 
-[Unreleased]: https://github.com/ruslan-rv-ua/revisor/compare/v0.2.0...HEAD
+[Unreleased]: https://github.com/ruslan-rv-ua/revisor/compare/v0.3.0...HEAD
+[0.3.0]: https://github.com/ruslan-rv-ua/revisor/compare/v0.2.0...v0.3.0
 [0.2.0]: https://github.com/ruslan-rv-ua/revisor/compare/v0.1.0...v0.2.0
 [0.1.0]: https://github.com/ruslan-rv-ua/revisor/releases/tag/v0.1.0
