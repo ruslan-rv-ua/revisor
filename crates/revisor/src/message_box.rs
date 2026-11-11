@@ -3,7 +3,7 @@
 //!
 //! They are revisor's own windows rather than the ones of Windows or wxWidgets, so the
 //! access key of an action button works by the key's position in any layout, as everywhere
-//! in revisor (document «Клавіатура й меню»). NVDA reads the text as the window's
+//! in revisor (document «Клавіші доступу»). NVDA reads the text as the window's
 //! description: by itself when it reports object descriptions, and with NVDA+B in any
 //! case.
 

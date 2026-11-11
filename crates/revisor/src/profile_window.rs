@@ -240,7 +240,7 @@ impl Window {
             w.commit();
         });
         // Access keys by the key's position, so they work in the Ukrainian layout too
-        // (document «Клавіатура й меню»).
+        // (document «Клавіші доступу»).
         let w = Rc::clone(self);
         access::bind(&self.dialog, targets(), move |control| {
             w.access_key(control)

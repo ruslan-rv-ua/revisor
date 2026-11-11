@@ -270,7 +270,7 @@ pub fn show(parent: &Frame, s: &'static dyn Strings, initial: Values) -> Option<
         warn_missing,
     });
     // Access keys by the key's position, so they work in the Ukrainian layout too
-    // (document «Клавіатура й меню»).
+    // (document «Клавіші доступу»).
     let w = Rc::clone(&window);
     access::bind(&dialog, targets(), move |control| w.access_key(control));
 
