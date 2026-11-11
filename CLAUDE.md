@@ -6,23 +6,5 @@
   питанню, з варіантами й позначеним рекомендованим.
 - **git flow** (git-flow-next, класична схема): працюємо в `feature/*` і `bugfix/*` від `develop`; у `main` напряму
   нічого не комітимо; теги версій — `v1.2.3`.
-- **Backlog.md — через CLI `backlog` у PowerShell** (не в Git Bash: той перетворює аргументи на кшталт `/api` на
-  шляхи Windows). Файли в `backlog/` вручну не редагуємо, крім `backlog/config.yml`. Деталі нижче.
-
-## Backlog.md через CLI
-
-- Перед першою роботою з задачами в сесії прочитай `backlog instructions overview`; за потреби —
-  `backlog instructions task-creation`, `task-execution`, `task-finalization`.
-- Для читання — `--plain` (чи `--json`): `backlog task list --plain`, `backlog task 12 --plain`,
-  `backlog doc list --plain`.
-- Багаторядковий текст передавай змінною з here-string `@'…'@` (справжні перенесення рядків); `\n` CLI не
-  перетворює. Нотатки дописуй через `--append-notes`.
-- Після кожної команди, що пише, перевіряй `$?`: коли аргумент задовгий, PowerShell видає помилку, а
-  `$LASTEXITCODE` лишається 0 і файл не змінюється.
-- Одна команда — не довше ~32 000 символів (межа командного рядка Windows), тож документ тримаємо до
-  ~30 000 символів, а більший ділимо на кілька документів.
-- Завершену задачу переводимо в Done і архівуємо (`backlog task archive`); `task complete` з v1.54 немає.
-- Пункти Definition of Done за замовчуванням (`definition_of_done` у `backlog/config.yml`) правимо в самому
-  файлі: `backlog config set` їх не змінює, а Backlog.md для цього сам радить правити файл. Після правки перевір
-  `backlog config get definitionOfDone` і `git diff`. Команди, що змінюють налаштування (`backlog config`,
-  `backlog init`, `backlog agents`), — лише за згодою користувача.
+- **Backlog.md — через CLI `backlog` у PowerShell**, за правилами з `~/.claude/CLAUDE.md` (розділ «Backlog.md»).
+  ADR ведемо документами в `backlog/docs/adr`, а не в `decisions`.
