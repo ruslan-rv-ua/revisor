@@ -1,4 +1,4 @@
-//! Access keys (document «Клавіатура й меню», ADR-0008, ADR-0009, TASK-30): where the
+//! Access keys (document «Клавіші доступу», ADR-0008, ADR-0009, TASK-30): where the
 //! letter of a label lives, how a label is written in each language, and the one
 //! dispatcher of Alt with a letter for every window.
 //!
