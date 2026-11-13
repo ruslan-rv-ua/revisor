@@ -11,6 +11,18 @@ release that section becomes the version's own, and the release page publishes i
 
 ### Added
 
+- **The difference can be exported to CSV**, for Excel and scripts. Difference › Export…
+  offers CSV (*.csv) as the second type of file, and the save dialog offers the type chosen
+  last; the type chosen, not the name's extension, says the format. The file has a line of
+  column names and a line per entry shown, in the order of paths, with no header or summary.
+  Its format is the same in every language and region: English column names and codes, sizes
+  in bytes, local times in ISO 8601 with the offset from UTC and seven digits of the second,
+  versions as four numbers, and each field of an entry as a pair of columns, `_before` and
+  `_after`, filled whenever the entry has the field. The new setting CSV delimiter, on the
+  Export tab of Settings, separates the values by the list separator of Windows by default,
+  or by a comma, a semicolon or a tab. The file is UTF-8 with a byte order mark and CRLF line
+  ends, values are quoted as RFC 4180 says, and a link target that starts as a formula gets
+  an apostrophe before it.
 - **The difference can be exported to a text report.** Difference › Export… saves the entries
   the difference shows, with its type and text filter, to a text file: a header with revisor's
   version, the pair of snapshots, the summary, the filter and the folders compared, then the
