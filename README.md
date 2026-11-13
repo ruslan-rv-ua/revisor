@@ -29,15 +29,21 @@ first.
 The main scenario takes four steps, all from the keyboard:
 
 1. Create a profile (`Ctrl+N`) with the folders to watch: Add typical folders puts in
-   `C:\Program Files`, `C:\ProgramData`, your `AppData`, `C:\Windows` and the desktops at once.
+   `C:\Program Files`, `C:\ProgramData`, your `AppData` and the desktops at once.
 2. Take a snapshot (`F5`) before you install or run the program.
 3. Install or run it.
 4. Press `Ctrl+F5`: revisor takes a second snapshot and shows the difference.
 
 - **Snapshots of what matters.** A profile names the folders to watch and the exclusions to
-  leave out. Add typical folders offers the folders installers and programs write to, all
-  checked: Program Files, Program Files (x86), ProgramData, your AppData (hidden, so hard to
-  reach in the folder picker), Windows, your desktop and the public desktop. A new profile
+  leave out. Add typical folders offers the folders installers and programs write to:
+  Program Files, Program Files (x86), ProgramData, Windows, the public desktop, your user
+  folder, your AppData (hidden, so hard to reach in the folder picker) and your desktop. All
+  are checked but Windows and your user folder, which are large and seldom written to; if you
+  check your user folder with AppData or the desktop, only the user folder is added. With
+  Settings › Snapshots › Show other users' folders in the typical folders list, the list also
+  offers, unchecked, the user folder, AppData and desktop of each other user of the computer,
+  say an installer you ran as an administrator account; revisor can open them only when it
+  runs as administrator. A new profile
   starts with 63 default exclusions for caches, logs and temporary files, which you can edit.
   A snapshot records every file, folder and link with its dates, attributes, size and NTFS
   file ID, and the version of `.exe` and `.dll` files, without reading file contents or
