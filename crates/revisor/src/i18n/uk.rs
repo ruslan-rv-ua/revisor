@@ -244,11 +244,16 @@ impl Strings for Uk {
             TypicalFolder::ProgramFiles => "Program Files",
             TypicalFolder::ProgramFilesX86 => "Program Files (x86)",
             TypicalFolder::ProgramData => "ProgramData",
-            TypicalFolder::AppData => "AppData користувача",
             TypicalFolder::Windows => "Windows",
-            TypicalFolder::Desktop => "Робочий стіл користувача",
             TypicalFolder::PublicDesktop => "Загальний робочий стіл",
+            TypicalFolder::Profile => "Тека користувача",
+            TypicalFolder::AppData => "AppData користувача",
+            TypicalFolder::Desktop => "Робочий стіл користувача",
         }
+    }
+
+    fn other_user_folder(&self, folder: TypicalFolder, user: &str) -> String {
+        format!("{} {user}", self.typical_folder(folder))
     }
 
     fn add(&self) -> &'static str {
@@ -257,6 +262,10 @@ impl Strings for Uk {
 
     fn typical_folders_in_profile(&self) -> &'static str {
         "Усі типові теки вже є в профілі."
+    }
+
+    fn other_users_need_admin(&self) -> &'static str {
+        "Теки інших користувачів видно лише від імені адміністратора."
     }
 
     fn profile_exclusions(&self) -> &'static str {
@@ -1188,6 +1197,10 @@ impl Strings for Uk {
 
     fn warn_missing_entry(&self) -> &'static str {
         "Попереджати, коли запису вже немає на диску"
+    }
+
+    fn other_users_folders(&self) -> &'static str {
+        "Показувати теки інших користувачів у переліку типових тек"
     }
 
     fn settings_general(&self) -> &'static str {

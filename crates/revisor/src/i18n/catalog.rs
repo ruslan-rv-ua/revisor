@@ -252,19 +252,28 @@ fn entries_in(en: &dyn Strings, uk: &dyn Strings) -> Vec<Entry> {
         ProgramFiles,
         ProgramFilesX86,
         ProgramData,
-        AppData,
         Windows,
-        Desktop,
-        PublicDesktop
+        PublicDesktop,
+        Profile,
+        AppData,
+        Desktop
     });
     for folder in typical {
         c.add(format!("typical_folder.{folder:?}"), |s| {
             s.typical_folder(folder).into()
         });
     }
+    for folder in TypicalFolder::OF_A_USER {
+        c.add(format!("other_user_folder.{folder:?}"), |s| {
+            s.other_user_folder(folder, "{user}")
+        });
+    }
     c.add("add", |s| s.add().into());
     c.add("typical_folders_in_profile", |s| {
         s.typical_folders_in_profile().into()
+    });
+    c.add("other_users_need_admin", |s| {
+        s.other_users_need_admin().into()
     });
     c.add("profile_exclusions", |s| plain(s.profile_exclusions()));
     c.add("create", |s| s.create().into());
@@ -974,6 +983,7 @@ fn entries_in(en: &dyn Strings, uk: &dyn Strings) -> Vec<Entry> {
         });
     }
     c.add("warn_missing_entry", |s| plain(s.warn_missing_entry()));
+    c.add("other_users_folders", |s| plain(s.other_users_folders()));
     c.add("settings_general", |s| s.settings_general().into());
     c.add("settings_snapshots", |s| s.settings_snapshots().into());
     c.add("settings_difference", |s| s.settings_difference().into());

@@ -1294,6 +1294,7 @@ impl MainWindow {
             s,
             Purpose::New,
             &ProfileSettings::new_profile(),
+            self.other_users_folders(),
             move |name| profiles::name_taken(&known, name, None),
             move |settings| {
                 profiles::create(&dir, settings).map_err(|e| save_failure(s, settings, &e))
@@ -1318,6 +1319,7 @@ impl MainWindow {
             s,
             Purpose::Edit,
             &initial,
+            self.other_users_folders(),
             move |name| profiles::name_taken(&known, name, Some(&open.path)),
             move |settings| {
                 profiles::update(&path, settings).map_err(|e| save_failure(s, settings, &e))
@@ -1414,6 +1416,16 @@ impl MainWindow {
             .unwrap_or(false)
     }
 
+    /// Whether the list of typical folders offers other users' folders (TASK-43 #5); off by
+    /// default.
+    fn other_users_folders(&self) -> bool {
+        self.settings
+            .as_ref()
+            .ok()
+            .and_then(|settings| settings.other_users_folders().ok())
+            .unwrap_or(false)
+    }
+
     /// Shows the settings window and keeps what the user confirmed. A new theme shows at
     /// once (TASK-34 #3). When the language setting makes the next start speak another
     /// language, offers to restart now (TASK-16 #3).
@@ -1430,6 +1442,7 @@ impl MainWindow {
             tree_node_text: self.difference_list.borrow().node_text(),
             confirm_snapshot_deletion: self.confirm_deletion(),
             warn_missing_entry: self.warn_missing_entry(),
+            other_users_folders: self.other_users_folders(),
         };
         let Some(values) = settings_window::show(&self.frame, s, initial) else {
             return;
@@ -1447,6 +1460,7 @@ impl MainWindow {
                     settings.set_confirm_snapshot_deletion(values.confirm_snapshot_deletion)
                 })
                 .and_then(|()| settings.set_warn_missing_entry(values.warn_missing_entry))
+                .and_then(|()| settings.set_other_users_folders(values.other_users_folders))
                 .map_err(|e| reason(s, &e)),
             Err(message) => Err(message.clone()),
         };

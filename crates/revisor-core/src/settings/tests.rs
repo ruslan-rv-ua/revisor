@@ -35,6 +35,8 @@ fn a_new_settings_file_is_made_with_the_defaults() {
     // The details of a change (TASK-14 #7, #13): attributes in words, and no warning.
     assert_eq!(settings.attribute_format().unwrap(), AttributeFormat::Words);
     assert!(!settings.warn_missing_entry().unwrap());
+    // Typical folders of the current user only (TASK-43 #5).
+    assert!(!settings.other_users_folders().unwrap());
     // The difference as a list, and the long text of a tree's nodes (TASK-33).
     assert_eq!(settings.difference_view().unwrap(), DifferenceView::List);
     assert_eq!(settings.tree_node_text().unwrap(), TreeNodeText::Long);
@@ -193,6 +195,25 @@ fn the_settings_of_the_details_survive_a_restart() {
     settings.set_warn_missing_entry(false).unwrap();
     assert_eq!(settings.attribute_format().unwrap(), AttributeFormat::Words);
     assert!(!settings.warn_missing_entry().unwrap());
+}
+
+#[test]
+fn showing_other_users_folders_survives_a_restart() {
+    // TASK-43 #5.
+    let tmp = TempDir::new("settings");
+    Settings::open(&db(&tmp))
+        .unwrap()
+        .set_other_users_folders(true)
+        .unwrap();
+    let settings = Settings::open(&db(&tmp)).unwrap();
+    assert!(settings.other_users_folders().unwrap());
+    settings.set_other_users_folders(false).unwrap();
+    assert!(
+        !Settings::open(&db(&tmp))
+            .unwrap()
+            .other_users_folders()
+            .unwrap()
+    );
 }
 
 #[test]
