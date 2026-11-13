@@ -11,6 +11,16 @@ release that section becomes the version's own, and the release page publishes i
 
 ### Added
 
+- **The difference can be exported to a text report.** Difference › Export… saves the entries
+  the difference shows, with its type and text filter, to a text file: a header with revisor's
+  version, the pair of snapshots, the summary, the filter and the folders compared, then the
+  changes in groups by type, a line each that starts with the full path and says what changed,
+  before and after. The order is always by path, whatever the order or view of the window.
+  The save dialog offers the profile's name and the times of both snapshots, in Documents or
+  the folder exported to last, and asks before it overwrites a file. A long export runs in the
+  background with Cancel; a canceled or failed one leaves no part of a file, and the file it
+  was to overwrite stays whole. The status bar names the file saved, and the new setting Open
+  the file after export, on the new Export tab of Settings and off by default, opens it.
 - **The difference recognises renamed and moved entries.** A file, folder or link renamed or
   moved within its volume, also between the folders of a profile, is one entry at its new
   path instead of one deleted and one added. The Change column says Renamed, Moved, or Moved
@@ -34,7 +44,7 @@ release that section becomes the version's own, and the release page publishes i
 
 - **The user folder and Windows are unchecked** when the list of typical folders opens: they
   are large, and programs seldom write there. The other typical folders are checked as before.
-- **Settings are on tabs**: General (language and theme), Snapshots, and Difference.
+- **Settings are on tabs**: General (language and theme), Snapshots, Difference, and Export.
   `Ctrl+Tab` or `Ctrl+PgDn` switch them, and NVDA names the tab it comes to. An access key
   works on the tab shown, and OK keeps the settings of every tab.
 - **`Ctrl+5` shows or hides inaccessible entries**, which `Ctrl+4` did: the shortcuts follow
