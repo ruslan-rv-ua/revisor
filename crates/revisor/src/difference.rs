@@ -20,6 +20,7 @@ use std::collections::HashMap;
 use std::ffi::OsStr;
 use std::os::windows::ffi::OsStrExt;
 use std::path::{Path, PathBuf};
+use std::sync::Arc;
 use std::thread;
 
 use revisor_core::compare::{Difference, Side, Warning};
@@ -38,8 +39,10 @@ use crate::details::{self, Formats, Inaccessibility, Property, Unreadable};
 use crate::i18n::Strings;
 use crate::keyboard::Focus;
 
+mod report;
 mod tree;
 
+pub use report::Export;
 pub use tree::NodeId;
 use tree::Tree;
 
@@ -890,12 +893,15 @@ fn shown_path(difference: &Difference, moved: &MovedFolders, folder: u32, entry:
 /// The whole path of the entry of the row `r`, as the list's columns show it: in the
 /// later snapshot, else in the earlier (TASK-14 #11).
 fn row_path(shown: &Shown, r: u32) -> PathBuf {
-    let row = &shown.rows[r as usize];
-    let difference = &shown.difference;
+    path_of_row(&shown.difference, &shown.moved, &shown.rows[r as usize])
+}
+
+/// The whole path of the entry of `row`, as [`row_path`] gives it.
+fn path_of_row(difference: &Difference, moved: &MovedFolders, row: &Row) -> PathBuf {
     if row.new != NONE {
         diff::path(&difference.folders[row.folder as usize].new, row.new)
     } else {
-        shown_path(difference, &shown.moved, row.old_folder, row.old)
+        shown_path(difference, moved, row.old_folder, row.old)
     }
 }
 
@@ -937,7 +943,8 @@ fn folder_path(shown: &Shown, tree: &Tree, node: u32) -> PathBuf {
 
 /// A difference shown, with all the model knows of it.
 struct Shown {
-    difference: Difference,
+    /// Shared with an export of it, which writes its report in the background (TASK-39).
+    difference: Arc<Difference>,
     pair: Pair,
     /// Every row, in tree order.
     rows: Vec<Row>,
@@ -1079,7 +1086,7 @@ impl List {
         self.text.clear();
         self.needle.clear();
         self.shown = Some(Shown {
-            difference,
+            difference: Arc::new(difference),
             pair,
             rows,
             moved,

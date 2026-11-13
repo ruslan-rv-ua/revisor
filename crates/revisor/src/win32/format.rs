@@ -124,6 +124,23 @@ pub fn format_date_time(locale: Locale, unix_millis: i64) -> String {
     }
 }
 
+/// A moment given as Unix time in milliseconds, in this computer's time zone, as a name
+/// of a file can hold it, with no colons: "2026-11-13 14-05-33" (TASK-39 #2). A moment
+/// Windows cannot convert is in UTC.
+pub fn file_name_time(unix_millis: i64) -> String {
+    let local = unix_millis
+        .checked_mul(10_000)
+        .and_then(|i| i.checked_add(EPOCH_DIFFERENCE))
+        .and_then(local_time);
+    match local {
+        Some(t) => format!(
+            "{:04}-{:02}-{:02} {:02}-{:02}-{:02}",
+            t.wYear, t.wMonth, t.wDay, t.wHour, t.wMinute, t.wSecond
+        ),
+        None => iso_utc(unix_millis).replace(':', "-").replace(" UTC", ""),
+    }
+}
+
 /// 100-ns intervals between 1601-01-01 and 1970-01-01.
 const EPOCH_DIFFERENCE: i64 = 116_444_736_000_000_000;
 

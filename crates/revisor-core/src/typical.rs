@@ -17,9 +17,9 @@ use windows_sys::Win32::System::Registry::{
     RegOpenKeyExW,
 };
 use windows_sys::Win32::UI::Shell::{
-    FOLDERID_Desktop, FOLDERID_Profile, FOLDERID_ProgramData, FOLDERID_ProgramFiles,
-    FOLDERID_ProgramFilesX86, FOLDERID_PublicDesktop, FOLDERID_Windows, KF_FLAG_DEFAULT,
-    SHGetKnownFolderPath,
+    FOLDERID_Desktop, FOLDERID_Documents, FOLDERID_Profile, FOLDERID_ProgramData,
+    FOLDERID_ProgramFiles, FOLDERID_ProgramFilesX86, FOLDERID_PublicDesktop, FOLDERID_Windows,
+    KF_FLAG_DEFAULT, SHGetKnownFolderPath,
 };
 use windows_sys::core::{GUID, PWSTR};
 
@@ -277,6 +277,12 @@ pub fn add(entries: &mut Vec<ProfileFolder>, chosen: &[Offered]) -> Option<usize
     entries
         .iter()
         .position(|f| added.contains(&f.path.as_path()))
+}
+
+/// The current user's folder «Документи», where the save dialog of the export starts
+/// (TASK-39 #2); `None` when Windows does not know it.
+pub fn documents() -> Option<PathBuf> {
+    known_folder(&FOLDERID_Documents)
 }
 
 /// The path of a known folder of Windows for the current user.

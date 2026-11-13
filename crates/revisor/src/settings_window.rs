@@ -35,19 +35,26 @@ pub struct Values {
     pub confirm_snapshot_deletion: bool,
     pub warn_missing_entry: bool,
     pub other_users_folders: bool,
+    pub open_after_export: bool,
 }
 
 /// The tabs of the window (TASK-44), in their order. Settings added later go into the tab
-/// they belong to, and «Експорт» comes with its first setting (TASK-39).
+/// they belong to; «Експорт» came with its first setting (TASK-39).
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(crate) enum Page {
     General,
     Snapshots,
     Difference,
+    Export,
 }
 
 impl Page {
-    pub(crate) const ALL: [Page; 3] = [Self::General, Self::Snapshots, Self::Difference];
+    pub(crate) const ALL: [Page; 4] = [
+        Self::General,
+        Self::Snapshots,
+        Self::Difference,
+        Self::Export,
+    ];
 
     /// The name of the tab. Tabs have no access keys: Ctrl+Tab and Ctrl+PgDn switch them.
     fn name(self, s: &dyn Strings) -> &'static str {
@@ -55,6 +62,7 @@ impl Page {
             Self::General => s.settings_general(),
             Self::Snapshots => s.settings_snapshots(),
             Self::Difference => s.settings_difference(),
+            Self::Export => s.settings_export(),
         }
     }
 }
@@ -73,11 +81,12 @@ pub(crate) enum Control {
     AttributeFormat,
     TreeNodes,
     WarnMissingEntry,
+    OpenAfterExport,
 }
 
 impl Control {
     /// In tab order: tab by tab, as each tab shows them.
-    const ALL: [Control; 10] = [
+    const ALL: [Control; 11] = [
         Self::Language,
         Self::Theme,
         Self::FocusAfterSnapshot,
@@ -88,6 +97,7 @@ impl Control {
         Self::AttributeFormat,
         Self::TreeNodes,
         Self::WarnMissingEntry,
+        Self::OpenAfterExport,
     ];
 
     /// The tab the control is on.
@@ -102,6 +112,7 @@ impl Control {
             | Self::AttributeFormat
             | Self::TreeNodes
             | Self::WarnMissingEntry => Page::Difference,
+            Self::OpenAfterExport => Page::Export,
         }
     }
 
@@ -118,6 +129,7 @@ impl Control {
             Self::ConfirmDeletion => |s| s.confirm_snapshot_deletion(),
             Self::WarnMissingEntry => |s| s.warn_missing_entry(),
             Self::OtherUsersFolders => |s| s.other_users_folders(),
+            Self::OpenAfterExport => |s| s.open_after_export(),
         }
     }
 
@@ -126,7 +138,10 @@ impl Control {
     fn is_check_box(self) -> bool {
         matches!(
             self,
-            Self::ConfirmDeletion | Self::WarnMissingEntry | Self::OtherUsersFolders
+            Self::ConfirmDeletion
+                | Self::WarnMissingEntry
+                | Self::OtherUsersFolders
+                | Self::OpenAfterExport
         )
     }
 
@@ -173,6 +188,7 @@ struct Window {
     confirm: CheckBox,
     other_users: CheckBox,
     warn_missing: CheckBox,
+    open_after_export: CheckBox,
 }
 
 /// A tab under construction: its panel and the column of its controls.
@@ -323,6 +339,11 @@ pub fn show(parent: &Frame, s: &'static dyn Strings, initial: Values) -> Option<
         difference.check_box(s, Control::WarnMissingEntry, initial.warn_missing_entry);
     difference.finish(&notebook, s, Page::Difference);
 
+    let export = Tab::new(&notebook);
+    let open_after_export =
+        export.check_box(s, Control::OpenAfterExport, initial.open_after_export);
+    export.finish(&notebook, s, Page::Export);
+
     let ok = Button::builder(&dialog)
         .with_id(ID_OK)
         .with_label(s.ok())
@@ -360,6 +381,7 @@ pub fn show(parent: &Frame, s: &'static dyn Strings, initial: Values) -> Option<
         confirm,
         other_users,
         warn_missing,
+        open_after_export,
     });
     // Access keys by the key's position, so they work in the Ukrainian layout too
     // (document «Клавіші доступу»), and only those of the tab shown.
@@ -411,6 +433,11 @@ impl Window {
                 self.other_users.set_value(!self.other_users.get_value());
                 self.other_users.set_focus();
             }
+            Control::OpenAfterExport => {
+                let check_box = &self.open_after_export;
+                check_box.set_value(!check_box.get_value());
+                check_box.set_focus();
+            }
         }
     }
 
@@ -445,6 +472,7 @@ impl Window {
             confirm_snapshot_deletion: self.confirm.get_value(),
             warn_missing_entry: self.warn_missing.get_value(),
             other_users_folders: self.other_users.get_value(),
+            open_after_export: self.open_after_export.get_value(),
         }
     }
 }
@@ -477,15 +505,17 @@ mod tests {
                 Control::WarnMissingEntry,
             ]
         );
+        // TASK-39 #9.
+        assert_eq!(on(Page::Export), [Control::OpenAfterExport]);
         assert_eq!(Page::ALL[0], Page::General);
     }
 
     #[test]
     fn the_tabs_are_named_in_both_languages() {
         let uk: Vec<&str> = Page::ALL.iter().map(|&p| p.name(&Uk)).collect();
-        assert_eq!(uk, ["Загальні", "Знімки", "Різниця"]);
+        assert_eq!(uk, ["Загальні", "Знімки", "Різниця", "Експорт"]);
         let en: Vec<&str> = Page::ALL.iter().map(|&p| p.name(&En)).collect();
-        assert_eq!(en, ["General", "Snapshots", "Difference"]);
+        assert_eq!(en, ["General", "Snapshots", "Difference", "Export"]);
     }
 
     #[test]

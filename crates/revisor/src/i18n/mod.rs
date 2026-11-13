@@ -483,6 +483,36 @@ pub trait Strings {
     fn no_folder_on_disk(&self, path: &str) -> String;
     fn explorer_failed(&self, reason: &str) -> String;
 
+    // The export of the difference (TASK-39).
+    /// The type of file of the save dialog: «Текстовий звіт (*.txt)».
+    fn export_text_type(&self) -> &'static str;
+    /// The progress row's text while the difference is exported.
+    fn exporting(&self) -> &'static str;
+    /// The status bar after the export: «Різницю експортовано: <file>.».
+    fn exported(&self, file: &str) -> String;
+    fn export_cancelled(&self) -> &'static str;
+    fn export_failed(&self, reason: &str) -> String;
+    /// Why an export failed when its thread ended without a result.
+    fn export_stopped(&self) -> &'static str;
+    /// Why the exported file did not open in its program.
+    fn open_failed(&self, reason: &str) -> String;
+    /// The setting «Відкривати файл після експорту», and the settings window's tab of it.
+    fn open_after_export(&self) -> &'static str;
+    fn settings_export(&self) -> &'static str;
+    /// The first line of the report: «Звіт про різницю, revisor 0.5.0».
+    fn report_title(&self, version: &str) -> String;
+    /// The line of the filter of the report: the types shown, when not all are, and the
+    /// text, when there is one.
+    fn report_filter(&self, types: Option<&[ChangeType]>, text: Option<&str>) -> String;
+    /// A line of the report's header per folder compared.
+    fn report_folder(&self, path: &str) -> String;
+    /// The name of a group of the report, with its count: «Додано: 3».
+    fn report_group(&self, kind: ChangeType, count: &str) -> String;
+    /// A replaced entry, in its line of the report.
+    fn report_replaced(&self) -> &'static str;
+    /// In which snapshot an entry is inaccessible and why, in its line of the report.
+    fn report_inaccessible(&self, inaccessible: &Inaccessibility) -> String;
+
     // Key names that are not printed on most keyboards.
     fn key_space(&self) -> &'static str;
     fn key_up(&self) -> &'static str;

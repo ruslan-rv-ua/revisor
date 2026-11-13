@@ -79,6 +79,8 @@ impl Strings for En {
             CommandId::CancelComment => "Cancel co&mment",
             CommandId::Details => "&Details",
             CommandId::ShowInExplorer => "Show in File &Explorer",
+            CommandId::Export => "E&xport",
+            CommandId::CancelExport => "&Cancel export",
             CommandId::FilterByText => "&Filter by text",
             CommandId::ShowAdded => "&Added",
             CommandId::ShowDeleted => "Dele&ted",
@@ -140,6 +142,8 @@ impl Strings for En {
             Reason::NoChangeShown => "the difference list shows no changes",
             Reason::TreeSortedByName => "the tree is always sorted by name",
             Reason::MoreNode => "a “more” node is not a file or a folder",
+            Reason::ExportRunning => "an export is running, and only one goes at a time",
+            Reason::ExportNotRunning => "no export is running",
         }
     }
 
@@ -1229,6 +1233,112 @@ impl Strings for En {
 
     fn no_folder_on_disk(&self, path: &str) -> String {
         format!("no folder of the path “{path}” is on disk")
+    }
+
+    fn export_text_type(&self) -> &'static str {
+        "Text report (*.txt)"
+    }
+
+    fn exporting(&self) -> &'static str {
+        "Exporting the difference…"
+    }
+
+    fn exported(&self, file: &str) -> String {
+        format!("Difference exported: {file}.")
+    }
+
+    fn export_cancelled(&self) -> &'static str {
+        "Export canceled."
+    }
+
+    fn export_failed(&self, reason: &str) -> String {
+        format!("The difference was not exported: {reason}.")
+    }
+
+    fn export_stopped(&self) -> &'static str {
+        "the export stopped unexpectedly"
+    }
+
+    fn open_failed(&self, reason: &str) -> String {
+        format!("The file did not open: {reason}.")
+    }
+
+    fn open_after_export(&self) -> &'static str {
+        "&Open the file after export"
+    }
+
+    fn settings_export(&self) -> &'static str {
+        "Export"
+    }
+
+    fn report_title(&self, version: &str) -> String {
+        format!("Difference report, revisor {version}")
+    }
+
+    fn report_filter(&self, types: Option<&[ChangeType]>, text: Option<&str>) -> String {
+        let mut parts = Vec::new();
+        if let Some(types) = types {
+            parts.push(if types.is_empty() {
+                "no type".to_string()
+            } else {
+                let names: Vec<&str> = types
+                    .iter()
+                    .map(|kind| match kind {
+                        ChangeType::Added => "added",
+                        ChangeType::Deleted => "deleted",
+                        ChangeType::Modified => "modified",
+                        ChangeType::Moved => "renamed or moved",
+                        ChangeType::Inaccessible => "inaccessible",
+                    })
+                    .collect();
+                names.join(", ")
+            });
+        }
+        if let Some(text) = text {
+            parts.push(format!("text \u{201c}{text}\u{201d}"));
+        }
+        format!("Filter: {}.", parts.join("; "))
+    }
+
+    fn report_folder(&self, path: &str) -> String {
+        format!("Folder: {path}")
+    }
+
+    fn report_group(&self, kind: ChangeType, count: &str) -> String {
+        let name = match kind {
+            ChangeType::Added => "Added",
+            ChangeType::Deleted => "Deleted",
+            ChangeType::Modified => "Modified",
+            ChangeType::Moved => "Renamed or moved",
+            ChangeType::Inaccessible => "Inaccessible",
+        };
+        format!("{name}: {count}")
+    }
+
+    fn report_replaced(&self) -> &'static str {
+        "replaced"
+    }
+
+    fn report_inaccessible(&self, inaccessible: &Inaccessibility) -> String {
+        let why = match inaccessible.why {
+            Unreadable::Folder => "the contents of the folder could not be read",
+            Unreadable::LinkTarget => "the target of the link could not be read",
+            Unreadable::Unknown => {
+                "whether it was there is unknown: a folder on the way to it could not be read \
+                 or is a link"
+            }
+        };
+        let mut text = format!(
+            "inaccessible {}—{why}",
+            self.inaccessible_in(inaccessible.which)
+        );
+        if let Some(side) = inaccessible.absent_in {
+            text.push_str(&format!(
+                "; the {} snapshot does not have it",
+                self.side(side)
+            ));
+        }
+        text
     }
 
     fn explorer_failed(&self, reason: &str) -> String {

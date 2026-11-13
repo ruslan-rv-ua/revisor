@@ -37,6 +37,7 @@ use crate::compare_window;
 use crate::difference::{self, Column, List, Location, View};
 use crate::difference_tree::{self, Entry, More, Open, TreeView};
 use crate::explorer::{self, Reveal};
+use crate::export::{self, Exported};
 use crate::failure::reason;
 use crate::help;
 use crate::i18n::{En, Strings};
@@ -109,18 +110,20 @@ fn cancel_command(kind: Kind) -> CommandId {
         Kind::Comparison => CommandId::CancelComparison,
         Kind::Compaction => CommandId::CancelCompaction,
         Kind::Comment => CommandId::CancelComment,
+        Kind::Export => CommandId::CancelExport,
     }
 }
 
 /// The English of the progress row's button while it shows a job of `kind`: «Скасувати
-/// (N)» for a snapshot, a comparison and a comment waiting for the database (TASK-24), so
+/// (N)» for a snapshot, a comparison, an export (TASK-39 #8) and a comment waiting for
+/// the database (TASK-24), so
 /// that the button keeps its label from the snapshot of «Знімок + порівняння» to its
 /// comparison (TASK-12 #9) — no letter of «Cancel comment» is free in the main window,
 /// where M is the field «Порівняння» —, and the command's own name for a compaction.
 fn cancel_english(kind: Kind) -> &'static str {
     match kind {
         Kind::Compaction => En.command(CommandId::CancelCompaction),
-        Kind::Snapshot | Kind::Comparison | Kind::Comment => En.cancel_job(),
+        Kind::Snapshot | Kind::Comparison | Kind::Comment | Kind::Export => En.cancel_job(),
     }
 }
 
@@ -128,7 +131,7 @@ fn cancel_english(kind: Kind) -> &'static str {
 fn cancel_label(s: &dyn Strings, kind: Kind) -> String {
     let words = match kind {
         Kind::Compaction => s.command(CommandId::CancelCompaction),
-        Kind::Snapshot | Kind::Comparison | Kind::Comment => s.cancel_job(),
+        Kind::Snapshot | Kind::Comparison | Kind::Comment | Kind::Export => s.cancel_job(),
     };
     compose(s, cancel_english(kind), words)
 }
@@ -1108,6 +1111,8 @@ impl MainWindow {
             CommandId::ViewAsTree => self.set_layout(DifferenceView::Tree),
             CommandId::Details => self.show_details(),
             CommandId::ShowInExplorer => self.show_in_explorer(),
+            CommandId::Export => self.export(),
+            CommandId::CancelExport => self.jobs.borrow().cancel(Kind::Export),
             CommandId::KeyboardShortcuts => help::show_shortcuts(&self.frame, s),
             CommandId::About => help::show_about(&self.frame, s),
         }
@@ -1416,6 +1421,16 @@ impl MainWindow {
             .unwrap_or(false)
     }
 
+    /// Whether the exported file opens in the program Windows assigns to it (TASK-39 #9);
+    /// off by default.
+    fn open_after_export(&self) -> bool {
+        self.settings
+            .as_ref()
+            .ok()
+            .and_then(|settings| settings.open_after_export().ok())
+            .unwrap_or(false)
+    }
+
     /// Whether the list of typical folders offers other users' folders (TASK-43 #5); off by
     /// default.
     fn other_users_folders(&self) -> bool {
@@ -1443,6 +1458,7 @@ impl MainWindow {
             confirm_snapshot_deletion: self.confirm_deletion(),
             warn_missing_entry: self.warn_missing_entry(),
             other_users_folders: self.other_users_folders(),
+            open_after_export: self.open_after_export(),
         };
         let Some(values) = settings_window::show(&self.frame, s, initial) else {
             return;
@@ -1461,6 +1477,7 @@ impl MainWindow {
                 })
                 .and_then(|()| settings.set_warn_missing_entry(values.warn_missing_entry))
                 .and_then(|()| settings.set_other_users_folders(values.other_users_folders))
+                .and_then(|()| settings.set_open_after_export(values.open_after_export))
                 .map_err(|e| reason(s, &e)),
             Err(message) => Err(message.clone()),
         };
@@ -2331,6 +2348,81 @@ impl MainWindow {
         }
     }
 
+    // --- Export (TASK-39) ---------------------------------------------------------------
+
+    /// «Експортувати…»: asks where to save the report of the difference as the list shows
+    /// it now (#2, #3), in a save dialog titled after the command, which offers the name
+    /// of the profile and of both snapshots, in the folder exported to last, else in
+    /// «Документи», and asks before it overwrites a file. revisor keeps that folder
+    /// itself: wxWidgets gives the dialog its folder without a client GUID, so Windows
+    /// would not. The report is then written in the background (#8).
+    fn export(&self) {
+        let s = self.s;
+        let (export, name) = {
+            let list = self.difference_list.borrow();
+            let Some(export) = list.export() else {
+                return;
+            };
+            let name = list.export_name(&win32::format::file_name_time);
+            (export, name.unwrap_or_default())
+        };
+        let folder = self
+            .settings
+            .as_ref()
+            .ok()
+            .and_then(|settings| settings.export_folder().ok().flatten())
+            .or_else(revisor_core::typical::documents)
+            .unwrap_or_default();
+        let wildcard = format!("{}|*.txt", s.export_text_type());
+        let dialog = FileDialog::builder(&self.frame)
+            .with_message(&plain(s.command(CommandId::Export)))
+            .with_default_dir(&folder.to_string_lossy())
+            .with_default_file(&name)
+            .with_wildcard(&wildcard)
+            .with_style(FileDialogStyle::Save | FileDialogStyle::OverwritePrompt)
+            .build();
+        let chosen = (dialog.show_modal() == ID_OK)
+            .then(|| dialog.get_path())
+            .flatten();
+        dialog.destroy();
+        let Some(path) = chosen.map(PathBuf::from) else {
+            return;
+        };
+        if let (Ok(settings), Some(parent)) = (&self.settings, path.parent()) {
+            // The next export starts there; a folder not kept only costs a click then.
+            let _ = settings.set_export_folder(parent);
+        }
+        self.jobs.borrow_mut().start_export(export, path);
+        self.refresh_progress_row();
+    }
+
+    /// Ends the export (#8, #9): the status bar names the file written, which screen
+    /// readers read with the focus where it is — Microsoft advises no window for a
+    /// success —, and the file opens in its program when the setting says so; a
+    /// cancelled export says so, and a failed one says why in a window titled after the
+    /// command.
+    fn export_ended(&self, path: PathBuf, outcome: Result<Exported, Lost>) {
+        let s = self.s;
+        self.refresh_progress_row();
+        let name = path
+            .file_name()
+            .map(|name| name.to_string_lossy().into_owned())
+            .unwrap_or_default();
+        match outcome {
+            Ok(Outcome::Done(written)) => {
+                self.say(&s.exported(&name));
+                if self.open_after_export()
+                    && let Err(e) = export::open(&written)
+                {
+                    self.fail(&s.open_failed(&reason(s, &e)));
+                }
+            }
+            Ok(Outcome::Cancelled) => self.say(s.export_cancelled()),
+            Ok(Outcome::Failed(e)) => self.fail(&s.export_failed(&reason(s, &e))),
+            Err(Lost) => self.fail(&s.export_failed(s.export_stopped())),
+        }
+    }
+
     /// The progress field for the comparison the row shows, with the bar once the
     /// comparison has run for [`COMPARISON_BAR_AFTER`] (#8). A phase the row has not
     /// said yet — comparing, or waiting for the database — is said in the status bar,
@@ -2373,6 +2465,8 @@ impl MainWindow {
         self.timer.stop();
         self.jobs.borrow().cancel(Kind::Comparison);
         self.jobs.borrow().cancel(Kind::Comment);
+        // An export cancelled is waited for, which is quick, so its file goes too.
+        self.jobs.borrow_mut().stop_export();
         if !self.jobs.borrow().runs(Kind::Compaction) {
             return;
         }
@@ -2574,6 +2668,11 @@ impl MainWindow {
                         self.comment_ended(ended, comment);
                     });
                 }
+                Event::Export(path, outcome) => {
+                    self.event(Source::Command(CommandId::Export), || {
+                        self.export_ended(path, outcome);
+                    });
+                }
             }
         }
         self.say_comment_waiting();
@@ -2663,6 +2762,7 @@ impl MainWindow {
                 self.comparison_progress_text(progress, elapsed),
             )),
             Some(Shown::Comment) => Some((Kind::Comment, s.waiting_for_database().to_string())),
+            Some(Shown::Export) => Some((Kind::Export, s.exporting().to_string())),
             Some(Shown::Compaction(profile)) => {
                 Some((Kind::Compaction, s.compacting(&profile.name)))
             }
@@ -2670,6 +2770,10 @@ impl MainWindow {
         }
         .map(|(kind, text)| (kind, text, cancel_label(s, kind)));
         let kind = shown.as_ref().map(|(kind, ..)| *kind);
+        // An export that has run for a second is said as it shows, as a comparison is.
+        if kind == Some(Kind::Export) && self.shown_kind.get() != kind {
+            self.say(s.exporting());
+        }
         if kind != Some(Kind::Comparison) {
             self.said_waiting.set(None);
             self.gauge.show(false);
