@@ -105,13 +105,16 @@ struct Window {
     remove: Button,
     exclusions: TextCtrl,
     entries: RefCell<Vec<ProfileFolder>>,
+    /// Whether the list of typical folders offers other users' folders (TASK-43).
+    other_users_folders: bool,
     taken: Box<dyn Fn(&str) -> bool>,
     save: Box<Save>,
     saved: RefCell<Option<ProfileFile>>,
 }
 
 /// Shows the window with the `initial` settings and returns the profile file once it is
-/// saved, or `None` when the user cancels. `taken` says whether another profile has a
+/// saved, or `None` when the user cancels. `other_users_folders` says whether the list of
+/// typical folders offers other users' folders; `taken` says whether another profile has a
 /// name already; `save` writes the settings, or returns the message to show when it
 /// cannot.
 pub fn show(
@@ -119,6 +122,7 @@ pub fn show(
     s: &'static dyn Strings,
     purpose: Purpose,
     initial: &ProfileSettings,
+    other_users_folders: bool,
     taken: impl Fn(&str) -> bool + 'static,
     save: impl Fn(&ProfileSettings) -> Result<ProfileFile, String> + 'static,
 ) -> Option<ProfileFile> {
@@ -207,6 +211,7 @@ pub fn show(
         remove,
         exclusions,
         entries: RefCell::new(entries),
+        other_users_folders,
         taken: Box::new(taken),
         save: Box::new(save),
         saved: RefCell::new(None),
@@ -356,12 +361,21 @@ impl Window {
     /// typical folder replaces the profile's folders inside it without asking (TASK-36).
     fn add_typical_folders(&self) {
         let s = self.s;
-        let offered = typical::offer(&self.entries.borrow(), &typical::on_this_computer());
+        let mut candidates = typical::on_this_computer();
+        if self.other_users_folders {
+            candidates.extend(typical::of_other_users());
+        }
+        let offered = typical::offer(&self.entries.borrow(), &candidates);
+        let out_of_reach = typical::others_out_of_reach(&candidates);
         if offered.is_empty() {
-            tell(&self.dialog, s, &self.title, s.typical_folders_in_profile());
+            let mut text = s.typical_folders_in_profile().to_owned();
+            if out_of_reach {
+                text = format!("{text}\n{}", s.other_users_need_admin());
+            }
+            tell(&self.dialog, s, &self.title, &text);
             return;
         }
-        let chosen = typical_folders_window::show(&self.dialog, s, &offered);
+        let chosen = typical_folders_window::show(&self.dialog, s, &offered, out_of_reach);
         let first = typical::add(&mut self.entries.borrow_mut(), &chosen);
         if let Some(first) = first {
             self.show_folders(Some(first));

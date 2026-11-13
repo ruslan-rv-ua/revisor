@@ -5,8 +5,8 @@
 //! sizes are written, which rows the difference list shows in which order (TASK-13), how
 //! the details of a change write attributes, whether showing a change in File Explorer
 //! warns when it is no longer on disk (TASK-14), whether the difference shows as a list or
-//! as a tree, with how much its nodes say (TASK-33), and the theme of the interface
-//! (TASK-34).
+//! as a tree, with how much its nodes say (TASK-33), the theme of the interface
+//! (TASK-34), and whether the list of typical folders offers other users' folders (TASK-43).
 //! Each setting is one row of a key–value table, read and written through typed methods,
 //! so a later setting needs no change of the schema.
 
@@ -51,6 +51,7 @@ const KEY_WARN_MISSING_ENTRY: &str = "warn_missing_entry";
 const KEY_DIFFERENCE_VIEW: &str = "difference_view";
 const KEY_TREE_NODE_TEXT: &str = "tree_node_text";
 const KEY_THEME: &str = "theme";
+const KEY_OTHER_USERS_FOLDERS: &str = "other_users_folders";
 
 #[derive(Debug)]
 pub enum SettingsError {
@@ -628,6 +629,19 @@ impl Settings {
 
     pub fn set_warn_missing_entry(&self, warn: bool) -> Result<(), SettingsError> {
         self.set(KEY_WARN_MISSING_ENTRY, i64::from(warn))
+    }
+
+    /// Whether the list of typical folders offers the folders of the other users of this
+    /// computer; off by default (TASK-43 #5).
+    pub fn other_users_folders(&self) -> Result<bool, SettingsError> {
+        Ok(matches!(
+            self.get(KEY_OTHER_USERS_FOLDERS)?,
+            Some(Value::Integer(n)) if n != 0
+        ))
+    }
+
+    pub fn set_other_users_folders(&self, show: bool) -> Result<(), SettingsError> {
+        self.set(KEY_OTHER_USERS_FOLDERS, i64::from(show))
     }
 
     /// Whether the difference shows as a list or as a tree; as a list when nothing is

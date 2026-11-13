@@ -3,7 +3,8 @@
 //! focus does when a snapshot ends, what it does when a comparison ends (TASK-11), how sizes
 //! are written (TASK-13), how the details of a change write attributes (TASK-14), what the
 //! nodes of the difference tree say (TASK-33), whether deleting snapshots asks first, and
-//! whether showing a change no longer on disk in File Explorer asks first (TASK-14). The
+//! whether showing a change no longer on disk in File Explorer asks first (TASK-14), and
+//! whether the list of typical folders offers other users' folders (TASK-43). The
 //! profile opened last and the view of the difference — its types, order, list or tree — are
 //! kept without a control. The settings lie on tabs (TASK-44): «Загальні», «Знімки» and
 //! «Різниця».
@@ -33,6 +34,7 @@ pub struct Values {
     pub tree_node_text: TreeNodeText,
     pub confirm_snapshot_deletion: bool,
     pub warn_missing_entry: bool,
+    pub other_users_folders: bool,
 }
 
 /// The tabs of the window (TASK-44), in their order. Settings added later go into the tab
@@ -65,6 +67,7 @@ pub(crate) enum Control {
     Theme,
     FocusAfterSnapshot,
     ConfirmDeletion,
+    OtherUsersFolders,
     FocusAfterComparison,
     SizeFormat,
     AttributeFormat,
@@ -74,11 +77,12 @@ pub(crate) enum Control {
 
 impl Control {
     /// In tab order: tab by tab, as each tab shows them.
-    const ALL: [Control; 9] = [
+    const ALL: [Control; 10] = [
         Self::Language,
         Self::Theme,
         Self::FocusAfterSnapshot,
         Self::ConfirmDeletion,
+        Self::OtherUsersFolders,
         Self::FocusAfterComparison,
         Self::SizeFormat,
         Self::AttributeFormat,
@@ -90,7 +94,9 @@ impl Control {
     fn page(self) -> Page {
         match self {
             Self::Language | Self::Theme => Page::General,
-            Self::FocusAfterSnapshot | Self::ConfirmDeletion => Page::Snapshots,
+            Self::FocusAfterSnapshot | Self::ConfirmDeletion | Self::OtherUsersFolders => {
+                Page::Snapshots
+            }
             Self::FocusAfterComparison
             | Self::SizeFormat
             | Self::AttributeFormat
@@ -111,13 +117,17 @@ impl Control {
             Self::TreeNodes => |s| s.tree_nodes(),
             Self::ConfirmDeletion => |s| s.confirm_snapshot_deletion(),
             Self::WarnMissingEntry => |s| s.warn_missing_entry(),
+            Self::OtherUsersFolders => |s| s.other_users_folders(),
         }
     }
 
     /// Whether the control is a check box, which its access key toggles, as an access key
     /// on a check box does in Windows; the others are lists that take the focus.
     fn is_check_box(self) -> bool {
-        matches!(self, Self::ConfirmDeletion | Self::WarnMissingEntry)
+        matches!(
+            self,
+            Self::ConfirmDeletion | Self::WarnMissingEntry | Self::OtherUsersFolders
+        )
     }
 
     /// The text of the control's label or check box: "&Focus after a snapshot:",
@@ -161,6 +171,7 @@ struct Window {
     attribute_format: Choice,
     tree_nodes: Choice,
     confirm: CheckBox,
+    other_users: CheckBox,
     warn_missing: CheckBox,
 }
 
@@ -266,6 +277,8 @@ pub fn show(parent: &Frame, s: &'static dyn Strings, initial: Values) -> Option<
         Control::ConfirmDeletion,
         initial.confirm_snapshot_deletion,
     );
+    let other_users =
+        snapshots.check_box(s, Control::OtherUsersFolders, initial.other_users_folders);
     snapshots.finish(&notebook, s, Page::Snapshots);
 
     let difference = Tab::new(&notebook);
@@ -345,6 +358,7 @@ pub fn show(parent: &Frame, s: &'static dyn Strings, initial: Values) -> Option<
         attribute_format,
         tree_nodes,
         confirm,
+        other_users,
         warn_missing,
     });
     // Access keys by the key's position, so they work in the Ukrainian layout too
@@ -393,6 +407,10 @@ impl Window {
                 self.warn_missing.set_value(!self.warn_missing.get_value());
                 self.warn_missing.set_focus();
             }
+            Control::OtherUsersFolders => {
+                self.other_users.set_value(!self.other_users.get_value());
+                self.other_users.set_focus();
+            }
         }
     }
 
@@ -426,6 +444,7 @@ impl Window {
                 .unwrap_or_default(),
             confirm_snapshot_deletion: self.confirm.get_value(),
             warn_missing_entry: self.warn_missing.get_value(),
+            other_users_folders: self.other_users.get_value(),
         }
     }
 }
@@ -442,7 +461,11 @@ mod tests {
         assert_eq!(on(Page::General), [Control::Language, Control::Theme]);
         assert_eq!(
             on(Page::Snapshots),
-            [Control::FocusAfterSnapshot, Control::ConfirmDeletion]
+            [
+                Control::FocusAfterSnapshot,
+                Control::ConfirmDeletion,
+                Control::OtherUsersFolders,
+            ]
         );
         assert_eq!(
             on(Page::Difference),
@@ -511,6 +534,15 @@ mod tests {
         assert_eq!(
             Control::WarnMissingEntry.label(&Uk),
             "Попереджати, коли запису вже немає на диску (&W)"
+        );
+        // TASK-43 #5.
+        assert_eq!(
+            Control::OtherUsersFolders.label(&En),
+            "Show &other users' folders in the typical folders list"
+        );
+        assert_eq!(
+            Control::OtherUsersFolders.label(&Uk),
+            "Показувати теки інших користувачів у переліку типових тек (&O)"
         );
     }
 

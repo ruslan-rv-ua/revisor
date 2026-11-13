@@ -23,9 +23,17 @@ release that section becomes the version's own, and the release page publishes i
 - **A filter for renamed or moved entries.** The check box Renamed or moved and the same item
   of the Difference menu, with `Ctrl+4`, show or hide them. They are shown after the update
   whatever other types were hidden before.
+- **Your user folder and other users' folders among the typical folders.** Add typical folders
+  also offers your whole user folder next to your AppData and desktop; if you check it with
+  either, only the user folder is added. The setting Show other users' folders in the typical
+  folders list, on the Snapshots tab and off by default, adds the user folder, AppData and
+  desktop of each other user of the computer at the end of the list, unchecked. revisor can
+  open them only when it runs as administrator, and the list says so when it cannot.
 
 ### Changed
 
+- **The user folder and Windows are unchecked** when the list of typical folders opens: they
+  are large, and programs seldom write there. The other typical folders are checked as before.
 - **Settings are on tabs**: General (language and theme), Snapshots, and Difference.
   `Ctrl+Tab` or `Ctrl+PgDn` switch them, and NVDA names the tab it comes to. An access key
   works on the tab shown, and OK keeps the settings of every tab.

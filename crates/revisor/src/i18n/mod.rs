@@ -215,10 +215,16 @@ pub trait Strings {
     fn add_typical_folders(&self) -> &'static str;
     /// A typical folder in its list, before its path.
     fn typical_folder(&self, folder: TypicalFolder) -> &'static str;
+    /// A folder of another user of this computer in the list of typical folders, before
+    /// its path: the user folder, AppData or the desktop of `user` (TASK-43).
+    fn other_user_folder(&self, folder: TypicalFolder, user: &str) -> String;
     /// The button of the list of typical folders that adds the checked ones.
     fn add(&self) -> &'static str;
     /// Said instead of the list when no typical folder is left to add.
     fn typical_folders_in_profile(&self) -> &'static str;
+    /// Said above the list of typical folders, and after the message that all of them are
+    /// in the profile, when other users' folders are left out for want of rights (TASK-43).
+    fn other_users_need_admin(&self) -> &'static str;
     fn profile_exclusions(&self) -> &'static str;
     /// The button that makes a new profile.
     fn create(&self) -> &'static str;
@@ -462,6 +468,9 @@ pub trait Strings {
     fn attribute_option(&self, value: AttributeFormat) -> &'static str;
     /// The check box of the setting «Попереджати, коли запису вже немає на диску».
     fn warn_missing_entry(&self) -> &'static str;
+    /// The check box of the setting «Показувати теки інших користувачів у переліку
+    /// типових тек» (TASK-43).
+    fn other_users_folders(&self) -> &'static str;
     /// The tabs of the settings window (TASK-44): «Загальні», «Знімки», «Різниця».
     fn settings_general(&self) -> &'static str;
     fn settings_snapshots(&self) -> &'static str;

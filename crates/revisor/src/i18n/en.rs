@@ -240,10 +240,19 @@ impl Strings for En {
             TypicalFolder::ProgramFiles => "Program Files",
             TypicalFolder::ProgramFilesX86 => "Program Files (x86)",
             TypicalFolder::ProgramData => "ProgramData",
-            TypicalFolder::AppData => "User AppData",
             TypicalFolder::Windows => "Windows",
-            TypicalFolder::Desktop => "User desktop",
             TypicalFolder::PublicDesktop => "Public desktop",
+            TypicalFolder::Profile => "User folder",
+            TypicalFolder::AppData => "User AppData",
+            TypicalFolder::Desktop => "User desktop",
+        }
+    }
+
+    fn other_user_folder(&self, folder: TypicalFolder, user: &str) -> String {
+        match folder {
+            TypicalFolder::AppData => format!("AppData of {user}"),
+            TypicalFolder::Desktop => format!("Desktop of {user}"),
+            _ => format!("User folder of {user}"),
         }
     }
 
@@ -253,6 +262,10 @@ impl Strings for En {
 
     fn typical_folders_in_profile(&self) -> &'static str {
         "All typical folders are in the profile already."
+    }
+
+    fn other_users_need_admin(&self) -> &'static str {
+        "Other users' folders are shown only when revisor runs as administrator."
     }
 
     fn profile_exclusions(&self) -> &'static str {
@@ -1188,6 +1201,10 @@ impl Strings for En {
 
     fn warn_missing_entry(&self) -> &'static str {
         "&Warn when the entry is no longer on disk"
+    }
+
+    fn other_users_folders(&self) -> &'static str {
+        "Show &other users' folders in the typical folders list"
     }
 
     fn settings_general(&self) -> &'static str {
