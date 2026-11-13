@@ -293,3 +293,33 @@ fn an_export_that_fails_says_why_and_leaves_no_file() {
     );
     assert!(folder.files().is_empty());
 }
+
+#[test]
+fn the_export_job_runs_one_at_a_time_and_ends_with_the_file_written() {
+    // #8: a short export ends before the progress row would show it.
+    use crate::jobs::{Event, Jobs, Kind};
+    let folder = Folder::new("job");
+    let path = folder.0.join("звіт.txt");
+    let mut jobs = Jobs::default();
+    jobs.start_export(ukrainian_list().export().unwrap(), path.clone());
+    assert!(jobs.runs(Kind::Export));
+    assert!(jobs.flags(None).export_running);
+    assert!(jobs.shown().is_none());
+    let start = std::time::Instant::now();
+    let events = loop {
+        let events = jobs.poll();
+        if !events.is_empty() || start.elapsed().as_secs() > 10 {
+            break events;
+        }
+        std::thread::sleep(std::time::Duration::from_millis(10));
+    };
+    match events.as_slice() {
+        [Event::Export(to, Ok(Outcome::Done(written)))] => {
+            assert_eq!(to, &path);
+            assert_eq!(written, &path);
+        }
+        other => panic!("{other:?}"),
+    }
+    assert!(!jobs.any());
+    assert!(path.exists());
+}
