@@ -8,6 +8,7 @@ mod details;
 mod difference;
 mod difference_tree;
 mod explorer;
+mod export;
 mod failure;
 mod help;
 mod i18n;

@@ -137,6 +137,20 @@ pub fn find<T: Copy>(key: Shortcut, targets: &[Target<T>]) -> Option<(Act, T)> {
         .map(|t| (t.act, t.id))
 }
 
+/// The target of `key` among those `shown` lets act now: another one with the same letter,
+/// on a tab not shown, does not hide it (TASK-39: «O» on «Знімки» and on «Експорт»).
+fn find_shown<T: Copy>(
+    key: Shortcut,
+    targets: &[Target<T>],
+    shown: impl Fn(T) -> bool,
+) -> Option<(Act, T)> {
+    let pressed = key.access_letter()?;
+    targets
+        .iter()
+        .find(|t| t.letter() == Some(pressed) && shown(t.id))
+        .map(|t| (t.act, t.id))
+}
+
 /// Keeps a press until Alt is up.
 pub struct Dispatcher<T> {
     pending: Cell<Option<T>>,
@@ -193,7 +207,7 @@ pub fn bind_where<T: Copy + 'static>(
     let (waiting, on_key) = (Rc::clone(&dispatcher), Rc::clone(&act));
     dialog.on_char_hook(move |data| {
         if let WindowEventData::Keyboard(key) = data {
-            let hit = find(Shortcut::from_event(&key), &targets).filter(|&(_, id)| shown(id));
+            let hit = find_shown(Shortcut::from_event(&key), &targets, &shown);
             key.event.skip(hit.is_none());
             if let Some(id) = hit.and_then(|(how, id)| waiting.dispatch(how, id)) {
                 on_key(id);
@@ -257,6 +271,26 @@ mod tests {
         assert_eq!(find(alt(b'F').ctrl(), &targets), None);
         assert_eq!(find(alt(b'F').shift(), &targets), None);
         assert_eq!(find(Shortcut::new(Key::Letter(b'F')), &targets), None);
+    }
+
+    #[test]
+    fn a_letter_of_a_tab_not_shown_does_not_hide_the_same_letter_of_the_tab_shown() {
+        // TASK-39: «O» is a check box on «Знімки» and on «Експорт».
+        let targets = [
+            Target::new("&Other", Act::Press, Id::Field),
+            Target::new("&Open", Act::Press, Id::Button),
+        ];
+        let alt_o = Shortcut::new(Key::Letter(b'O')).alt();
+        let on_second = |id| id == Id::Button;
+        assert_eq!(
+            find_shown(alt_o, &targets, on_second),
+            Some((Act::Press, Id::Button))
+        );
+        assert_eq!(
+            find_shown(alt_o, &targets, |id| id == Id::Field),
+            Some((Act::Press, Id::Field))
+        );
+        assert_eq!(find_shown(alt_o, &targets, |_| false), None);
     }
 
     #[test]

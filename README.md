@@ -58,6 +58,14 @@ The main scenario takes four steps, all from the keyboard:
   text, sort the list by any column, read the details of a change, before and after
   (`Alt+Enter`), or show it in File Explorer (`Ctrl+Enter`). A difference of a million rows
   reads without delay.
+- **Save the difference as a text report.** Difference › Export… (`Alt`, `D`, `X`) saves the
+  entries the difference shows, with its filter, as a text file to read in any editor or paste
+  into a message: a header with the pair of snapshots, the summary, the filter and the folders
+  compared, then the changes grouped by type, one line each, starting with the full path and
+  saying what changed, before and after. The report has no rules, arrows or columns lined up
+  with spaces, which a screen reader would read aloud or out of order. The file is offered
+  under the profile's name and the times of both snapshots, in Documents or the folder you
+  exported to last; Settings › Export › Open the file after export opens it once saved.
 - **A rename or a move is one change.** A file, folder or link that was renamed or moved
   within its volume, also from one folder of the profile to another, is one entry at its new
   path that says where it was, not one deleted and one added: revisor knows it by its NTFS
@@ -65,8 +73,8 @@ The main scenario takes four steps, all from the keyboard:
   entry, followed only by what changed inside it. Where a program put a new file in the place
   of one it moved away, as when saving with a backup, the old place shows as replaced and the
   file that left as renamed or moved.
-- **In the background.** Snapshots and comparisons show their progress and can be canceled,
-  and the window keeps responding.
+- **In the background.** Snapshots, comparisons and exports show their progress and can be
+  canceled, and the window keeps responding. A canceled export leaves no part of a file behind.
 - **Nothing hidden by permissions.** An entry revisor cannot read is kept, marked inaccessible,
   with the reason. When permissions are the reason, revisor offers to restart as administrator
   with the same profile open, and as administrator it also reads folders closed even to
@@ -158,12 +166,13 @@ lists them in the application too.
 
 A command that cannot run now is unavailable in its menu, and its shortcut says why in the
 status bar; NVDA reads that without moving the focus, and `NVDA+End` repeats it. Editing and
-deleting a profile, Settings, Restart as administrator, sorting and About revisor are in the
-menus only.
+deleting a profile, Settings, Restart as administrator, sorting, Export and About revisor are
+in the menus only.
 
-Settings has three tabs: General (language and theme), Snapshots and Difference. `Ctrl+Tab`
-and `Ctrl+Shift+Tab`, or `Ctrl+PgDn` and `Ctrl+PgUp`, switch them, and so do the arrows on the
-tab names; an access key works on the tab shown. OK keeps the settings of every tab.
+Settings has four tabs: General (language and theme), Snapshots, Difference and Export.
+`Ctrl+Tab` and `Ctrl+Shift+Tab`, or `Ctrl+PgDn` and `Ctrl+PgUp`, switch them, and so do the
+arrows on the tab names; an access key works on the tab shown. OK keeps the settings of every
+tab.
 
 ## Where the data lives
 
@@ -211,8 +220,7 @@ snapshots there; `scoop uninstall revisor --purge` deletes them.
   scheduled snapshot: its shortcuts work only in its own window.
 - **It is not signed**, by decision; see [Direct download](#direct-download).
 
-Planned for later 0.x versions: export to a text report and CSV, content hashes, and a
-command line.
+Planned for later 0.x versions: export to CSV, content hashes, and a command line.
 
 ## Building from source
 

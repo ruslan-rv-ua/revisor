@@ -45,6 +45,8 @@ pub enum CommandId {
     SortDescending,
     ViewAsList,
     ViewAsTree,
+    Export,
+    CancelExport,
     KeyboardShortcuts,
     About,
 }
@@ -123,6 +125,9 @@ pub enum Reason {
     /// The focus of the difference tree is on a node «Ще…», which stands for the nodes of
     /// a page not shown and is no file or folder (TASK-37 #7).
     MoreNode,
+    /// The difference is being exported, and one export goes at a time (TASK-39).
+    ExportRunning,
+    ExportNotRunning,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -348,6 +353,16 @@ fn compaction_running(state: &AppState) -> Result<(), Reason> {
 
 fn comment_waiting(state: &AppState) -> Result<(), Reason> {
     require(state.comment_waiting, Reason::CommentNotWaiting)
+}
+
+/// The difference shown can be exported (TASK-39 #1): one export at a time.
+fn exportable(state: &AppState) -> Result<(), Reason> {
+    difference_shown(state)?;
+    require(!state.export_running, Reason::ExportRunning)
+}
+
+fn export_running(state: &AppState) -> Result<(), Reason> {
+    require(state.export_running, Reason::ExportNotRunning)
 }
 
 const fn place(menu: MenuId, group: u8) -> Place {
@@ -629,6 +644,18 @@ pub static COMMANDS: &[Command] = &[
     }),
     sort_radio(CommandId::SortAscending, 1, |s| !s.sort.descending),
     sort_radio(CommandId::SortDescending, 1, |s| s.sort.descending),
+    // A rare command, in a group of its own at the bottom, with no shortcut (TASK-39 #1).
+    Command {
+        ellipsis: true,
+        ..item(CommandId::Export, place(MenuId::Difference, 4), exportable)
+    },
+    Command {
+        ..item(
+            CommandId::CancelExport,
+            place(MenuId::Difference, 4),
+            export_running,
+        )
+    },
     // Help
     Command {
         shortcut: Some(key(Key::F(1))),
@@ -778,11 +805,37 @@ mod tests {
                 CommandId::CancelComment => {
                     assert_eq!(available, Err(Reason::CommentNotWaiting));
                 }
+                CommandId::CancelExport => {
+                    assert_eq!(available, Err(Reason::ExportNotRunning));
+                }
                 _ => assert_eq!(available, Ok(()), "{:?}", c.id),
             }
         }
         let take = command(CommandId::TakeSnapshot).available;
         assert_eq!(take(&AppState::new()), Err(Reason::NoProfiles));
+    }
+
+    #[test]
+    fn export_needs_a_difference_and_goes_one_at_a_time() {
+        // TASK-39 #1.
+        let export = command(CommandId::Export).available;
+        let cancel = command(CommandId::CancelExport).available;
+        assert_eq!(export(&AppState::new()), Err(Reason::NoDifference));
+        let shown = AppState {
+            has_difference: true,
+            ..AppState::new()
+        };
+        assert_eq!(export(&shown), Ok(()));
+        let exporting = AppState {
+            export_running: true,
+            ..shown
+        };
+        assert_eq!(export(&exporting), Err(Reason::ExportRunning));
+        assert_eq!(cancel(&exporting), Ok(()));
+        // A difference with no row shown can be exported: its report has the header.
+        let c = command(CommandId::Export);
+        assert!(c.ellipsis && c.shortcut.is_none());
+        assert_eq!(c.place.menu, MenuId::Difference);
     }
 
     #[test]

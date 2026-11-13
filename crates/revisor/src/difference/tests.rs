@@ -1270,3 +1270,7 @@ mod tree;
 // --- Renamed and moved entries (TASK-42) -----------------------------------------------
 
 mod moved;
+
+// --- The text report (TASK-39) ----------------------------------------------------
+
+mod report;

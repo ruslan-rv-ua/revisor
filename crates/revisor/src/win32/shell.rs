@@ -174,6 +174,29 @@ pub fn open_in_explorer(folder: &Path) -> io::Result<()> {
     }
 }
 
+/// Opens the file at `path` in the program Windows assigns to its type, by its default
+/// verb (TASK-39 #9).
+pub fn open_file(path: &Path) -> io::Result<()> {
+    let path = wide_os(path.as_os_str());
+    // SAFETY: the path is NUL-terminated; no verb picks the default one; no window owns an
+    // error box.
+    let result = unsafe {
+        ShellExecuteW(
+            ptr::null_mut(),
+            ptr::null(),
+            path.as_ptr(),
+            ptr::null(),
+            ptr::null(),
+            SW_SHOWNORMAL,
+        )
+    };
+    if result as usize > 32 {
+        Ok(())
+    } else {
+        Err(io::Error::last_os_error())
+    }
+}
+
 /// Starts `exe` with `args` as administrator, through the UAC prompt. An error means it
 /// did not start; declining the prompt is `ERROR_CANCELLED`.
 pub fn run_as_admin(exe: &Path, args: &str) -> io::Result<()> {

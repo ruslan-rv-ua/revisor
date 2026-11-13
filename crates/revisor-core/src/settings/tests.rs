@@ -37,6 +37,8 @@ fn a_new_settings_file_is_made_with_the_defaults() {
     assert!(!settings.warn_missing_entry().unwrap());
     // Typical folders of the current user only (TASK-43 #5).
     assert!(!settings.other_users_folders().unwrap());
+    assert!(!settings.open_after_export().unwrap());
+    assert_eq!(settings.export_folder().unwrap(), None);
     // The difference as a list, and the long text of a tree's nodes (TASK-33).
     assert_eq!(settings.difference_view().unwrap(), DifferenceView::List);
     assert_eq!(settings.tree_node_text().unwrap(), TreeNodeText::Long);
@@ -214,6 +216,21 @@ fn showing_other_users_folders_survives_a_restart() {
             .other_users_folders()
             .unwrap()
     );
+}
+
+#[test]
+fn the_export_settings_survive_a_restart() {
+    // TASK-39 #2, #9.
+    let tmp = TempDir::new("settings");
+    let folder = std::path::Path::new(r"D:\Звіти");
+    {
+        let settings = Settings::open(&db(&tmp)).unwrap();
+        settings.set_open_after_export(true).unwrap();
+        settings.set_export_folder(folder).unwrap();
+    }
+    let settings = Settings::open(&db(&tmp)).unwrap();
+    assert!(settings.open_after_export().unwrap());
+    assert_eq!(settings.export_folder().unwrap().as_deref(), Some(folder));
 }
 
 #[test]

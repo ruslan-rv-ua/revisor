@@ -344,7 +344,7 @@ fn name(name: &OsStr) -> String {
 
 /// A size as the setting «Розмір» writes it, and, when that is not in bytes, also in bytes
 /// in parentheses, as the properties of a file in File Explorer (#6).
-fn size(s: &dyn Strings, regional: &dyn Regional, format: SizeFormat, bytes: u64) -> String {
+pub fn size(s: &dyn Strings, regional: &dyn Regional, format: SizeFormat, bytes: u64) -> String {
     let shown = format_size(bytes, format, s, regional);
     let exact = format_size(bytes, SizeFormat::Bytes, s, regional);
     if shown == exact {
@@ -408,7 +408,7 @@ pub fn attributes(
 
 /// A version as four numbers, or what the snapshot knows instead (#10); `part` picks the
 /// file or the product version.
-fn version(s: &dyn Strings, info: VersionInfo, part: impl Fn(&Version) -> [u16; 4]) -> String {
+pub fn version(s: &dyn Strings, info: VersionInfo, part: impl Fn(&Version) -> [u16; 4]) -> String {
     match info {
         VersionInfo::Some(version) => {
             let [a, b, c, d] = part(&version);

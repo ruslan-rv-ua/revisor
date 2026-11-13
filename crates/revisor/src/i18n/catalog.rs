@@ -159,6 +159,8 @@ fn entries_in(en: &dyn Strings, uk: &dyn Strings) -> Vec<Entry> {
             SortDescending,
             ViewAsList,
             ViewAsTree,
+            Export,
+            CancelExport,
             KeyboardShortcuts,
             About,
         }
@@ -214,6 +216,8 @@ fn entries_in(en: &dyn Strings, uk: &dyn Strings) -> Vec<Entry> {
         NoChangeShown,
         TreeSortedByName,
         MoreNode,
+        ExportRunning,
+        ExportNotRunning,
     });
     for reason in reasons {
         c.add(format!("reason.{reason:?}"), |s| s.reason(reason).into());
@@ -991,6 +995,60 @@ fn entries_in(en: &dyn Strings, uk: &dyn Strings) -> Vec<Entry> {
     c.add("open", |s| plain(s.open()));
     c.add("no_folder_on_disk", |s| s.no_folder_on_disk("{path}"));
     c.add("explorer_failed", |s| s.explorer_failed("{reason}"));
+    c.add("export_text_type", |s| s.export_text_type().into());
+    c.add("exporting", |s| s.exporting().into());
+    c.add("exported", |s| s.exported("{file}"));
+    c.add("export_cancelled", |s| s.export_cancelled().into());
+    c.add("export_failed", |s| s.export_failed("{reason}"));
+    c.add("export_stopped", |s| s.export_stopped().into());
+    c.add("open_failed", |s| s.open_failed("{reason}"));
+    c.add("open_after_export", |s| plain(s.open_after_export()));
+    c.add("settings_export", |s| s.settings_export().into());
+    c.add("report_title", |s| s.report_title("{version}"));
+    c.add("report_filter.types", |s| {
+        s.report_filter(Some(&types), None)
+    });
+    c.add("report_filter.no_type", |s| {
+        s.report_filter(Some(&[]), None)
+    });
+    c.add("report_filter.text", |s| {
+        s.report_filter(None, Some("{text}"))
+    });
+    c.add("report_filter.types_and_text", |s| {
+        s.report_filter(Some(&types[..2]), Some("{text}"))
+    });
+    c.add("report_folder", |s| s.report_folder("{path}"));
+    for kind in types {
+        c.add(format!("report_group.{kind:?}"), |s| {
+            s.report_group(kind, "{count}")
+        });
+    }
+    c.add("report_replaced", |s| s.report_replaced().into());
+    for why in all!(Unreadable {
+        Folder,
+        LinkTarget,
+        Unknown
+    }) {
+        for which in inaccessible_in {
+            let inaccessible = Inaccessibility {
+                which,
+                why,
+                absent_in: None,
+            };
+            c.add(format!("report_inaccessible.{why:?}.{which:?}"), |s| {
+                s.report_inaccessible(&inaccessible)
+            });
+        }
+    }
+    let absent = Inaccessibility {
+        which: InaccessibleIn::Later,
+        why: Unreadable::Folder,
+        absent_in: Some(Side::Earlier),
+    };
+    c.add(
+        "report_inaccessible.Folder.Later (absent in the earlier)",
+        |s| s.report_inaccessible(&absent),
+    );
 
     c.add("key_space", |s| s.key_space().into());
     c.add("key_up", |s| s.key_up().into());

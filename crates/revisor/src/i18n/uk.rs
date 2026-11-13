@@ -85,6 +85,8 @@ impl Strings for Uk {
             CommandId::CancelComment => "Скасувати коментар",
             CommandId::Details => "Подробиці",
             CommandId::ShowInExplorer => "Показати в Провіднику",
+            CommandId::Export => "Експортувати",
+            CommandId::CancelExport => "Скасувати експорт",
             CommandId::FilterByText => "Фільтрувати за текстом",
             CommandId::ShowAdded => "Додані",
             CommandId::ShowDeleted => "Видалені",
@@ -144,6 +146,8 @@ impl Strings for Uk {
             Reason::NoChangeShown => "у списку різниці немає змін",
             Reason::TreeSortedByName => "у дереві вузли завжди впорядковано за ім'ям",
             Reason::MoreNode => "вузол «Ще…» — не файл і не тека",
+            Reason::ExportRunning => "триває експорт, а водночас іде лише один",
+            Reason::ExportNotRunning => "експорт зараз не триває",
         }
     }
 
@@ -1225,6 +1229,111 @@ impl Strings for Uk {
 
     fn no_folder_on_disk(&self, path: &str) -> String {
         format!("на диску немає жодної теки шляху «{path}»")
+    }
+
+    fn export_text_type(&self) -> &'static str {
+        "Текстовий звіт (*.txt)"
+    }
+
+    fn exporting(&self) -> &'static str {
+        "Експорт різниці…"
+    }
+
+    fn exported(&self, file: &str) -> String {
+        format!("Різницю експортовано: {file}.")
+    }
+
+    fn export_cancelled(&self) -> &'static str {
+        "Експорт скасовано."
+    }
+
+    fn export_failed(&self, reason: &str) -> String {
+        format!("Різницю не експортовано: {reason}.")
+    }
+
+    fn export_stopped(&self) -> &'static str {
+        "експорт несподівано зупинився"
+    }
+
+    fn open_failed(&self, reason: &str) -> String {
+        format!("Файл не відкрито: {reason}.")
+    }
+
+    fn open_after_export(&self) -> &'static str {
+        "Відкривати файл після експорту"
+    }
+
+    fn settings_export(&self) -> &'static str {
+        "Експорт"
+    }
+
+    fn report_title(&self, version: &str) -> String {
+        format!("Звіт про різницю, revisor {version}")
+    }
+
+    fn report_filter(&self, types: Option<&[ChangeType]>, text: Option<&str>) -> String {
+        let mut parts = Vec::new();
+        if let Some(types) = types {
+            parts.push(if types.is_empty() {
+                "жодного типу".to_string()
+            } else {
+                let names: Vec<&str> = types
+                    .iter()
+                    .map(|kind| match kind {
+                        ChangeType::Added => "додані",
+                        ChangeType::Deleted => "видалені",
+                        ChangeType::Modified => "змінені",
+                        ChangeType::Moved => "перейменовані чи переміщені",
+                        ChangeType::Inaccessible => "недоступні",
+                    })
+                    .collect();
+                names.join(", ")
+            });
+        }
+        if let Some(text) = text {
+            parts.push(format!("текст «{text}»"));
+        }
+        format!("Фільтр: {}.", parts.join("; "))
+    }
+
+    fn report_folder(&self, path: &str) -> String {
+        format!("Тека: {path}")
+    }
+
+    fn report_group(&self, kind: ChangeType, count: &str) -> String {
+        let name = match kind {
+            ChangeType::Added => "Додано",
+            ChangeType::Deleted => "Видалено",
+            ChangeType::Modified => "Змінено",
+            ChangeType::Moved => "Перейменовано чи переміщено",
+            ChangeType::Inaccessible => "Недоступно",
+        };
+        format!("{name}: {count}")
+    }
+
+    fn report_replaced(&self) -> &'static str {
+        "замінено"
+    }
+
+    fn report_inaccessible(&self, inaccessible: &Inaccessibility) -> String {
+        let which = match inaccessible.which {
+            InaccessibleIn::Earlier => "в ранішому знімку",
+            InaccessibleIn::Later => "в пізнішому знімку",
+            InaccessibleIn::Both => "в обох знімках",
+        };
+        let why = match inaccessible.why {
+            Unreadable::Folder => "вміст теки не вдалося прочитати",
+            Unreadable::LinkTarget => "ціль посилання не вдалося прочитати",
+            Unreadable::Unknown => {
+                "невідомо, чи він там був: теку на шляху до нього не вдалося прочитати або \
+                 вона є посиланням"
+            }
+        };
+        let mut text = format!("недоступно {which} — {why}");
+        if let Some(side) = inaccessible.absent_in {
+            text.push_str(&format!("; у {} знімку його немає", self.side(side)));
+        }
+        text
     }
 
     fn explorer_failed(&self, reason: &str) -> String {

@@ -31,3 +31,12 @@ pub fn is_text_field(hwnd: *mut c_void) -> bool {
     let len = unsafe { GetClassNameW(hwnd, class.as_mut_ptr(), class.len() as i32) };
     len > 0 && String::from_utf16_lossy(&class[..len as usize]).eq_ignore_ascii_case("Edit")
 }
+
+/// Presses a button as a click does (`BM_CLICK`): a check box toggles, takes the focus and
+/// tells screen readers its new state, which setting its value does not when it has the
+/// focus already (TASK-39).
+pub fn click(hwnd: *mut c_void) {
+    use windows_sys::Win32::UI::WindowsAndMessaging::{BM_CLICK, SendMessageW};
+    // SAFETY: a window of this thread; BM_CLICK takes no parameters.
+    unsafe { SendMessageW(hwnd, BM_CLICK, 0, 0) };
+}

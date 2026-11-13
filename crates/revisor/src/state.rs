@@ -58,6 +58,8 @@ pub struct AppState {
     /// Whether the comment waiting is of the open profile, which then cannot be changed
     /// nor its snapshots deleted.
     pub commenting_open_profile: bool,
+    /// Whether the difference is being exported (TASK-39).
+    pub export_running: bool,
     /// Whether revisor runs as administrator (TASK-8).
     pub elevated: bool,
     /// Which types of rows the difference list shows, indexed by `ChangeType`, and in
@@ -98,6 +100,7 @@ impl AppState {
             compacting_open_profile,
             comment_waiting,
             commenting_open_profile,
+            export_running,
         } = jobs;
         Self {
             profile,
@@ -113,6 +116,7 @@ impl AppState {
             compacting_open_profile,
             comment_waiting,
             commenting_open_profile,
+            export_running,
             elevated,
             shown_types: difference.view.types,
             sort: difference.view.sort,
@@ -149,6 +153,7 @@ mod tests {
                 compacting_open_profile: false,
                 comment_waiting: true,
                 commenting_open_profile: false,
+                export_running: true,
             },
             difference: ListState {
                 has_difference: true,

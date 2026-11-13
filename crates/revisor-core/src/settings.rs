@@ -13,7 +13,7 @@
 use std::fmt;
 use std::fs;
 use std::io;
-use std::path::Path;
+use std::path::{Path, PathBuf};
 use std::time::Duration;
 
 use rusqlite::types::Value;
@@ -52,6 +52,8 @@ const KEY_DIFFERENCE_VIEW: &str = "difference_view";
 const KEY_TREE_NODE_TEXT: &str = "tree_node_text";
 const KEY_THEME: &str = "theme";
 const KEY_OTHER_USERS_FOLDERS: &str = "other_users_folders";
+const KEY_OPEN_AFTER_EXPORT: &str = "open_after_export";
+const KEY_EXPORT_FOLDER: &str = "export_folder";
 
 #[derive(Debug)]
 pub enum SettingsError {
@@ -642,6 +644,33 @@ impl Settings {
 
     pub fn set_other_users_folders(&self, show: bool) -> Result<(), SettingsError> {
         self.set(KEY_OTHER_USERS_FOLDERS, i64::from(show))
+    }
+
+    /// Whether the file the difference was exported to opens in the program Windows
+    /// assigns to it; off by default (TASK-39 #9).
+    pub fn open_after_export(&self) -> Result<bool, SettingsError> {
+        Ok(matches!(
+            self.get(KEY_OPEN_AFTER_EXPORT)?,
+            Some(Value::Integer(n)) if n != 0
+        ))
+    }
+
+    pub fn set_open_after_export(&self, open: bool) -> Result<(), SettingsError> {
+        self.set(KEY_OPEN_AFTER_EXPORT, i64::from(open))
+    }
+
+    /// The folder the difference was last exported to (TASK-39 #2): the save dialog
+    /// starts there. revisor keeps it itself, as wxWidgets gives the dialog its folder
+    /// without a client GUID, so Windows does not remember it.
+    pub fn export_folder(&self) -> Result<Option<PathBuf>, SettingsError> {
+        Ok(match self.get(KEY_EXPORT_FOLDER)? {
+            Some(Value::Text(path)) if !path.is_empty() => Some(PathBuf::from(path)),
+            _ => None,
+        })
+    }
+
+    pub fn set_export_folder(&self, folder: &Path) -> Result<(), SettingsError> {
+        self.set(KEY_EXPORT_FOLDER, folder.to_string_lossy().into_owned())
     }
 
     /// Whether the difference shows as a list or as a tree; as a list when nothing is
