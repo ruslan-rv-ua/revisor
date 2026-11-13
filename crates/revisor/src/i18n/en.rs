@@ -1190,6 +1190,18 @@ impl Strings for En {
         "&Warn when the entry is no longer on disk"
     }
 
+    fn settings_general(&self) -> &'static str {
+        "General"
+    }
+
+    fn settings_snapshots(&self) -> &'static str {
+        "Snapshots"
+    }
+
+    fn settings_difference(&self) -> &'static str {
+        "Difference"
+    }
+
     fn entry_gone_question(&self) -> &'static str {
         "This entry is no longer on disk. Open the folder where it was?"
     }

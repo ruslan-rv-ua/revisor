@@ -462,6 +462,10 @@ pub trait Strings {
     fn attribute_option(&self, value: AttributeFormat) -> &'static str;
     /// The check box of the setting «Попереджати, коли запису вже немає на диску».
     fn warn_missing_entry(&self) -> &'static str;
+    /// The tabs of the settings window (TASK-44): «Загальні», «Знімки», «Різниця».
+    fn settings_general(&self) -> &'static str;
+    fn settings_snapshots(&self) -> &'static str;
+    fn settings_difference(&self) -> &'static str;
     /// The question before File Explorer opens the folder of an entry no longer on disk.
     fn entry_gone_question(&self) -> &'static str;
     /// The button of that question that opens the folder.

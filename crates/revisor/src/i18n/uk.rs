@@ -1190,6 +1190,18 @@ impl Strings for Uk {
         "Попереджати, коли запису вже немає на диску"
     }
 
+    fn settings_general(&self) -> &'static str {
+        "Загальні"
+    }
+
+    fn settings_snapshots(&self) -> &'static str {
+        "Знімки"
+    }
+
+    fn settings_difference(&self) -> &'static str {
+        "Різниця"
+    }
+
     fn entry_gone_question(&self) -> &'static str {
         "Цього запису вже немає на диску. Відкрити теку, де він був?"
     }
