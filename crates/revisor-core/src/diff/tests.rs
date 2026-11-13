@@ -2,7 +2,9 @@ use super::*;
 use crate::exclude::RecordedEnvironment;
 use crate::scan::{FileId, Progress, ScanOptions, Version, VersionInfo, scan, synthetic};
 use crate::store::{ProfileSettings, Scope, Snapshot, Store};
-use crate::testing::{TempDir, Tree, cancelled, entry, field_names, junction, rel_path, renumber};
+use crate::testing::{
+    TempDir, Tree, cancelled, entry, field_names, file_id, junction, rel_path, renumber,
+};
 use std::collections::HashSet;
 use std::ffi::{OsStr, OsString};
 use std::fs;
@@ -26,9 +28,10 @@ fn version(parts: [u16; 4]) -> VersionInfo {
     })
 }
 
-/// The diff of two whole trees as lines: `+ path`, `- path`, `~ path fields`, then
-/// `? path` for the inaccessible entries. Paths of deleted, modified and inaccessible
-/// entries are those in the older snapshot.
+/// The diff of two whole trees as lines: `+ path`, `- path`, `~ path fields`,
+/// `> path < path it had fields` for a renamed or moved entry, then `? path` for the
+/// inaccessible entries. Paths of deleted, modified and inaccessible entries are those in
+/// the older snapshot.
 fn lines(old: &[Entry], new: &[Entry]) -> Vec<String> {
     lines_with(old, new, &Rules::plain())
 }
@@ -42,6 +45,10 @@ fn lines_with(old: &[Entry], new: &[Entry], rules: &Rules<'_>) -> Vec<String> {
         &Cancel::new(),
     )
     .unwrap();
+    assert!(
+        diff.changes.iter().all(|c| c.old_in.is_none()),
+        "one comparison has one older tree"
+    );
     let mut out: Vec<String> = diff
         .changes
         .iter()
@@ -50,6 +57,12 @@ fn lines_with(old: &[Entry], new: &[Entry], rules: &Rules<'_>) -> Vec<String> {
             ChangeKind::Deleted => format!("- {}", rel_path(old, c.old.unwrap())),
             ChangeKind::Modified => format!(
                 "~ {} {}",
+                rel_path(old, c.old.unwrap()),
+                field_names(c.fields)
+            ),
+            ChangeKind::Moved => format!(
+                "> {} < {} {}",
+                rel_path(new, c.new.unwrap()),
                 rel_path(old, c.old.unwrap()),
                 field_names(c.fields)
             ),
@@ -93,7 +106,7 @@ fn rules<'a>(exclusions: &'a Exclusions, root: &str) -> Rules<'a> {
             exclusions,
             branch: exclusions.branch(Path::new(root)),
         }),
-        file_ids: true,
+        volumes: [0; 2],
     }
 }
 
@@ -148,7 +161,7 @@ fn file_ids_are_not_compared_across_volumes() {
     new.get(r"app\app.exe").size = 1;
     new.get(r"app\data").file_id = FileId([2; 16]);
     let rules = Rules {
-        file_ids: false,
+        volumes: [1, 2],
         ..Rules::plain()
     };
     assert_eq!(lines_with(&old.0, &new.0, &rules), [r"~ app\app.exe size"]);
@@ -266,7 +279,6 @@ fn modified_fields_of_files() {
     new.get(r"app\readme.txt").modified = 1;
     new.get(r"app\data\a.dat").created = 1;
     new.get(r"app\data\b.dat").attributes |= FILE_ATTRIBUTE_HIDDEN;
-    new.get("Notes.txt").name = OsStr::new("NOTES.TXT").into();
     assert_eq!(
         lines(&old.0, &new.0),
         [
@@ -274,7 +286,6 @@ fn modified_fields_of_files() {
             r"~ app\data\a.dat created",
             r"~ app\data\b.dat attributes",
             r"~ app\readme.txt modified",
-            "~ Notes.txt name",
         ]
     );
 }
@@ -446,18 +457,37 @@ fn the_differences_the_comparison_does_not_count_are_known_apart() {
 }
 
 #[test]
-fn names_match_without_regard_to_case() {
+fn names_match_without_regard_to_case_and_a_name_of_another_case_is_renamed() {
     let old = sample();
     let mut new = sample();
     new.get("app").name = OsStr::new("APP").into();
-    // Contents of a folder renamed in case only stay matched.
-    assert_eq!(lines(&old.0, &new.0), ["~ app name"]);
+    // Contents of a folder renamed in case only stay matched (TASK-42: renamed, where
+    // TASK-10 #12 had it modified).
+    assert_eq!(lines(&old.0, &new.0), ["> APP < app name"]);
     // Non-ASCII letters too.
-    let mut old = Tree::new();
-    old.add("Тека", EntryKind::Dir);
-    let mut new = Tree::new();
-    new.add("ТЕКА", EntryKind::Dir);
-    assert_eq!(lines(&old.0, &new.0), ["~ Тека name"]);
+    let mut lower = Tree::new();
+    lower.add("Тека", EntryKind::Dir);
+    let mut upper = Tree::new();
+    upper.add("ТЕКА", EntryKind::Dir);
+    assert_eq!(lines(&lower.0, &upper.0), ["> ТЕКА < Тека name"]);
+    // What else differs is said with it, in the one change.
+    let mut new = sample();
+    let notes = new.get("Notes.txt");
+    notes.name = OsStr::new("NOTES.TXT").into();
+    notes.size = 7;
+    assert_eq!(lines(&old.0, &new.0), ["> NOTES.TXT < Notes.txt name,size"]);
+    // Where file IDs are not compared, the entry at the same path is the same entry.
+    let other_volume = Rules {
+        volumes: [1, 2],
+        ..Rules::plain()
+    };
+    assert_eq!(
+        lines_with(&old.0, &new.0, &other_volume),
+        ["> NOTES.TXT < Notes.txt name,size"]
+    );
+    // Another file under the name of another case is replaced, not renamed.
+    new.get("NOTES.TXT").file_id = FileId([7; 16]);
+    assert_eq!(lines(&old.0, &new.0), ["~ Notes.txt name,size,file_id"]);
 }
 
 #[test]
@@ -754,8 +784,15 @@ fn known_changes(count: usize) -> (Vec<Entry>, Vec<Entry>, HashSet<String>) {
                 None
             }
             6 => {
-                e.name = OsString::from(e.name.to_string_lossy().to_uppercase()).into();
-                Some("name")
+                // Renamed in case only: one change, at the newer path.
+                let upper = e.name.to_string_lossy().to_uppercase();
+                let renamed = match path.rsplit_once('\\') {
+                    Some((folder, _)) => format!("{folder}\\{upper}"),
+                    None => upper.clone(),
+                };
+                expected.insert(format!("> {renamed} < {path} name"));
+                e.name = OsString::from(upper).into();
+                None
             }
             7 => {
                 deleted[i] = true;
@@ -780,6 +817,16 @@ fn known_changes(count: usize) -> (Vec<Entry>, Vec<Entry>, HashSet<String>) {
             10 if i % 200 == 10 => {
                 e.link_target = Some(OsStr::new(r"C:\moved").into());
                 Some("target")
+            }
+            20 => {
+                // Renamed: the same file ID under another name.
+                let renamed = match path.rsplit_once('\\') {
+                    Some((folder, _)) => format!("{folder}\\renamed {i}.bin"),
+                    None => format!("renamed {i}.bin"),
+                };
+                expected.insert(format!("> {renamed} < {path} name"));
+                e.name = OsString::from(format!("renamed {i}.bin")).into();
+                None
             }
             14 if matches!(e.version, VersionInfo::Some(_)) => {
                 e.version = version([11, 0, 0, 0]);
@@ -810,7 +857,7 @@ fn generated_changes_give_exactly_the_expected_diff() {
         "missing {missing:?}, extra {extra:?}"
     );
     // Every kind of change is there.
-    for prefix in ["+ ", "- ", "? "] {
+    for prefix in ["+ ", "- ", "? ", "> "] {
         assert!(expected.iter().any(|l| l.starts_with(prefix)), "{prefix}");
     }
     for field in [
@@ -818,7 +865,6 @@ fn generated_changes_give_exactly_the_expected_diff() {
         "modified",
         "created",
         "attributes",
-        "name",
         "target",
         "version",
     ] {
@@ -904,4 +950,504 @@ fn the_entries_visited_are_counted_once_each() {
         visited.load(std::sync::atomic::Ordering::Relaxed),
         (old.0.len() + new.0.len()) as u64
     );
+    // A folder that moved is walked again with what it held, which counts nothing more.
+    let old = sample().with_ids();
+    let mut new = old.clone();
+    new.rename("app", "app2");
+    let visited = AtomicU64::new(0);
+    let diff = diff_counting(
+        Subtree::whole(&old.0),
+        Subtree::whole(&new.0),
+        &Rules::plain(),
+        &Cancel::new(),
+        &visited,
+    )
+    .unwrap();
+    assert_eq!(diff.changes.len(), 1);
+    assert_eq!(
+        visited.load(std::sync::atomic::Ordering::Relaxed),
+        (old.0.len() + new.0.len()) as u64
+    );
+}
+
+// --- Renamed and moved entries (TASK-42) ---------------------------------------------
+//
+// The trees are those of one volume: `with_ids` gives every entry of the older one a file
+// ID of its own, the newer one is a copy, and `rename` moves an entry in it as a volume
+// does, with its file ID and its creation time.
+
+#[test]
+fn a_renamed_or_moved_file_is_one_change_at_its_newer_path() {
+    let old = sample().with_ids();
+    // Another name in the same folder.
+    let mut new = old.clone();
+    new.rename(r"app\readme.txt", r"app\README.md");
+    assert_eq!(
+        lines(&old.0, &new.0),
+        [r"> app\README.md < app\readme.txt name"]
+    );
+    // Another folder, the same name.
+    let mut new = old.clone();
+    new.rename("Notes.txt", r"app\data\Notes.txt");
+    assert_eq!(
+        lines(&old.0, &new.0),
+        [r"> app\data\Notes.txt < Notes.txt folder"]
+    );
+    // Both.
+    let mut new = old.clone();
+    new.rename(r"app\app.exe", "tool.exe");
+    assert_eq!(
+        lines(&old.0, &new.0),
+        [r"> tool.exe < app\app.exe name,folder"]
+    );
+    // The other way round it is the same entry at its other path.
+    assert_eq!(
+        lines(&new.0, &old.0),
+        [r"> app\app.exe < tool.exe name,folder"]
+    );
+}
+
+#[test]
+fn a_renamed_or_moved_link_or_folder_is_one_change_whatever_it_holds() {
+    let old = sample().with_ids();
+    let mut new = old.clone();
+    new.rename("link", r"app\shortcut");
+    assert_eq!(
+        lines(&old.0, &new.0),
+        [r"> app\shortcut < link name,folder"]
+    );
+    // A folder goes with what it holds, which is compared with what it held by the paths
+    // below it: nothing inside changed, so the folder is the only change.
+    let mut new = old.clone();
+    new.rename(r"app\data", "archive");
+    assert_eq!(lines(&old.0, &new.0), [r"> archive < app\data name,folder"]);
+    let mut new = old.clone();
+    new.rename("app", "App2");
+    assert_eq!(lines(&old.0, &new.0), ["> App2 < app name"]);
+    let mut new = old.clone();
+    new.add("backup", EntryKind::Dir);
+    new.rename("app", r"backup\app");
+    assert_eq!(
+        lines(&old.0, &new.0),
+        ["+ backup", r"> backup\app < app folder"]
+    );
+}
+
+#[test]
+fn only_what_changed_inside_a_moved_folder_shows() {
+    let mut tree = sample();
+    tree.add(r"app\data\c.dat", EntryKind::File);
+    tree.add(r"app\data\sub", EntryKind::Dir);
+    tree.add(r"app\data\sub\d.dat", EntryKind::File);
+    let old = tree.with_ids();
+    let mut new = old.clone();
+    new.rename(r"app\data", "archive");
+    // Inside it a file was modified, one renamed, one deleted, one moved from a folder of
+    // it to the folder itself, and one added.
+    new.get(r"archive\a.dat").size = 7;
+    new.rename(r"archive\b.dat", r"archive\B2.dat");
+    new.remove(r"archive\c.dat");
+    new.rename(r"archive\sub\d.dat", r"archive\d.dat");
+    new.add(r"archive\new.dat", EntryKind::File);
+    assert_eq!(
+        lines(&old.0, &new.0),
+        [
+            r"> archive < app\data name,folder",
+            r"~ app\data\a.dat size",
+            // In the same folder, which is the one that moved: renamed, not moved.
+            r"> archive\B2.dat < app\data\b.dat name",
+            r"- app\data\c.dat",
+            r"> archive\d.dat < app\data\sub\d.dat folder",
+            r"+ archive\new.dat",
+        ]
+    );
+    // An entry moved out of the folder, and one moved into it from outside.
+    let mut new = old.clone();
+    new.rename(r"app\data", "archive");
+    new.rename(r"archive\a.dat", "a.dat");
+    new.rename("Notes.txt", r"archive\Notes.txt");
+    assert_eq!(
+        lines(&old.0, &new.0),
+        [
+            r"> a.dat < app\data\a.dat folder",
+            r"> archive < app\data name,folder",
+            r"> archive\Notes.txt < Notes.txt folder",
+        ]
+    );
+}
+
+#[test]
+fn entries_renamed_inside_folders_that_are_changes_themselves_are_found_too() {
+    let old = sample().with_ids();
+    // A folder moved into a new one, and inside it a file renamed and one deleted: the
+    // new folder is added with what it holds, of which the moved one is compared with what
+    // it held, and what is left over inside that is looked through again.
+    let mut new = old.clone();
+    new.add("backup", EntryKind::Dir);
+    new.rename("app", r"backup\app");
+    new.rename(r"backup\app\readme.txt", r"backup\app\README.md");
+    new.remove(r"backup\app\data\b.dat");
+    assert_eq!(
+        lines(&old.0, &new.0),
+        [
+            "+ backup",
+            r"> backup\app < app folder",
+            r"- app\data\b.dat",
+            r"> backup\app\README.md < app\readme.txt name",
+        ]
+    );
+    // A folder replaced at its path — deleted and made again, while the older one is
+    // nowhere else — is compared with the older one by path; a file renamed in it is
+    // renamed, between the changes around it.
+    let mut new = old.clone();
+    new.get("app").file_id = file_id(100);
+    new.get(r"app\app.exe").size = 1;
+    new.rename(r"app\readme.txt", r"app\notes.txt");
+    new.add(r"app\z.txt", EntryKind::File);
+    assert_eq!(
+        lines(&old.0, &new.0),
+        [
+            "~ app file_id",
+            r"~ app\app.exe size",
+            r"> app\notes.txt < app\readme.txt name",
+            r"+ app\z.txt",
+        ]
+    );
+    // The inaccessible entries keep their places among the changes after that: the
+    // folder that could not be listed stands before the file added after it.
+    new.add("locked", EntryKind::Dir).inaccessible = true;
+    let diff = diff_whole(&old.0, &new.0, &Cancel::new()).unwrap();
+    let placed: Vec<(String, u32)> = diff
+        .inaccessible
+        .iter()
+        .map(|i| (rel_path(&new.0, i.new.unwrap()), i.changes_before))
+        .collect();
+    assert_eq!(placed, [("locked".to_string(), 4)]);
+    assert_eq!(diff.changes.len(), 4);
+}
+
+#[test]
+fn the_inaccessible_entries_keep_their_places_when_a_part_is_walked_again() {
+    // Tree order: app, …, link, locked, Notes.txt → renamed to Zed.txt, z.txt.
+    let mut tree = sample();
+    tree.add("locked", EntryKind::Dir).inaccessible = true;
+    let old = tree.with_ids();
+    let mut new = old.clone();
+    new.get(r"app\app.exe").size = 1;
+    new.rename("Notes.txt", "Zed.txt");
+    new.add("z.txt", EntryKind::File);
+    let diff = diff_whole(&old.0, &new.0, &Cancel::new()).unwrap();
+    let changes: Vec<String> = diff
+        .changes
+        .iter()
+        .map(|c| rel_path(&new.0, c.new.unwrap()))
+        .collect();
+    assert_eq!(changes, [r"app\app.exe", "z.txt", "Zed.txt"]);
+    // The locked folder stands after the exe and before the files that follow it, though
+    // the two rows of the renamed file became one.
+    let placed: Vec<u32> = diff.inaccessible.iter().map(|i| i.changes_before).collect();
+    assert_eq!(placed, [1]);
+}
+
+#[test]
+fn a_moved_folder_inaccessible_in_a_snapshot_has_nothing_added_or_deleted_inside() {
+    let old = sample().with_ids();
+    // Moved, and it could not be listed this time: only part of it is known (TASK-10 #16).
+    let mut new = old.clone();
+    new.rename(r"app\data", "archive");
+    new.get("archive").inaccessible = true;
+    new.remove(r"archive\b.dat");
+    new.add(r"archive\extra.dat", EntryKind::File);
+    new.get(r"archive\a.dat").size = 1;
+    assert_eq!(
+        lines(&old.0, &new.0),
+        [
+            r"> archive < app\data name,folder",
+            r"~ app\data\a.dat size",
+            r"? app\data",
+        ]
+    );
+    // And the other way round: it could not be listed before it moved.
+    assert_eq!(
+        lines(&new.0, &old.0),
+        [
+            r"> app\data < archive name,folder",
+            r"~ archive\a.dat size",
+            "? archive",
+        ]
+    );
+    // Not listed at all in either snapshot: still the same folder at another path.
+    let mut before = old.clone();
+    before.remove(r"app\data\a.dat");
+    before.remove(r"app\data\b.dat");
+    before.get(r"app\data").inaccessible = true;
+    let mut after = before.clone();
+    after.rename(r"app\data", "archive");
+    assert_eq!(
+        lines(&before.0, &after.0),
+        [r"> archive < app\data name,folder", r"? app\data"]
+    );
+}
+
+#[test]
+fn a_file_put_in_the_place_of_one_that_moved_away_is_a_replacement() {
+    // A program saves with a backup: the file takes the backup's name, and a new one,
+    // with another file ID, takes the file's.
+    let old = sample().with_ids();
+    let mut new = old.clone();
+    new.rename("Notes.txt", "Notes.bak");
+    let saved = new.add("Notes.txt", EntryKind::File);
+    saved.file_id = file_id(100);
+    saved.size = 12;
+    assert_eq!(
+        lines(&old.0, &new.0),
+        ["> Notes.bak < Notes.txt name", "~ Notes.txt size,file_id"]
+    );
+    // The file went to a path that was there already: it replaced the one there, and its
+    // own path is gone.
+    let mut new = old.clone();
+    new.remove(r"app\data\b.dat");
+    new.rename(r"app\data\a.dat", r"app\data\b.dat");
+    assert_eq!(
+        lines(&old.0, &new.0),
+        [r"- app\data\a.dat", r"~ app\data\b.dat file_id"]
+    );
+}
+
+#[test]
+fn a_folder_in_the_place_of_one_that_moved_away_holds_nothing_of_it() {
+    // An installer renames the folder of the old version and makes a new one in its
+    // place (decided 2026-11-13).
+    let mut tree = Tree::new();
+    tree.add("Tool", EntryKind::Dir);
+    tree.add(r"Tool\tool.exe", EntryKind::File);
+    tree.add(r"Tool\readme.txt", EntryKind::File);
+    let old = tree.with_ids();
+    let mut new = old.clone();
+    new.rename("Tool", "Tool.bak");
+    new.get(r"Tool.bak\readme.txt").size = 5;
+    for (rel, kind, id) in [
+        ("Tool", EntryKind::Dir, 10),
+        (r"Tool\tool.exe", EntryKind::File, 11),
+        (r"Tool\new.dll", EntryKind::File, 12),
+    ] {
+        new.add(rel, kind).file_id = file_id(id);
+    }
+    assert_eq!(
+        lines(&old.0, &new.0),
+        [
+            // The new folder is another one: what it holds is added, whatever its name.
+            "~ Tool file_id",
+            r"+ Tool\new.dll",
+            r"+ Tool\tool.exe",
+            // What the old one held is compared where it is now, once.
+            "> Tool.bak < Tool name",
+            r"~ Tool\readme.txt size",
+        ]
+    );
+    // A file put back from the old folder into the new one, under its name, is where it
+    // was: no change at all.
+    let mut new = old.clone();
+    new.rename("Tool", "Tool.bak");
+    new.add("Tool", EntryKind::Dir).file_id = file_id(10);
+    new.rename(r"Tool.bak\readme.txt", r"Tool\readme.txt");
+    assert_eq!(
+        lines(&old.0, &new.0),
+        ["~ Tool file_id", "> Tool.bak < Tool name"]
+    );
+    // Put back and changed: modified, at its path.
+    new.get(r"Tool\readme.txt").size = 9;
+    assert_eq!(
+        lines(&old.0, &new.0),
+        [
+            "~ Tool file_id",
+            r"~ Tool\readme.txt size",
+            "> Tool.bak < Tool name"
+        ]
+    );
+}
+
+#[test]
+fn two_entries_that_swapped_their_names_are_both_replaced() {
+    // Neither is at a path that was not there before, so neither moved.
+    let old = sample().with_ids();
+    let mut new = old.clone();
+    new.rename(r"app\data\a.dat", r"app\data\x");
+    new.rename(r"app\data\b.dat", r"app\data\a.dat");
+    new.rename(r"app\data\x", r"app\data\b.dat");
+    assert_eq!(
+        lines(&old.0, &new.0),
+        [r"~ app\data\a.dat file_id", r"~ app\data\b.dat file_id"]
+    );
+}
+
+#[test]
+fn a_moved_entry_that_changed_too_is_one_change() {
+    let old = sample().with_ids();
+    let mut new = old.clone();
+    new.rename(r"app\app.exe", r"app\data\app.exe");
+    let exe = new.get(r"app\data\app.exe");
+    exe.size = 2000;
+    exe.modified = 30;
+    exe.attributes |= FILE_ATTRIBUTE_HIDDEN;
+    exe.version = version([2, 0, 0, 0]);
+    assert_eq!(
+        lines(&old.0, &new.0),
+        [r"> app\data\app.exe < app\app.exe size,modified,attributes,version,folder"]
+    );
+    let mut new = old.clone();
+    new.rename("link", "Link 2");
+    new.get("Link 2").link_target = Some(OsStr::new(r"C:\Other").into());
+    assert_eq!(lines(&old.0, &new.0), ["> Link 2 < link name,target"]);
+    // The last write time of a folder is not a change, moved or not.
+    let mut new = old.clone();
+    new.rename(r"app\data", "archive");
+    new.get("archive").modified = 99;
+    assert_eq!(lines(&old.0, &new.0), [r"> archive < app\data name,folder"]);
+}
+
+#[test]
+fn a_file_id_that_several_candidates_have_pairs_nothing() {
+    // The names of a hard link have one file ID, as most files of C:\Windows do.
+    let link = file_id(50);
+    let names = |names: &[&str]| {
+        let mut tree = Tree::new().with_ids();
+        for name in names {
+            tree.add(name, EntryKind::File).file_id = link;
+        }
+        tree.0
+    };
+    // Two names gone and one new: which of the two it was is unknown.
+    assert_eq!(
+        lines(&names(&["one.dll", "two.dll"]), &names(&["three.dll"])),
+        ["- one.dll", "+ three.dll", "- two.dll"]
+    );
+    // One name gone and two new.
+    assert_eq!(
+        lines(&names(&["one.dll"]), &names(&["three.dll", "two.dll"])),
+        ["- one.dll", "+ three.dll", "+ two.dll"]
+    );
+    // A name that stays where it was is no candidate, so the other one is renamed.
+    assert_eq!(
+        lines(
+            &names(&["keep.dll", "one.dll"]),
+            &names(&["keep.dll", "two.dll"])
+        ),
+        ["> two.dll < one.dll name"]
+    );
+    // A new name of a file that stays is added, not moved.
+    assert_eq!(
+        lines(&names(&["keep.dll"]), &names(&["keep.dll", "two.dll"])),
+        ["+ two.dll"]
+    );
+}
+
+#[test]
+fn an_entry_of_another_creation_time_or_kind_is_not_the_same_entry() {
+    let old = sample().with_ids();
+    // NTFS gave the file ID of a deleted file to a new one, made later (MS-FSCC).
+    let mut new = old.clone();
+    new.rename("Notes.txt", "Other.txt");
+    new.get("Other.txt").created = 5;
+    assert_eq!(lines(&old.0, &new.0), ["- Notes.txt", "+ Other.txt"]);
+    let mut new = old.clone();
+    new.rename("Notes.txt", "Other");
+    let other = new.get("Other");
+    other.kind = EntryKind::Dir;
+    other.attributes = FILE_ATTRIBUTE_DIRECTORY;
+    assert_eq!(lines(&old.0, &new.0), ["- Notes.txt", "+ Other"]);
+}
+
+#[test]
+fn entries_of_trees_on_different_volumes_are_not_paired() {
+    let old = sample().with_ids();
+    let mut new = old.clone();
+    new.rename("Notes.txt", "Other.txt");
+    new.rename(r"app\data", "archive");
+    let other_volume = Rules {
+        volumes: [1, 2],
+        ..Rules::plain()
+    };
+    assert_eq!(
+        lines_with(&old.0, &new.0, &other_volume),
+        [
+            r"- app\data",
+            r"- app\data\a.dat",
+            r"- app\data\b.dat",
+            "+ archive",
+            r"+ archive\a.dat",
+            r"+ archive\b.dat",
+            "- Notes.txt",
+            "+ Other.txt",
+        ]
+    );
+}
+
+#[test]
+fn the_file_ids_zero_and_all_ones_pair_nothing() {
+    // They mean that the file has no ID (MS-FSCC 2.1.10).
+    for id in [FileId([0; 16]), FileId([0xFF; 16])] {
+        let mut old = Tree::new();
+        old.add("a.txt", EntryKind::File).file_id = id;
+        let mut new = Tree::new();
+        new.add("b.txt", EntryKind::File).file_id = id;
+        assert_eq!(lines(&old.0, &new.0), ["- a.txt", "+ b.txt"]);
+    }
+}
+
+#[test]
+fn an_entry_can_move_to_the_path_of_an_entry_of_another_kind() {
+    // The file was deleted and the folder took its name: an entry whose kind changed is
+    // deleted and added, so the added one may be an entry that moved.
+    let mut tree = Tree::new();
+    tree.add("x", EntryKind::File);
+    tree.add("y", EntryKind::Dir);
+    tree.add(r"y\f.txt", EntryKind::File);
+    let old = tree.with_ids();
+    let mut new = old.clone();
+    new.remove("x");
+    new.rename("y", "x");
+    assert_eq!(lines(&old.0, &new.0), ["- x", "> x < y name"]);
+}
+
+#[test]
+fn inside_a_moved_folder_what_is_excluded_at_either_place_is_left_out() {
+    let old = sample().with_ids();
+    let mut new = old.clone();
+    new.rename("app", "app2");
+    new.add(r"app2\cache", EntryKind::Dir);
+    new.add(r"app2\cache\c.bin", EntryKind::File);
+    // The snapshots left `cache` out where the folder was, so the older tree has none; the
+    // pattern does not name the place the folder is at now, so the newer tree has it.
+    let exclusions = Exclusions::new(&[r"C:\Data\app\cache"], &RecordedEnvironment);
+    assert_eq!(
+        lines_with(&old.0, &new.0, &rules(&exclusions, r"C:\Data")),
+        ["> app2 < app name"]
+    );
+    assert_eq!(
+        lines(&old.0, &new.0),
+        ["> app2 < app name", r"+ app2\cache", r"+ app2\cache\c.bin"]
+    );
+    // Excluded where the folder is now: what it held there before is not deleted.
+    let exclusions = Exclusions::new(&[r"C:\Data\app2\data"], &RecordedEnvironment);
+    assert_eq!(
+        lines_with(&old.0, &new.0, &rules(&exclusions, r"C:\Data")),
+        ["> app2 < app name", r"+ app2\cache", r"+ app2\cache\c.bin"]
+    );
+}
+
+#[test]
+fn a_cancelled_search_for_moved_entries_returns_cancelled() {
+    // The flag is honoured between the walks too.
+    let old = synthetic(2000);
+    let mut new = old.clone();
+    new[1].name = OsStr::new("renamed").into();
+    assert!(diff_whole(&old, &new, &cancelled()).is_err());
+    let moved = diff_whole(&old, &new, &Cancel::new()).unwrap();
+    assert_eq!(
+        moved.changes.len(),
+        1,
+        "one folder renamed with all it holds"
+    );
+    assert_eq!(moved.changes[0].kind, ChangeKind::Moved);
 }

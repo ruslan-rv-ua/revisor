@@ -131,24 +131,35 @@ fn warning_line(warning: &Warning) -> String {
     }
 }
 
-/// The difference as lines: for each folder `+ path`, `- path`, `~ path fields` and
-/// `? path` with full paths, then `! …` for each warning. Paths of deleted, modified and
-/// inaccessible entries are those in the earlier snapshot.
+/// The difference as lines: for each folder `+ path`, `- path`, `~ path fields`,
+/// `> path < path it had fields` for a renamed or moved entry, and `? path`, with full
+/// paths, then `! …` for each warning. Paths of deleted, modified and inaccessible
+/// entries are those in the earlier snapshot.
 fn render(d: &Difference) -> Vec<String> {
     let mut out = Vec::new();
-    for f in &d.folders {
+    for (at, f) in d.folders.iter().enumerate() {
         for c in &f.diff.changes {
-            let path = c.path(&f.old, &f.new);
+            let old = d.earlier_tree(at, c.old_in);
+            let path = c.path(old, &f.new);
             out.push(match c.kind {
                 ChangeKind::Added => format!("+ {}", path.display()),
                 ChangeKind::Deleted => format!("- {}", path.display()),
                 ChangeKind::Modified => {
                     format!("~ {} {}", path.display(), field_names(c.fields))
                 }
+                ChangeKind::Moved => format!(
+                    "> {} < {} {}",
+                    path.display(),
+                    diff::path(old, c.old.unwrap()).display(),
+                    field_names(c.fields)
+                ),
             });
         }
         out.extend(f.diff.inaccessible.iter().map(|i| match i.old {
-            Some(a) => format!("? {}", diff::path(&f.old, a).display()),
+            Some(a) => format!(
+                "? {}",
+                diff::path(d.earlier_tree(at, i.old_in), a).display()
+            ),
             None => format!("? {}", diff::path(&f.new, i.new.unwrap()).display()),
         }));
     }
@@ -552,6 +563,222 @@ fn file_ids_are_compared_only_within_one_volume() {
     );
 }
 
+/// Two folders of a profile on one volume: `C:\A`, which holds `x.txt` and `docs` with
+/// three files, and `C:\B`, which holds `keep.txt`.
+fn two_folders() -> (Tree, Tree) {
+    let mut a = Tree::with_root(r"C:\A");
+    a.add("x.txt", EntryKind::File);
+    a.add("docs", EntryKind::Dir);
+    for name in ["old.txt", "one.txt", "two.txt"] {
+        a.add(&format!(r"docs\{name}"), EntryKind::File);
+    }
+    let mut b = Tree::with_root(r"C:\B");
+    b.add("keep.txt", EntryKind::File);
+    (a.with_ids_from(1), b.with_ids_from(100))
+}
+
+#[test]
+fn an_entry_moved_between_folders_of_the_profile_is_a_change_of_the_folder_it_is_in_now() {
+    let tmp = TempDir::new("compare");
+    let mut store = create(&tmp);
+    let (a, b) = two_folders();
+    // A file moved to the other folder under another name, and a folder with what it
+    // holds, in which a file was then modified, one deleted and one added.
+    let (mut a_after, mut b_after) = (a.clone(), b.clone());
+    a_after.move_to("x.txt", &mut b_after, "y.txt");
+    a_after.move_to("docs", &mut b_after, "docs");
+    b_after.get(r"docs\one.txt").size = 3;
+    b_after.remove(r"docs\old.txt");
+    b_after.add(r"docs\new.txt", EntryKind::File);
+    let folders = |a: &Tree, b: &Tree| vec![scanned(r"C:\A", 7, a), scanned(r"C:\B", 7, b)];
+    let earlier = save(&mut store, 1, folders(&a, &b), vec![]);
+    let later = save(&mut store, 2, folders(&a_after, &b_after), vec![]);
+
+    let d = compare_them(&store, earlier, later);
+    assert_eq!(
+        render(&d),
+        [
+            // Nothing is left of them in the folder they were in.
+            r"> C:\B\docs < C:\A\docs folder",
+            r"+ C:\B\docs\new.txt",
+            r"- C:\A\docs\old.txt",
+            r"~ C:\A\docs\one.txt size",
+            r"> C:\B\y.txt < C:\A\x.txt name,folder",
+        ]
+    );
+    assert!(d.folders[0].diff.changes.is_empty());
+    // The earlier entries are in the tree of the folder they came from.
+    let from_a = |old_in: Option<u32>| old_in == Some(0);
+    assert!(
+        d.folders[1]
+            .diff
+            .changes
+            .iter()
+            .all(|c| c.old.is_none() || from_a(c.old_in))
+    );
+    // The other way round they come back.
+    assert_eq!(
+        render(&compare_them(&store, later, earlier)),
+        [
+            r"> C:\B\docs < C:\A\docs folder",
+            r"+ C:\B\docs\new.txt",
+            r"- C:\A\docs\old.txt",
+            r"~ C:\A\docs\one.txt size",
+            r"> C:\B\y.txt < C:\A\x.txt name,folder",
+        ],
+        "the difference goes from the earlier snapshot whichever is asked first"
+    );
+    let back = save(&mut store, 3, folders(&a, &b), vec![]);
+    assert_eq!(
+        render(&compare_them(&store, later, back)),
+        [
+            r"> C:\A\docs < C:\B\docs folder",
+            r"- C:\B\docs\new.txt",
+            r"+ C:\A\docs\old.txt",
+            r"~ C:\B\docs\one.txt size",
+            r"> C:\A\x.txt < C:\B\y.txt name,folder",
+        ]
+    );
+}
+
+#[test]
+fn entries_are_paired_only_within_one_volume_whichever_folders_lie_on_it() {
+    let tmp = TempDir::new("compare");
+    let mut store = create(&tmp);
+    let (a, b) = two_folders();
+    let (mut a_after, mut b_after) = (a.clone(), b.clone());
+    a_after.move_to("x.txt", &mut b_after, "x.txt");
+    // The folders lie on two volumes: a move between them is a copy and a deletion, with
+    // another file ID, and whatever IDs the two volumes gave mean nothing to each other.
+    let on_d = |tree: &Tree| {
+        let mut tree = tree.clone();
+        tree.0[0].name = OsStr::new(r"D:\B").into();
+        tree
+    };
+    let earlier = save(
+        &mut store,
+        1,
+        vec![scanned(r"C:\A", 1, &a), scanned(r"D:\B", 2, &on_d(&b))],
+        vec![],
+    );
+    let later = save(
+        &mut store,
+        2,
+        vec![
+            scanned(r"C:\A", 1, &a_after),
+            scanned(r"D:\B", 2, &on_d(&b_after)),
+        ],
+        vec![],
+    );
+    assert_eq!(
+        render(&compare_them(&store, earlier, later)),
+        [r"- C:\A\x.txt", r"+ D:\B\x.txt"]
+    );
+
+    // A folder that lies on another volume in the later snapshot: nothing in it is
+    // paired, as before (TASK-10), though a file was only renamed there.
+    let mut renamed = a.clone();
+    renamed.rename("x.txt", "z.txt");
+    let other_disk = save(
+        &mut store,
+        3,
+        vec![
+            scanned(r"C:\A", 5, &renamed),
+            scanned(r"D:\B", 2, &on_d(&b)),
+        ],
+        vec![],
+    );
+    assert_eq!(
+        render(&compare_them(&store, earlier, other_disk)),
+        [r"- C:\A\x.txt", r"+ C:\A\z.txt", r"! volumes C:\A: 1 vs 5",]
+    );
+
+    // The earlier tree of that folder is still of the volume the other folder is on now:
+    // what went from it to the other folder moved.
+    let c = save(
+        &mut store,
+        4,
+        vec![scanned(r"C:\A", 1, &a), scanned(r"C:\B", 1, &b)],
+        vec![],
+    );
+    let moved_away = save(
+        &mut store,
+        5,
+        vec![scanned(r"C:\A", 5, &a_after), scanned(r"C:\B", 1, &b_after)],
+        vec![],
+    );
+    assert_eq!(
+        render(&compare_them(&store, c, moved_away)),
+        [
+            r"> C:\B\x.txt < C:\A\x.txt folder",
+            r"! volumes C:\A: 1 vs 5",
+        ]
+    );
+}
+
+#[test]
+fn a_folder_of_the_profile_renamed_into_another_one_is_one_change() {
+    let tmp = TempDir::new("compare");
+    let mut store = create(&tmp);
+    let (a, _) = two_folders();
+    // The profile has both paths; the folder was at the one and is at the other now.
+    let mut b = a.clone();
+    b.0[0].name = OsStr::new(r"C:\B").into();
+    b.get(r"docs\one.txt").size = 3;
+    let earlier = save(
+        &mut store,
+        1,
+        vec![scanned(r"C:\A", 7, &a), missing(r"C:\B")],
+        vec![],
+    );
+    let later = save(
+        &mut store,
+        2,
+        vec![missing(r"C:\A"), scanned(r"C:\B", 7, &b)],
+        vec![],
+    );
+    assert_eq!(
+        render(&compare_them(&store, earlier, later)),
+        [
+            r"> C:\B < C:\A name",
+            r"~ C:\A\docs\one.txt size",
+            r"! missing in later: C:\A",
+            r"! missing in earlier: C:\B",
+        ]
+    );
+}
+
+#[test]
+fn entries_the_comparison_does_not_cover_are_not_paired() {
+    let tmp = TempDir::new("compare");
+    let mut store = create(&tmp);
+    let mut wide = Tree::new();
+    wide.add("app", EntryKind::Dir);
+    wide.add(r"app\a.txt", EntryKind::File);
+    wide.add("other", EntryKind::Dir);
+    wide.add(r"other\x.txt", EntryKind::File);
+    let wide = wide.with_ids();
+    // The profile has only `app` now, and the file came into it from the rest of the
+    // wider folder, which is not compared: where it was is not looked at.
+    let mut narrow = Tree::with_root(r"C:\Data\app").with_ids_from(2);
+    narrow.add("a.txt", EntryKind::File).file_id = wide.0[2].file_id;
+    narrow.add("x.txt", EntryKind::File).file_id = wide.0[4].file_id;
+    let earlier = save(&mut store, 1, vec![scanned(r"C:\Data", 1, &wide)], vec![]);
+    let later = save(
+        &mut store,
+        2,
+        vec![scanned(r"C:\Data\app", 1, &narrow)],
+        vec![],
+    );
+    assert_eq!(
+        render(&compare_them(&store, earlier, later)),
+        [
+            r"+ C:\Data\app\x.txt",
+            r"! earlier C:\Data compared within C:\Data\app",
+        ]
+    );
+}
+
 #[test]
 fn identical_snapshots_give_an_empty_difference_even_with_inaccessible_entries() {
     let tmp = TempDir::new("compare");
@@ -655,6 +882,94 @@ fn two_snapshots_of_an_unchanged_folder_give_an_empty_difference() {
     assert_eq!(render(&d), Vec::<String>::new());
     assert_eq!(d.folders.len(), 1);
     assert_eq!(d.folders[0].old.len(), 1 + 10 * 4 + 2);
+}
+
+#[test]
+fn entries_renamed_and_moved_on_the_disk_are_recognised_between_two_snapshots() {
+    // TASK-42 on a real volume: NTFS keeps the file ID and the creation time of what is
+    // renamed or moved, and gives a new file another ID.
+    let tmp = TempDir::new("compare");
+    let (tree, other) = (tmp.path().join("tree"), tmp.folder("other"));
+    for (rel, content) in [
+        (r"tree\a.txt", "a"),
+        (r"tree\notes.txt", "notes"),
+        (r"tree\report.doc", "the first version"),
+        (r"tree\keep\k.txt", "k"),
+        (r"tree\docs\two.txt", "2"),
+        (r"tree\Photos\p1.jpg", "1"),
+        (r"tree\Photos\p2.jpg", "2"),
+    ] {
+        tmp.write(rel, content.as_bytes());
+    }
+    junction(&tree.join("link"), &tree.join("docs"));
+    drop(
+        Store::create(
+            &tmp.db(),
+            &ProfileSettings {
+                name: "Moves".into(),
+                scope: Scope {
+                    folders: vec![tree.clone(), other.clone()],
+                    exclusions: vec![],
+                },
+            },
+        )
+        .unwrap(),
+    );
+    let no_cancel = Cancel::new();
+    let take = || {
+        snapshot::take(&tmp.db(), None, &snapshot::Progress::default(), &no_cancel)
+            .unwrap()
+            .id
+    };
+    let before = take();
+
+    let rename = |from: &str, to: &str| fs::rename(tmp.path().join(from), tmp.path().join(to));
+    // A file renamed, one renamed in case only, a link renamed.
+    rename(r"tree\a.txt", r"tree\b.txt").unwrap();
+    rename(r"tree\keep\k.txt", r"tree\keep\K.TXT").unwrap();
+    rename(r"tree\link", r"tree\link 2").unwrap();
+    // A file moved to another folder and written to there; one moved to the other folder
+    // of the profile.
+    rename(r"tree\notes.txt", r"tree\docs\notes.txt").unwrap();
+    tmp.write(r"tree\docs\notes.txt", b"notes, and more of them");
+    rename(r"tree\docs\two.txt", r"other\two.txt").unwrap();
+    // A folder renamed with what it holds; inside it a file renamed, one deleted and one
+    // added.
+    rename(r"tree\Photos", r"tree\Pictures").unwrap();
+    rename(r"tree\Pictures\p1.jpg", r"tree\Pictures\first.jpg").unwrap();
+    fs::remove_file(tree.join(r"Pictures\p2.jpg")).unwrap();
+    tmp.write(r"tree\Pictures\p3.jpg", b"3");
+    // A file saved with a backup: it takes the backup's name, and a new one takes its own.
+    rename(r"tree\report.doc", r"tree\report.bak").unwrap();
+    tmp.write(r"tree\report.doc", b"the second version, longer");
+    let after = take();
+
+    let store = Store::open(&tmp.db()).unwrap();
+    let lines = render(&compare_them(&store, before, after));
+    let (tree, other) = (tree.display(), other.display());
+    // The file put in the place of the one that left is replaced, whatever else differs.
+    let replaced = format!(r"~ {tree}\report.doc ");
+    let (report, rest): (Vec<_>, Vec<_>) = lines.iter().partition(|l| l.starts_with(&replaced));
+    assert!(
+        matches!(report[..], [line] if line.contains("size") && line.ends_with("file_id")),
+        "{lines:#?}"
+    );
+    assert_eq!(
+        rest,
+        [
+            &format!(r"> {tree}\b.txt < {tree}\a.txt name"),
+            &format!(r"> {tree}\docs\notes.txt < {tree}\notes.txt size,modified,folder"),
+            &format!(r"> {tree}\keep\K.TXT < {tree}\keep\k.txt name"),
+            &format!(r"> {tree}\link 2 < {tree}\link name"),
+            &format!(r"> {tree}\Pictures < {tree}\Photos name"),
+            &format!(r"> {tree}\Pictures\first.jpg < {tree}\Photos\p1.jpg name"),
+            &format!(r"- {tree}\Photos\p2.jpg"),
+            &format!(r"+ {tree}\Pictures\p3.jpg"),
+            &format!(r"> {tree}\report.bak < {tree}\report.doc name"),
+            &format!(r"> {other}\two.txt < {tree}\docs\two.txt folder"),
+        ],
+        "{lines:#?}"
+    );
 }
 
 /// An exclusive lock on the database of the profile in `tmp`, held until dropped: no

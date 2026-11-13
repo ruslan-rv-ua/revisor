@@ -41,7 +41,9 @@ const KEY_CONFIRM_SNAPSHOT_DELETION: &str = "confirm_snapshot_deletion";
 const KEY_LANGUAGE: &str = "language";
 const KEY_FOCUS_AFTER_COMPARISON: &str = "focus_after_comparison";
 const KEY_SIZE_FORMAT: &str = "size_format";
+/// Until 0.3: the names of the types shown.
 const KEY_DIFFERENCE_TYPES: &str = "difference_types";
+const KEY_DIFFERENCE_HIDDEN_TYPES: &str = "difference_hidden_types";
 const KEY_DIFFERENCE_SORT: &str = "difference_sort";
 const KEY_DIFFERENCE_DESCENDING: &str = "difference_descending";
 const KEY_ATTRIBUTE_FORMAT: &str = "attribute_format";
@@ -210,21 +212,25 @@ impl AttributeFormat {
 
 /// A type of the rows of the difference list, by which its filter shows them (TASK-13
 /// #22), in the order of the filter's check boxes: added, deleted and modified entries,
-/// replaced ones among the modified, and inaccessible entries, which are not changes.
+/// replaced ones among the modified, renamed or moved entries (TASK-42), and inaccessible
+/// entries, which are not changes.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
 pub enum ChangeType {
     Added,
     Deleted,
     Modified,
+    /// Renamed or moved.
+    Moved,
     Inaccessible,
 }
 
 impl ChangeType {
     /// Every type, in the order of the check boxes.
-    pub const ALL: [Self; 4] = [
+    pub const ALL: [Self; 5] = [
         Self::Added,
         Self::Deleted,
         Self::Modified,
+        Self::Moved,
         Self::Inaccessible,
     ];
 
@@ -234,6 +240,7 @@ impl ChangeType {
             Self::Added => "added",
             Self::Deleted => "deleted",
             Self::Modified => "modified",
+            Self::Moved => "moved",
             Self::Inaccessible => "inaccessible",
         }
     }
@@ -242,6 +249,9 @@ impl ChangeType {
         Self::ALL.into_iter().find(|v| v.as_str() == text)
     }
 }
+
+/// Which types of rows the difference shows, indexed by [`ChangeType`].
+pub type ShownTypes = [bool; ChangeType::ALL.len()];
 
 /// What the difference list is sorted by (TASK-13 #21): the path, as a tree, which is the
 /// default, or one of its columns.
@@ -542,30 +552,39 @@ impl Settings {
         self.set(KEY_SIZE_FORMAT, value.as_str())
     }
 
-    /// Which types of rows the difference list shows, indexed by [`ChangeType`]; all of
-    /// them when nothing is stored (TASK-13 #28).
-    pub fn difference_types(&self) -> Result<[bool; 4], SettingsError> {
-        Ok(match self.get(KEY_DIFFERENCE_TYPES)? {
-            Some(Value::Text(text)) => {
-                let mut shown = [false; 4];
-                for name in text.split(',') {
-                    if let Some(kind) = ChangeType::parse(name) {
-                        shown[kind as usize] = true;
-                    }
-                }
-                shown
+    /// Which types of rows the difference list shows; all of them when nothing is stored
+    /// (TASK-13 #28). The types hidden are what is stored, so a type a later revisor adds
+    /// is shown until the user hides it (TASK-42 #11).
+    pub fn difference_types(&self) -> Result<ShownTypes, SettingsError> {
+        let mut shown = [true; ChangeType::ALL.len()];
+        if let Some(Value::Text(hidden)) = self.get(KEY_DIFFERENCE_HIDDEN_TYPES)? {
+            for kind in hidden.split(',').filter_map(ChangeType::parse) {
+                shown[kind as usize] = false;
             }
-            _ => [true; 4],
-        })
+        } else if let Some(Value::Text(names)) = self.get(KEY_DIFFERENCE_TYPES)? {
+            // Until 0.3 the types shown were stored, of the four there were: the others
+            // of those four are hidden, and renamed or moved entries, which came with
+            // 0.4, are shown.
+            let stored: Vec<ChangeType> = names.split(',').filter_map(ChangeType::parse).collect();
+            for kind in [
+                ChangeType::Added,
+                ChangeType::Deleted,
+                ChangeType::Modified,
+                ChangeType::Inaccessible,
+            ] {
+                shown[kind as usize] = stored.contains(&kind);
+            }
+        }
+        Ok(shown)
     }
 
-    pub fn set_difference_types(&self, shown: [bool; 4]) -> Result<(), SettingsError> {
-        let names: Vec<&str> = ChangeType::ALL
+    pub fn set_difference_types(&self, shown: ShownTypes) -> Result<(), SettingsError> {
+        let hidden: Vec<&str> = ChangeType::ALL
             .into_iter()
-            .filter(|&kind| shown[kind as usize])
+            .filter(|&kind| !shown[kind as usize])
             .map(ChangeType::as_str)
             .collect();
-        self.set(KEY_DIFFERENCE_TYPES, names.join(","))
+        self.set(KEY_DIFFERENCE_HIDDEN_TYPES, hidden.join(","))
     }
 
     /// The order of the difference list; by path, ascending, when nothing is stored.

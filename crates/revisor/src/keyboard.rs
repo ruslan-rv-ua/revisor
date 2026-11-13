@@ -451,14 +451,15 @@ mod tests {
         for focus in [COMPARISON_FIELD, DIFFERENCE_LIST, SNAPSHOT_LIST] {
             assert_eq!(route(esc, focus, &state, &[]), Route::Pass);
         }
-        // Ctrl+1…Ctrl+4 and Ctrl+F work from the field too (TASK-13 #30).
+        // Ctrl+1…Ctrl+5 and Ctrl+F work from the field too (TASK-13 #30, TASK-42 #11).
         let types = [
             CommandId::ShowAdded,
             CommandId::ShowDeleted,
             CommandId::ShowModified,
+            CommandId::ShowMoved,
             CommandId::ShowInaccessible,
         ];
-        for (digit, id) in (1..=4).zip(types) {
+        for (digit, id) in (1..=5).zip(types) {
             assert_eq!(
                 route(key(Key::Digit(digit)).ctrl(), FILTER_FIELD, &state, &[]),
                 Route::Run(id)

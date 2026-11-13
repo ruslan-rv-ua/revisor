@@ -388,6 +388,9 @@ pub trait Strings {
     fn field(&self, field: Field) -> &'static str;
     /// In which snapshot an inaccessible entry is so, as the column «Що змінилося» says.
     fn inaccessible_in(&self, which: InaccessibleIn) -> &'static str;
+    /// Where a renamed or moved entry was, as the column «Що змінилося» starts (TASK-42):
+    /// "з a.txt"; `former` is its name, its folder or its path then.
+    fn moved_from(&self, former: &str) -> String;
     /// A size in bytes; `text` is the count in the user's format: "5 байтів".
     fn bytes(&self, bytes: u64, text: &str) -> String;
     /// The unit of 1024 (or 1000) bytes to the power `power`, from 1 to 6: KB to EB.
@@ -682,6 +685,36 @@ mod tests {
             "Inaccessible folder"
         );
         assert_eq!(En.change(RowChange::Replaced, EntryKind::File), "Replaced");
+        // Renamed and moved entries (TASK-42 #6): what happened, with the kind of a folder
+        // and of a link, and where the entry was.
+        assert_eq!(
+            Uk.change(RowChange::Renamed, EntryKind::File),
+            "Перейменовано"
+        );
+        assert_eq!(
+            Uk.change(RowChange::Moved, EntryKind::Dir),
+            "Переміщено теку"
+        );
+        assert_eq!(
+            Uk.change(RowChange::MovedAndRenamed, EntryKind::Link),
+            "Переміщено й перейменовано посилання"
+        );
+        assert_eq!(
+            En.change(RowChange::Renamed, EntryKind::Dir),
+            "Folder renamed"
+        );
+        assert_eq!(En.change(RowChange::Moved, EntryKind::Link), "Link moved");
+        assert_eq!(
+            En.change(RowChange::MovedAndRenamed, EntryKind::File),
+            "Moved and renamed"
+        );
+        assert_eq!(Uk.moved_from(r"C:\Old\a.txt"), r"з C:\Old\a.txt");
+        assert_eq!(En.moved_from("a.txt"), "from a.txt");
+        assert_eq!(
+            Uk.type_box(ChangeType::Moved),
+            "Перейменовані чи переміщені"
+        );
+        assert_eq!(En.type_box(ChangeType::Moved), "Renamed or mo&ved");
         assert_eq!(
             Uk.nothing_compared_yet("F7", "Ctrl+F7"),
             "Ще нічого не порівнювали. Натисніть клавішу F7, щоб порівняти поточний знімок із \

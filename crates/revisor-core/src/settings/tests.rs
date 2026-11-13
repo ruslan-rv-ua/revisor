@@ -24,7 +24,7 @@ fn a_new_settings_file_is_made_with_the_defaults() {
     assert_eq!(settings.language().unwrap(), Language::SameAsWindows);
     // The difference list (TASK-13 #17, #28): sizes as in Explorer, every type, by path.
     assert_eq!(settings.size_format().unwrap(), SizeFormat::Explorer);
-    assert_eq!(settings.difference_types().unwrap(), [true; 4]);
+    assert_eq!(settings.difference_types().unwrap(), [true; 5]);
     assert_eq!(
         settings.difference_sort().unwrap(),
         DifferenceSort {
@@ -95,7 +95,7 @@ fn the_view_of_the_difference_list_survives_a_restart() {
         let settings = Settings::open(&db(&tmp)).unwrap();
         settings.set_size_format(SizeFormat::Bytes).unwrap();
         settings
-            .set_difference_types([false, true, false, true])
+            .set_difference_types([false, true, false, true, false])
             .unwrap();
         settings.set_difference_sort(sort).unwrap();
     }
@@ -103,12 +103,15 @@ fn the_view_of_the_difference_list_survives_a_restart() {
     assert_eq!(settings.size_format().unwrap(), SizeFormat::Bytes);
     assert_eq!(
         settings.difference_types().unwrap(),
-        [false, true, false, true]
+        [false, true, false, true, false]
     );
     assert_eq!(settings.difference_sort().unwrap(), sort);
-    // Every type hidden is kept as such, not taken for nothing stored.
-    settings.set_difference_types([false; 4]).unwrap();
-    assert_eq!(settings.difference_types().unwrap(), [false; 4]);
+    // Every type hidden is kept as such, not taken for nothing stored; and so is every
+    // type shown again.
+    settings.set_difference_types([false; 5]).unwrap();
+    assert_eq!(settings.difference_types().unwrap(), [false; 5]);
+    settings.set_difference_types([true; 5]).unwrap();
+    assert_eq!(settings.difference_types().unwrap(), [true; 5]);
     settings.set_size_format(SizeFormat::Decimal).unwrap();
     assert_eq!(settings.size_format().unwrap(), SizeFormat::Decimal);
     for column in SortColumn::ALL {
@@ -119,6 +122,46 @@ fn the_view_of_the_difference_list_survives_a_restart() {
         settings.set_difference_sort(sort).unwrap();
         assert_eq!(settings.difference_sort().unwrap(), sort);
     }
+}
+
+#[test]
+fn a_type_added_since_the_filter_was_stored_is_shown() {
+    // TASK-42 #11. Until 0.3 the setting named the four types shown: a user who hid the
+    // deleted and the inaccessible rows then has renamed and moved entries shown in 0.4.
+    let tmp = TempDir::new("settings");
+    let settings = Settings::open(&db(&tmp)).unwrap();
+    let shown = |added, deleted, modified, moved, inaccessible| {
+        [added, deleted, modified, moved, inaccessible]
+    };
+    settings
+        .set(KEY_DIFFERENCE_TYPES, "added,modified")
+        .unwrap();
+    assert_eq!(
+        settings.difference_types().unwrap(),
+        shown(true, false, true, true, false)
+    );
+    // Every type hidden then, as an empty text.
+    settings.set(KEY_DIFFERENCE_TYPES, "").unwrap();
+    assert_eq!(
+        settings.difference_types().unwrap(),
+        shown(false, false, false, true, false)
+    );
+    // What 0.4 stores wins from then on: the types hidden, the new one among them.
+    settings
+        .set_difference_types(shown(true, true, true, false, true))
+        .unwrap();
+    assert_eq!(
+        settings.difference_types().unwrap(),
+        shown(true, true, true, false, true)
+    );
+    // A type a later revisor hides, which this one does not know, hides nothing here.
+    settings
+        .set(KEY_DIFFERENCE_HIDDEN_TYPES, "deleted,hashed")
+        .unwrap();
+    assert_eq!(
+        settings.difference_types().unwrap(),
+        shown(true, false, true, true, true)
+    );
 }
 
 #[test]

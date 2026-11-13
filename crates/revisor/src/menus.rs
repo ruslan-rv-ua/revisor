@@ -234,6 +234,9 @@ mod tests {
             "Порівняти з попереднім — F7, Enter у переліку знімків",
             "Подробиці — Alt+Enter, Enter у списку чи дереві різниці",
             "Додані — Ctrl+1",
+            // The types in the order of the check boxes (TASK-42 #11).
+            "Перейменовані чи переміщені — Ctrl+4",
+            "Недоступні — Ctrl+5",
             // Two items, one key, one line (TASK-33).
             "Списком чи деревом — Ctrl+T",
             "Гарячі клавіші — F1",
@@ -273,6 +276,38 @@ mod tests {
         assert_eq!(
             menu_label(&Uk, command(CommandId::ViewAsTree)),
             "Деревом (&R)\tCtrl+T"
+        );
+    }
+
+    #[test]
+    fn the_item_of_the_renamed_or_moved_is_fourth_among_the_types_with_ctrl_4() {
+        // TASK-42 #11: the menu «Різниця» lists the types as the check boxes stand.
+        let types: Vec<CommandId> = COMMANDS
+            .iter()
+            .filter(|c| c.kind == crate::commands::CommandKind::Check)
+            .map(|c| c.id)
+            .collect();
+        assert_eq!(
+            types,
+            [
+                CommandId::ShowAdded,
+                CommandId::ShowDeleted,
+                CommandId::ShowModified,
+                CommandId::ShowMoved,
+                CommandId::ShowInaccessible,
+            ]
+        );
+        assert_eq!(
+            menu_label(&En, command(CommandId::ShowMoved)),
+            "Renamed or mo&ved\tCtrl+4"
+        );
+        assert_eq!(
+            menu_label(&Uk, command(CommandId::ShowMoved)),
+            "Перейменовані чи переміщені (&V)\tCtrl+4"
+        );
+        assert_eq!(
+            menu_label(&Uk, command(CommandId::ShowInaccessible)),
+            "Недоступні (&N)\tCtrl+5"
         );
     }
 

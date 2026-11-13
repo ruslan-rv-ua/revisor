@@ -9,6 +9,32 @@ release that section becomes the version's own, and the release page publishes i
 
 ## [Unreleased]
 
+### Added
+
+- **The difference recognises renamed and moved entries.** A file, folder or link renamed or
+  moved within its volume, also between the folders of a profile, is one entry at its new
+  path instead of one deleted and one added. The Change column says Renamed, Moved, or Moved
+  and renamed, and What changed says where the entry was, then what else changed in it. A
+  renamed or moved folder is one entry, followed only by what changed inside it. revisor
+  knows an entry by its NTFS file ID, kind and creation time, which every snapshot since 0.1
+  holds, so earlier snapshots compare this way too. The summary counts these entries apart,
+  the Filter field also finds an entry by the path it had, and the details show the path
+  before and after.
+- **A filter for renamed or moved entries.** The check box Renamed or moved and the same item
+  of the Difference menu, with `Ctrl+4`, show or hide them. They are shown after the update
+  whatever other types were hidden before.
+
+### Changed
+
+- **`Ctrl+5` shows or hides inaccessible entries**, which `Ctrl+4` did: the shortcuts follow
+  the check boxes, and Renamed or moved is the fourth of them now.
+- **A name that changed in case only is a rename.** An entry whose name differs only in the
+  case of its letters shows as Renamed, from its earlier name; it used to show as Modified.
+- **A new file in the place of one that moved away.** Where the file at a path is another one
+  now and the earlier one is found at another path, the old place still shows as Replaced, and
+  the file that left shows as renamed or moved. A folder made in the place of a renamed one
+  shows as Folder replaced, with all it holds as added.
+
 ## [0.3.0] - 2026-11-10
 
 ### Added
