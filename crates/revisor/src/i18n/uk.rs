@@ -89,6 +89,7 @@ impl Strings for Uk {
             CommandId::ShowAdded => "Додані",
             CommandId::ShowDeleted => "Видалені",
             CommandId::ShowModified => "Змінені",
+            CommandId::ShowMoved => "Перейменовані чи переміщені",
             CommandId::ShowInaccessible => "Недоступні",
             CommandId::SortByPath => "Шлях",
             CommandId::SortByName => "Ім'я",
@@ -283,6 +284,7 @@ impl Strings for Uk {
             ChangeType::Added => "Додані",
             ChangeType::Deleted => "Видалені",
             ChangeType::Modified => "Змінені",
+            ChangeType::Moved => "Перейменовані чи переміщені",
             ChangeType::Inaccessible => "Недоступні",
         }
     }
@@ -761,16 +763,25 @@ impl Strings for Uk {
             (EntryKind::File, RowChange::Deleted) => "Видалено",
             (EntryKind::File, RowChange::Modified) => "Змінено",
             (EntryKind::File, RowChange::Replaced) => "Замінено",
+            (EntryKind::File, RowChange::Renamed) => "Перейменовано",
+            (EntryKind::File, RowChange::Moved) => "Переміщено",
+            (EntryKind::File, RowChange::MovedAndRenamed) => "Переміщено й перейменовано",
             (EntryKind::File, RowChange::Inaccessible) => "Недоступно",
             (EntryKind::Dir, RowChange::Added) => "Додано теку",
             (EntryKind::Dir, RowChange::Deleted) => "Видалено теку",
             (EntryKind::Dir, RowChange::Modified) => "Змінено теку",
             (EntryKind::Dir, RowChange::Replaced) => "Замінено теку",
+            (EntryKind::Dir, RowChange::Renamed) => "Перейменовано теку",
+            (EntryKind::Dir, RowChange::Moved) => "Переміщено теку",
+            (EntryKind::Dir, RowChange::MovedAndRenamed) => "Переміщено й перейменовано теку",
             (EntryKind::Dir, RowChange::Inaccessible) => "Недоступна тека",
             (EntryKind::Link, RowChange::Added) => "Додано посилання",
             (EntryKind::Link, RowChange::Deleted) => "Видалено посилання",
             (EntryKind::Link, RowChange::Modified) => "Змінено посилання",
             (EntryKind::Link, RowChange::Replaced) => "Замінено посилання",
+            (EntryKind::Link, RowChange::Renamed) => "Перейменовано посилання",
+            (EntryKind::Link, RowChange::Moved) => "Переміщено посилання",
+            (EntryKind::Link, RowChange::MovedAndRenamed) => "Переміщено й перейменовано посилання",
             (EntryKind::Link, RowChange::Inaccessible) => "Недоступне посилання",
         }
     }
@@ -794,6 +805,10 @@ impl Strings for Uk {
             InaccessibleIn::Later => "у пізнішому знімку",
             InaccessibleIn::Both => "в обох знімках",
         }
+    }
+
+    fn moved_from(&self, former: &str) -> String {
+        format!("з {former}")
     }
 
     fn bytes(&self, bytes: u64, text: &str) -> String {
@@ -858,6 +873,9 @@ impl Strings for Uk {
                     modified.push_str(&format!(", з них замінено {}", t.replaced.text));
                 }
                 parts.push(modified);
+            }
+            if t.moved.n > 0 {
+                parts.push(format!("перейменовано чи переміщено {}", t.moved.text));
             }
             format!(
                 "{}: {}.",
@@ -1081,6 +1099,9 @@ impl Strings for Uk {
             RowChange::Deleted => "видалено",
             RowChange::Modified => "змінено",
             RowChange::Replaced => "замінено",
+            RowChange::Renamed => "перейменовано",
+            RowChange::Moved => "переміщено",
+            RowChange::MovedAndRenamed => "переміщено й перейменовано",
             RowChange::Inaccessible => "недоступно",
         }
     }

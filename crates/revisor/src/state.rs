@@ -2,7 +2,7 @@
 //! they can run now.
 
 use revisor_core::settings::DifferenceSort;
-pub use revisor_core::settings::{ChangeType, DifferenceView, SortColumn};
+pub use revisor_core::settings::{ChangeType, DifferenceView, ShownTypes, SortColumn};
 
 use crate::difference::ListState;
 use crate::jobs::Flags;
@@ -62,7 +62,7 @@ pub struct AppState {
     pub elevated: bool,
     /// Which types of rows the difference list shows, indexed by `ChangeType`, and in
     /// which order (TASK-13): what the check marks of the menu «Різниця» say.
-    pub shown_types: [bool; 4],
+    pub shown_types: ShownTypes,
     pub sort: DifferenceSort,
     /// Whether the difference shows as a list or as a tree (TASK-33).
     pub layout: DifferenceView,
@@ -74,7 +74,7 @@ pub struct AppState {
 impl AppState {
     pub fn new() -> Self {
         Self {
-            shown_types: [true; 4],
+            shown_types: [true; ChangeType::ALL.len()],
             ..Self::default()
         }
     }
@@ -154,7 +154,7 @@ mod tests {
                 has_difference: true,
                 rows: 42,
                 view: View {
-                    types: [true, false, true, false],
+                    types: [true, false, true, true, false],
                     sort: DifferenceSort {
                         column: SortColumn::Size,
                         descending: true,
@@ -181,7 +181,7 @@ mod tests {
         assert!(state.comment_waiting && !state.commenting_open_profile);
         assert!(state.has_difference);
         assert_eq!(state.difference_rows, 42);
-        assert_eq!(state.shown_types, [true, false, true, false]);
+        assert_eq!(state.shown_types, [true, false, true, true, false]);
         assert!(state.shows(ChangeType::Added) && !state.shows(ChangeType::Deleted));
         assert_eq!(state.sort.column, SortColumn::Size);
         assert!(state.sort.descending);

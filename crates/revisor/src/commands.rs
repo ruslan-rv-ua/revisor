@@ -32,6 +32,7 @@ pub enum CommandId {
     ShowAdded,
     ShowDeleted,
     ShowModified,
+    ShowMoved,
     ShowInaccessible,
     SortByPath,
     SortByName,
@@ -602,8 +603,12 @@ pub static COMMANDS: &[Command] = &[
         ..shown_check(CommandId::ShowModified, 3)
     },
     Command {
+        checked: Some(|s| s.shows(ChangeType::Moved)),
+        ..shown_check(CommandId::ShowMoved, 4)
+    },
+    Command {
         checked: Some(|s| s.shows(ChangeType::Inaccessible)),
-        ..shown_check(CommandId::ShowInaccessible, 4)
+        ..shown_check(CommandId::ShowInaccessible, 5)
     },
     view_radio(CommandId::ViewAsList, |s| s.layout == DifferenceView::List),
     view_radio(CommandId::ViewAsTree, |s| s.layout == DifferenceView::Tree),
@@ -725,12 +730,14 @@ mod tests {
         assert_eq!(validate(COMMANDS, &En), Vec::<String>::new());
     }
 
-    /// The commands of the difference list (TASK-13): the filter and the order.
-    const DIFFERENCE_VIEW: [CommandId; 14] = [
+    /// The commands of the difference list (TASK-13, TASK-42): the filter — by text and by
+    /// the five types — and the order.
+    const DIFFERENCE_VIEW: [CommandId; 15] = [
         CommandId::FilterByText,
         CommandId::ShowAdded,
         CommandId::ShowDeleted,
         CommandId::ShowModified,
+        CommandId::ShowMoved,
         CommandId::ShowInaccessible,
         CommandId::SortByPath,
         CommandId::SortByName,
@@ -840,19 +847,21 @@ mod tests {
             );
             assert_eq!(command(id).place.menu, MenuId::Difference, "{id:?}");
         }
-        // The keys of the document «Клавіатура й меню» (#30).
+        // The keys of the document «Клавіатура й меню» (#30): the types in the order of the
+        // check boxes, renamed or moved entries fourth (TASK-42 #11).
         let keys = [
             (CommandId::FilterByText, key(Key::Letter(b'F')).ctrl(), b'F'),
             (CommandId::ShowAdded, key(Key::Digit(1)).ctrl(), b'A'),
             (CommandId::ShowDeleted, key(Key::Digit(2)).ctrl(), b'T'),
             (CommandId::ShowModified, key(Key::Digit(3)).ctrl(), b'M'),
-            (CommandId::ShowInaccessible, key(Key::Digit(4)).ctrl(), b'N'),
+            (CommandId::ShowMoved, key(Key::Digit(4)).ctrl(), b'V'),
+            (CommandId::ShowInaccessible, key(Key::Digit(5)).ctrl(), b'N'),
         ];
         for (id, shortcut, access) in keys {
             assert_eq!(command(id).shortcut, Some(shortcut), "{id:?}");
             assert_eq!(letter(En.command(id)), Some(access), "{id:?}");
         }
-        for id in &DIFFERENCE_VIEW[5..] {
+        for id in &DIFFERENCE_VIEW[6..] {
             let c = command(*id);
             assert_eq!(c.place.submenu.map(|(sub, _)| sub), Some(SubmenuId::SortBy));
             assert_eq!(c.shortcut, None, "the submenu has no shortcuts");
@@ -867,7 +876,7 @@ mod tests {
         };
         let checked = |id, state: &AppState| (command(id).checked.unwrap())(state);
         // Every type shown, by path, ascending (TASK-13 #28).
-        for id in &DIFFERENCE_VIEW[1..5] {
+        for id in &DIFFERENCE_VIEW[1..6] {
             assert!(checked(*id, &state), "{id:?}");
         }
         assert!(checked(CommandId::SortByPath, &state));
@@ -941,7 +950,7 @@ mod tests {
         assert!(checked(CommandId::ViewAsTree, &tree));
         assert!(!checked(CommandId::ViewAsList, &tree));
         // The tree is always by name; the order of the list stays for it.
-        for id in &DIFFERENCE_VIEW[5..] {
+        for id in &DIFFERENCE_VIEW[6..] {
             assert_eq!(available(*id, &list), Ok(()), "{id:?}");
             assert_eq!(
                 available(*id, &tree),
@@ -950,7 +959,7 @@ mod tests {
             );
         }
         // The filter works in both.
-        for id in &DIFFERENCE_VIEW[..5] {
+        for id in &DIFFERENCE_VIEW[..6] {
             assert_eq!(available(*id, &tree), Ok(()), "{id:?}");
         }
         assert_eq!(

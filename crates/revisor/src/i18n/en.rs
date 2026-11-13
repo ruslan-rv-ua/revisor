@@ -83,6 +83,7 @@ impl Strings for En {
             CommandId::ShowAdded => "&Added",
             CommandId::ShowDeleted => "Dele&ted",
             CommandId::ShowModified => "&Modified",
+            CommandId::ShowMoved => "Renamed or mo&ved",
             CommandId::ShowInaccessible => "I&naccessible",
             CommandId::SortByPath => "Pa&th",
             CommandId::SortByName => "&Name",
@@ -279,6 +280,7 @@ impl Strings for En {
             ChangeType::Added => "&Added",
             ChangeType::Deleted => "Dele&ted",
             ChangeType::Modified => "Modifi&ed",
+            ChangeType::Moved => "Renamed or mo&ved",
             ChangeType::Inaccessible => "Inaccessi&ble",
         }
     }
@@ -762,16 +764,25 @@ impl Strings for En {
             (EntryKind::File, RowChange::Deleted) => "Deleted",
             (EntryKind::File, RowChange::Modified) => "Modified",
             (EntryKind::File, RowChange::Replaced) => "Replaced",
+            (EntryKind::File, RowChange::Renamed) => "Renamed",
+            (EntryKind::File, RowChange::Moved) => "Moved",
+            (EntryKind::File, RowChange::MovedAndRenamed) => "Moved and renamed",
             (EntryKind::File, RowChange::Inaccessible) => "Inaccessible",
             (EntryKind::Dir, RowChange::Added) => "Folder added",
             (EntryKind::Dir, RowChange::Deleted) => "Folder deleted",
             (EntryKind::Dir, RowChange::Modified) => "Folder modified",
             (EntryKind::Dir, RowChange::Replaced) => "Folder replaced",
+            (EntryKind::Dir, RowChange::Renamed) => "Folder renamed",
+            (EntryKind::Dir, RowChange::Moved) => "Folder moved",
+            (EntryKind::Dir, RowChange::MovedAndRenamed) => "Folder moved and renamed",
             (EntryKind::Dir, RowChange::Inaccessible) => "Inaccessible folder",
             (EntryKind::Link, RowChange::Added) => "Link added",
             (EntryKind::Link, RowChange::Deleted) => "Link deleted",
             (EntryKind::Link, RowChange::Modified) => "Link modified",
             (EntryKind::Link, RowChange::Replaced) => "Link replaced",
+            (EntryKind::Link, RowChange::Renamed) => "Link renamed",
+            (EntryKind::Link, RowChange::Moved) => "Link moved",
+            (EntryKind::Link, RowChange::MovedAndRenamed) => "Link moved and renamed",
             (EntryKind::Link, RowChange::Inaccessible) => "Inaccessible link",
         }
     }
@@ -795,6 +806,10 @@ impl Strings for En {
             InaccessibleIn::Later => "in the later snapshot",
             InaccessibleIn::Both => "in both snapshots",
         }
+    }
+
+    fn moved_from(&self, former: &str) -> String {
+        format!("from {former}")
     }
 
     fn bytes(&self, bytes: u64, text: &str) -> String {
@@ -858,6 +873,9 @@ impl Strings for En {
                     modified.push_str(&format!(", {} of them replaced", t.replaced.text));
                 }
                 parts.push(modified);
+            }
+            if t.moved.n > 0 {
+                parts.push(format!("{} renamed or moved", t.moved.text));
             }
             format!(
                 "{}: {}.",
@@ -1078,6 +1096,9 @@ impl Strings for En {
             RowChange::Deleted => "deleted",
             RowChange::Modified => "modified",
             RowChange::Replaced => "replaced",
+            RowChange::Renamed => "renamed",
+            RowChange::Moved => "moved",
+            RowChange::MovedAndRenamed => "moved and renamed",
             RowChange::Inaccessible => "inaccessible",
         }
     }

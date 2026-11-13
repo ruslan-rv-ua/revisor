@@ -5,9 +5,11 @@
 //! generated entries and a copy with known changes. Then the same exe runs again as a
 //! child process that only compares them, loading included, the way the application
 //! does — as a background job — so its peak memory is that of the comparison alone. The
-//! target: ~1 million entries in 3 s (TASK-11 #19).
+//! target: ~1 million entries in 3 s (TASK-11 #19), with the renamed and moved entries
+//! recognised (TASK-42 #12); `--no-moves` generates none of those, to tell what their
+//! recognition costs.
 //!
-//! Usage: `cargo run --release -p revisor-core --example diff_bench -- (--scan <root> | --generate N) [--db <path>]`
+//! Usage: `cargo run --release -p revisor-core --example diff_bench -- (--scan <root> | --generate N [--no-moves]) [--db <path>]`
 
 use std::ffi::OsString;
 use std::fs;
@@ -38,6 +40,7 @@ enum Input {
 fn main() -> ExitCode {
     let mut input = None;
     let mut compare_only = false;
+    let mut moves = true;
     let mut db = std::env::temp_dir().join("revisor-diff-bench.db");
     let mut args = std::env::args().skip(1);
     while let Some(arg) = args.next() {
@@ -54,6 +57,7 @@ fn main() -> ExitCode {
                 Some(path) => db = path.into(),
                 None => return usage(),
             },
+            "--no-moves" => moves = false,
             // Used by the child process.
             "--compare-only" => compare_only = true,
             _ => return usage(),
@@ -61,7 +65,7 @@ fn main() -> ExitCode {
     }
     let result = match (compare_only, input) {
         (true, _) => compare_last_two(&db),
-        (false, Some(input)) => prepare(&input, &db),
+        (false, Some(input)) => prepare(&input, moves, &db),
         (false, None) => return usage(),
     };
     match result {
@@ -73,7 +77,7 @@ fn main() -> ExitCode {
     }
 }
 
-fn prepare(input: &Input, db: &Path) -> Result<(), Box<dyn std::error::Error>> {
+fn prepare(input: &Input, moves: bool, db: &Path) -> Result<(), Box<dyn std::error::Error>> {
     let no_cancel = Cancel::new();
     let started = Instant::now();
     let (old, new) = match input {
@@ -87,7 +91,7 @@ fn prepare(input: &Input, db: &Path) -> Result<(), Box<dyn std::error::Error>> {
         Input::Generate(n) => {
             println!("input:         {n} generated entries and a changed copy");
             let old = synthetic(*n);
-            let new = with_changes(&old);
+            let new = with_changes(&old, moves);
             (old, new)
         }
     };
@@ -138,18 +142,36 @@ fn prepare(input: &Input, db: &Path) -> Result<(), Box<dyn std::error::Error>> {
     Ok(())
 }
 
-/// A copy of a generated tree with about 1% of its files changed and 1000 files added.
-fn with_changes(old: &[Entry]) -> Vec<Entry> {
+/// A copy of a generated tree with about 1% of its files changed and 1000 files added;
+/// with `moves`, also 1% of the files renamed, 1% moved to another folder, and a folder
+/// that holds about an eighth of the tree moved with all it holds (TASK-42 #12).
+fn with_changes(old: &[Entry], moves: bool) -> Vec<Entry> {
     let mut new = old.to_vec();
-    for (i, e) in new.iter_mut().enumerate() {
-        if e.kind == EntryKind::File && i % 100 == 1 {
-            e.size += 1;
-            e.modified += 1;
-        }
-    }
     let dirs: Vec<u32> = (0..old.len() as u32)
         .filter(|&i| old[i as usize].kind == EntryKind::Dir)
         .collect();
+    for (i, e) in new.iter_mut().enumerate() {
+        if e.kind != EntryKind::File {
+            continue;
+        }
+        match i % 100 {
+            1 => {
+                e.size += 1;
+                e.modified += 1;
+            }
+            2 if moves => {
+                e.name = OsString::from(format!("renamed {i}.dat")).into_boxed_os_str();
+            }
+            3 if moves => e.parent = Some(dirs[i * 7 % dirs.len()]),
+            _ => {}
+        }
+    }
+    // The first folder of the third level, which holds an eighth of the tree, goes from
+    // the first folder of the root to the second one.
+    const MOVED: usize = 37;
+    if moves && new.len() > MOVED && new[MOVED].kind == EntryKind::Dir {
+        new[MOVED].parent = Some(2);
+    }
     for k in 0..1000 {
         new.push(Entry {
             parent: Some(dirs[k * dirs.len() / 1000]),
@@ -197,17 +219,19 @@ fn compare_last_two(db: &Path) -> Result<(), Box<dyn std::error::Error>> {
         .map(|f| f.diff.inaccessible.len())
         .sum();
     println!(
-        "load + diff:   {:.2} s, {loaded} entries loaded; added {}, deleted {}, modified {}, inaccessible {inaccessible}, warnings {}",
+        "load + diff:   {:.2} s, {loaded} entries loaded; added {}, deleted {}, modified {}, renamed or moved {}, inaccessible {inaccessible}, warnings {}",
         elapsed.as_secs_f64(),
         count(ChangeKind::Added),
         count(ChangeKind::Deleted),
         count(ChangeKind::Modified),
+        count(ChangeKind::Moved),
         difference.warnings.len()
     );
-    for folder in &difference.folders {
+    for (at, folder) in difference.folders.iter().enumerate() {
         for c in folder.diff.changes.iter().take(SHOWN) {
-            let path = c.path(&folder.old, &folder.new);
-            println!("  {:?} {} {:#04x}", c.kind, path.display(), c.fields.0);
+            let old = difference.earlier_tree(at, c.old_in);
+            let path = c.path(old, &folder.new);
+            println!("  {:?} {} {:#05x}", c.kind, path.display(), c.fields.0);
         }
     }
     let (working_set, commit) = peak_memory();
@@ -216,7 +240,7 @@ fn compare_last_two(db: &Path) -> Result<(), Box<dyn std::error::Error>> {
 }
 
 fn usage() -> ExitCode {
-    eprintln!("usage: diff_bench (--scan <root> | --generate N) [--db <path>]");
+    eprintln!("usage: diff_bench (--scan <root> | --generate N [--no-moves]) [--db <path>]");
     ExitCode::FAILURE
 }
 

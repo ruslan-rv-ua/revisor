@@ -9,6 +9,11 @@
 //! of both snapshots apply to both. Whatever is left out, and whatever explains a mass
 //! of changes, is reported as a [`Warning`].
 //!
+//! The folders are compared together, so an entry renamed or moved is recognised between
+//! any folders of the profile that lie on one volume (TASK-42): it is a change of the
+//! folder it is in now, and the entry it was is in the earlier tree of the folder it came
+//! from ([`Difference::earlier_tree`]).
+//!
 //! A comparison has two stages: [`load`] reads what the database holds for the two
 //! snapshots — their folders, exclusions and the trees of the folders both cover — and
 //! [`Loaded::compare`] compares the trees, with no more need of the database.
@@ -79,7 +84,8 @@ pub enum Warning {
         reason: Unavailable,
     },
     /// Another volume stood at the folder's path in each snapshot: the folder is compared
-    /// as usual, but file IDs are not, and a mass of changes may come from that.
+    /// as usual, but file IDs are not, so nothing in it is replaced, renamed or moved,
+    /// and a mass of changes may come from that.
     DifferentVolumes {
         path: PathBuf,
         earlier: u64,
@@ -107,7 +113,9 @@ pub struct FolderDifference {
     pub old: Vec<Entry>,
     /// The tree of the later snapshot that holds the folder.
     pub new: Vec<Entry>,
-    /// Changes and inaccessible entries, by indices into `old` and `new`.
+    /// Changes and inaccessible entries, by indices into `old` and `new`. The earlier
+    /// entry of one that came from another folder of the difference, or lies in a folder
+    /// that did, is in that folder's `old` ([`Difference::earlier_tree`]).
     pub diff: Diff,
 }
 
@@ -119,6 +127,15 @@ pub struct Difference {
     /// The folders covered by both snapshots, in the order of the later snapshot's.
     pub folders: Vec<FolderDifference>,
     pub warnings: Vec<Warning>,
+}
+
+impl Difference {
+    /// The earlier tree that holds the earlier entry of a change or an inaccessible entry
+    /// of the folder `folder`: that folder's own, or, with `old_in`
+    /// ([`diff::Change::old_in`]), that of the folder the entry came from.
+    pub fn earlier_tree(&self, folder: usize, old_in: Option<u32>) -> &[Entry] {
+        &self.folders[old_in.map_or(folder, |from| from as usize)].old
+    }
 }
 
 #[derive(Debug)]
@@ -316,8 +333,9 @@ struct LoadedPair {
     located: [Located; 2],
     /// Where the compared roots stand against the exclusions.
     branch: Branch,
-    /// Whether file IDs are compared: only within one volume.
-    file_ids: bool,
+    /// The volumes the folder lay on in the earlier and in the later snapshot: file IDs
+    /// are compared only within one volume.
+    volumes: [u64; 2],
 }
 
 /// Loads from `store` what comparing the snapshots `a` and `b` needs: the snapshots,
@@ -422,52 +440,61 @@ impl Loaded {
     /// visited and is complete once the difference is.
     pub fn compare(self, cancel: &Cancel, progress: &Progress) -> Result<Difference, CompareError> {
         progress.set_phase(Phase::Comparing);
-        let mut folders = Vec::with_capacity(self.pairs.len());
-        for pair in self.pairs {
-            if cancel.is_cancelled() {
-                return Err(CompareError::Cancelled);
-            }
-            let rules = Rules {
-                filter: Some(Filter {
+        // Every folder takes its place among the comparisons, so that a change names the
+        // folder its earlier entry came from by the folder's place in the difference. A
+        // folder that one snapshot knows nothing of is compared as two empty trees.
+        let known = |pair: &LoadedPair| {
+            !matches!(pair.located, [Located::Unknown, _] | [_, Located::Unknown])
+        };
+        let comparisons: Vec<diff::Pair<'_>> = self
+            .pairs
+            .iter()
+            .map(|pair| {
+                let [old, new] = match known(pair) {
+                    true => [
+                        pair.located[0].subtree(&pair.old),
+                        pair.located[1].subtree(&pair.new),
+                    ],
+                    false => [Subtree::whole(&[]); 2],
+                };
+                let filter = Some(Filter {
                     exclusions: &self.union,
-                    branch: pair.branch,
-                }),
-                file_ids: pair.file_ids,
+                    branch: pair.branch.clone(),
+                });
+                let rules = Rules {
+                    filter,
+                    volumes: pair.volumes,
+                };
+                diff::Pair { old, new, rules }
+            })
+            .collect();
+        let mut diffs = diff::diff_many(&comparisons, cancel, &progress.done)?;
+        drop(comparisons);
+        for (pair, diff) in self.pairs.iter().zip(&mut diffs) {
+            // Whether the folder was there is unknown: it is inaccessible, not changed.
+            let (old, new) = match pair.located {
+                [Located::Unknown, Located::Found(b)] => (None, Some(b)),
+                [Located::Found(a), Located::Unknown] => (Some(a), None),
+                _ => continue,
             };
-            let diff = match pair.located {
-                // Whether the folder was there is unknown: it is inaccessible, not changed.
-                [Located::Unknown, Located::Found(b)] => Diff {
-                    changes: Vec::new(),
-                    inaccessible: vec![Inaccessible {
-                        old: None,
-                        new: Some(b),
-                        changes_before: 0,
-                    }],
-                },
-                [Located::Found(a), Located::Unknown] => Diff {
-                    changes: Vec::new(),
-                    inaccessible: vec![Inaccessible {
-                        old: Some(a),
-                        new: None,
-                        changes_before: 0,
-                    }],
-                },
-                [Located::Unknown, _] | [_, Located::Unknown] => Diff::default(),
-                [o, n] => diff::diff_counting(
-                    o.subtree(&pair.old),
-                    n.subtree(&pair.new),
-                    &rules,
-                    cancel,
-                    &progress.done,
-                )?,
-            };
-            folders.push(FolderDifference {
+            diff.inaccessible.push(Inaccessible {
+                old,
+                new,
+                changes_before: 0,
+                old_in: None,
+            });
+        }
+        let folders = self
+            .pairs
+            .into_iter()
+            .zip(diffs)
+            .map(|(pair, diff)| FolderDifference {
                 path: pair.path,
                 old: pair.old,
                 new: pair.new,
                 diff,
-            });
-        }
+            })
+            .collect();
         progress.finish();
         Ok(Difference {
             earlier: self.earlier,
@@ -628,19 +655,23 @@ impl FolderLoading<'_> {
                 });
             }
         }
-        let file_ids = match self
+        let volumes = match self
             .folders
             .map(|f| f.state.scanned().map(|(serial, _)| serial))
         {
-            [Some(earlier), Some(later)] if earlier != later => {
-                warnings.push(Warning::DifferentVolumes {
-                    path: compared.path.clone(),
-                    earlier,
-                    later,
-                });
-                false
+            [Some(earlier), Some(later)] => {
+                if earlier != later {
+                    warnings.push(Warning::DifferentVolumes {
+                        path: compared.path.clone(),
+                        earlier,
+                        later,
+                    });
+                }
+                [earlier, later]
             }
-            _ => true,
+            // A folder that was missing holds nothing, on whichever volume.
+            [Some(volume), None] | [None, Some(volume)] => [volume; 2],
+            [None, None] => [0; 2],
         };
         let old = self.load_tree(Side::Earlier, self.pair.earlier)?;
         let new = self.load_tree(Side::Later, self.pair.later)?;
@@ -657,7 +688,7 @@ impl FolderLoading<'_> {
             new,
             located,
             branch,
-            file_ids,
+            volumes,
         }))
     }
 

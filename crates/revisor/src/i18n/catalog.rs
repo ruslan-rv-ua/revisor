@@ -146,6 +146,7 @@ fn entries_in(en: &dyn Strings, uk: &dyn Strings) -> Vec<Entry> {
             ShowAdded,
             ShowDeleted,
             ShowModified,
+            ShowMoved,
             ShowInaccessible,
             SortByPath,
             SortByName,
@@ -274,6 +275,7 @@ fn entries_in(en: &dyn Strings, uk: &dyn Strings) -> Vec<Entry> {
         Added,
         Deleted,
         Modified,
+        Moved,
         Inaccessible
     });
     for kind in types {
@@ -568,6 +570,9 @@ fn entries_in(en: &dyn Strings, uk: &dyn Strings) -> Vec<Entry> {
         Deleted,
         Modified,
         Replaced,
+        Renamed,
+        Moved,
+        MovedAndRenamed,
         Inaccessible,
     });
     let kinds = all!(EntryKind { File, Dir, Link });
@@ -601,6 +606,17 @@ fn entries_in(en: &dyn Strings, uk: &dyn Strings) -> Vec<Entry> {
             s.inaccessible_in(which).into()
         });
     }
+    // What the column «Що змінилося» says of a renamed or moved entry (TASK-42): where
+    // it was, and after it the fields that differ too.
+    c.add("moved_from", |s| s.moved_from("{name, folder or path}"));
+    c.add("moved_from (with fields)", |s| {
+        format!(
+            "{}; {}, {}",
+            s.moved_from("{name, folder or path}"),
+            s.field(Field::Size),
+            s.field(Field::DateModified)
+        )
+    });
     c.add_per_count("bytes", |s, n| s.bytes(n, &n.to_string()));
     for power in 1..=6 {
         c.add(format!("size_unit({power})"), |s| s.size_unit(power).into());
@@ -643,11 +659,12 @@ fn entries_in(en: &dyn Strings, uk: &dyn Strings) -> Vec<Entry> {
         c.add(*id, |s| s.pair(pair));
     }
     let summary = |n: u64, size: SizeChange| SummaryText {
-        changes: counted(n * 4),
+        changes: counted(n * 5),
         added: counted(n),
         deleted: counted(n),
         modified: counted(n * 2),
         replaced: counted(n),
+        moved: counted(n),
         inaccessible: counted(n),
         size,
         warnings: counted(n),
@@ -670,7 +687,7 @@ fn entries_in(en: &dyn Strings, uk: &dyn Strings) -> Vec<Entry> {
     );
     for size in &sizes {
         for n in [1, 5] {
-            c.add(format!("summary({}, {size:?})", n * 4), |s| {
+            c.add(format!("summary({}, {size:?})", n * 5), |s| {
                 s.summary(&summary(n, size.clone()))
             });
         }
@@ -683,6 +700,7 @@ fn entries_in(en: &dyn Strings, uk: &dyn Strings) -> Vec<Entry> {
             deleted: counted(0),
             modified: counted(0),
             replaced: counted(0),
+            moved: counted(0),
             inaccessible: counted(0),
             size: SizeChange::Increased("{size}".into()),
             warnings: counted(3),
@@ -789,6 +807,24 @@ fn entries_in(en: &dyn Strings, uk: &dyn Strings) -> Vec<Entry> {
     });
     c.add("tree_node (a file, short)", |s| {
         s.tree_node(&node("{name}", Some((&modified(s), "")), None))
+    });
+    // A renamed file and a moved folder (TASK-42): where they were stands in the place of
+    // what changed.
+    c.add("tree_node (a renamed file, long)", |s| {
+        let renamed = s.change(RowChange::Renamed, EntryKind::File);
+        s.tree_node(&node(
+            "{name}",
+            Some((renamed, &s.moved_from("{former name}"))),
+            None,
+        ))
+    });
+    c.add("tree_node (a moved folder, long)", |s| {
+        let moved = s.change(RowChange::Moved, EntryKind::Dir);
+        s.tree_node(&node(
+            "{name}",
+            Some((moved, &s.moved_from("{former folder}"))),
+            Some((5, 0)),
+        ))
     });
     for n in COUNTS {
         c.add(format!("tree_node (a folder added, long)({n})"), |s| {

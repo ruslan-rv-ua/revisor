@@ -154,6 +154,7 @@ impl Made {
             old,
             new,
             fields,
+            old_in: None,
         });
     }
 
@@ -209,6 +210,7 @@ impl Made {
             old,
             new,
             changes_before,
+            old_in: None,
         });
     }
 
@@ -481,15 +483,15 @@ fn the_details_and_the_path_are_of_the_row_at_a_place_of_the_list() {
     assert_eq!(list.entry_path(5), None);
     assert_eq!(list.details(5), None);
     // The row at a place of the list as filtered: the inaccessible ones only.
-    list.set_types([false, false, false, true]);
+    list.set_types([false, false, false, false, true]);
     assert_eq!(list.details(0).unwrap().name, "docs");
     assert_eq!(list.entry_path(0), Some(PathBuf::from(r"C:\Data\docs")));
 }
 
 #[test]
-fn an_inaccessible_entry_that_is_also_modified_shows_what_changed_in_its_details() {
+fn an_inaccessible_entry_that_is_also_renamed_shows_what_changed_in_its_details() {
     // A folder inaccessible later whose name changed case is two rows: inaccessible, and
-    // modified; the details of both name the change of the name (TASK-14 #4).
+    // renamed (TASK-42); the details of both name the change of the name (TASK-14 #4).
     let mut made = Made::new(r"C:\Data");
     made.inaccessible("docs", EntryKind::Dir, Some(false), Some(true));
     let at = |tree: &[Entry]| {
@@ -499,9 +501,13 @@ fn an_inaccessible_entry_that_is_also_modified_shows_what_changed_in_its_details
     };
     let (a, b) = (at(&made.old), at(&made.new));
     made.new[b as usize].name = OsString::from("Docs").into_boxed_os_str();
-    made.change(ChangeKind::Modified, Some(a), Some(b), Fields::NAME);
+    made.change(ChangeKind::Moved, Some(a), Some(b), Fields::NAME);
     let list = showing(difference(vec![made.done()], Vec::new()));
     assert_eq!(list.len(), 2);
+    assert_eq!(
+        column(&list, Column::Change),
+        ["Inaccessible folder", "Folder renamed"]
+    );
     for index in 0..2 {
         let text = list.details(index).unwrap().text;
         assert_eq!(
@@ -762,7 +768,8 @@ fn the_line_of_the_pair_says_how_the_profile_and_the_snapshots_are_now() {
 fn the_types_filter_the_rows_and_the_modified_hold_the_replaced() {
     let mut list = showing(example(Vec::new()));
     assert_eq!(list.len(), 22);
-    let types = |added, deleted, modified, inaccessible| [added, deleted, modified, inaccessible];
+    let types =
+        |added, deleted, modified, inaccessible| [added, deleted, modified, true, inaccessible];
     list.set_types(types(false, true, true, false));
     assert_eq!(list.len(), 8);
     assert!(
@@ -779,11 +786,11 @@ fn the_types_filter_the_rows_and_the_modified_hold_the_replaced() {
          Size increased by 15.3 MB. Showing 2 of 22."
     );
     assert_eq!(list.showing(), "Showing 2 of 22.");
-    list.set_types([false; 4]);
+    list.set_types([false; 5]);
     assert_eq!(list.len(), 0);
     assert_eq!(list.list_name(), "No changes match the filter");
-    assert_eq!(list.view().types, [false; 4]);
-    list.set_types([true; 4]);
+    assert_eq!(list.view().types, [false; 5]);
+    list.set_types([true; 5]);
     assert_eq!(list.len(), 22);
     assert!(!list.summary().unwrap().contains("Showing"));
     assert_eq!(list.showing(), "Showing 22 of 22.");
@@ -816,7 +823,7 @@ fn the_text_filter_finds_the_text_anywhere_in_the_path_regardless_of_case() {
     // An empty field filters nothing.
     assert_eq!(find(&mut list, "").len(), 7);
     // With the types.
-    list.set_types([true, false, false, false]);
+    list.set_types([true, false, false, false, false]);
     assert_eq!(
         find(&mut list, ".txt"),
         [r"C:\Data\app\new.txt", r"C:\Data\z.txt"]
@@ -848,10 +855,10 @@ fn the_focus_stays_on_its_change_or_goes_to_the_nearest_one_shown() {
     // On «app\new.txt», which is added: hiding the added rows moves the focus to the
     // next row shown (#27).
     list.focus(1);
-    assert_eq!(list.set_types([false, true, true, true]), Some(1));
+    assert_eq!(list.set_types([false, true, true, true, true]), Some(1));
     assert_eq!(list.path_of(1), r"C:\Data\app\old.txt");
     // Showing them again leaves it there.
-    assert_eq!(list.set_types([true; 4]), Some(2));
+    assert_eq!(list.set_types([true; 5]), Some(2));
     assert_eq!(list.path_of(2), r"C:\Data\app\old.txt");
     // The last row hidden: the one before it.
     list.focus(6);
@@ -983,7 +990,7 @@ fn a_new_difference_keeps_the_view_but_not_the_text_filter() {
         column: SortColumn::Name,
         descending: true,
     };
-    list.set_types([true, true, false, true]);
+    list.set_types([true, true, false, true, true]);
     list.set_sort(sort);
     list.set_text("app");
     list.focus(1);
@@ -992,7 +999,7 @@ fn a_new_difference_keeps_the_view_but_not_the_text_filter() {
         Some(0)
     );
     assert_eq!(list.text(), "");
-    assert_eq!(list.view().types, [true, true, false, true]);
+    assert_eq!(list.view().types, [true, true, false, true, true]);
     assert_eq!(list.view().sort, sort);
     assert_eq!(list.len(), 6);
     assert_eq!(list.current(), Some(0));
@@ -1073,11 +1080,13 @@ fn generated(rows: usize) -> Difference {
                 } else {
                     Fields::default()
                 },
+                old_in: None,
             }),
             None => diff.inaccessible.push(Inaccessible {
                 old,
                 new,
                 changes_before: diff.changes.len() as u32,
+                old_in: None,
             }),
         }
     }
@@ -1153,9 +1162,9 @@ fn the_list_keeps_up_with_a_million_rows() {
     }
     list.set_sort(DifferenceSort::default());
     for types in [
-        [false, true, true, true],
-        [true, false, false, false],
-        [true; 4],
+        [false, true, true, true, true],
+        [true, false, false, false, false],
+        [true; 5],
     ] {
         note(time(&format!("types {types:?}"), &mut || {
             list.set_types(types);
@@ -1257,3 +1266,7 @@ mod arrival_of_a_difference {
 // --- The difference as a tree (TASK-33) ---------------------------------------------
 
 mod tree;
+
+// --- Renamed and moved entries (TASK-42) -----------------------------------------------
+
+mod moved;

@@ -45,12 +45,20 @@ The main scenario takes four steps, all from the keyboard:
 - **Compare any two.** The current snapshot with the previous one (`F7`), with any other
   snapshot of the profile (`Ctrl+F7`), or a new snapshot with the one before it in a single
   command (`Ctrl+F5`). The difference always runs from the earlier snapshot to the later one.
-- **Read the difference.** A list of added, deleted, modified and inaccessible entries, with
-  what changed in each and a summary above it, or the same entries as a tree of their folders
-  (`Ctrl+T`), where a folder opens when you expand it, and a folder of more than a thousand
-  entries shows them a thousand at a time. Filter it by type and by text, sort the list by any
-  column, read the details of a change, before and after (`Alt+Enter`), or show it in File
-  Explorer (`Ctrl+Enter`). A difference of a million rows reads without delay.
+- **Read the difference.** A list of added, deleted, modified, renamed or moved, and
+  inaccessible entries, with what changed in each and a summary above it, or the same entries
+  as a tree of their folders (`Ctrl+T`), where a folder opens when you expand it, and a folder
+  of more than a thousand entries shows them a thousand at a time. Filter it by type and by
+  text, sort the list by any column, read the details of a change, before and after
+  (`Alt+Enter`), or show it in File Explorer (`Ctrl+Enter`). A difference of a million rows
+  reads without delay.
+- **A rename or a move is one change.** A file, folder or link that was renamed or moved
+  within its volume, also from one folder of the profile to another, is one entry at its new
+  path that says where it was, not one deleted and one added: revisor knows it by its NTFS
+  file ID, its kind and its creation time. A folder renamed with a thousand files in it is one
+  entry, followed only by what changed inside it. Where a program put a new file in the place
+  of one it moved away, as when saving with a backup, the old place shows as replaced and the
+  file that left as renamed or moved.
 - **In the background.** Snapshots and comparisons show their progress and can be canceled,
   and the window keeps responding.
 - **Nothing hidden by permissions.** An entry revisor cannot read is kept, marked inaccessible,
@@ -134,7 +142,7 @@ lists them in the application too.
 | `Alt+Enter` | Show the details of the change in focus, before and after; `Enter` in the difference list or tree does the same |
 | `Ctrl+Enter` | Show the change in File Explorer |
 | `Ctrl+F` | Move to the Filter field; `Esc` there clears it |
-| `Ctrl+1` to `Ctrl+4` | Show or hide added, deleted, modified and inaccessible entries |
+| `Ctrl+1` to `Ctrl+5` | Show or hide added, deleted, modified, renamed or moved, and inaccessible entries |
 | `Ctrl+T` | Show the difference as a tree, or as a list again |
 | `F6`, `Shift+F6` | Move between the snapshot list and the difference list or tree |
 | `Shift+F5`, `Shift+F7`, `Shift+F2` | Cancel the snapshot, the comparison, or a comment waiting for the profile database |
@@ -181,6 +189,11 @@ snapshots there; `scoop uninstall revisor --purge` deletes them.
   instantaneous: take it once the program you are watching has finished.
 - **It does not go inside links.** Junctions, symbolic links and mounted volumes are recorded
   with their targets, not followed.
+- **It does not guess at renames.** An entry is renamed or moved only when its NTFS file ID,
+  its kind and its creation time say that it is the same one on the same volume. A move to
+  another volume is a copy and a deletion, so it shows as one entry added and one deleted;
+  and so do the names of a hard-linked file when several of them come or go at once, as it
+  cannot be told which became which.
 - **It does not download cloud files.** A file that is only in OneDrive or another cloud is
   recorded without its version rather than downloaded to read it.
 - **It never deletes snapshots on its own.** Only you delete them.
@@ -188,8 +201,8 @@ snapshots there; `scoop uninstall revisor --purge` deletes them.
   scheduled snapshot: its shortcuts work only in its own window.
 - **It is not signed**, by decision; see [Direct download](#direct-download).
 
-Planned for later 0.x versions: export to a text report and CSV, content hashes, detection of
-renames and moves, and a command line.
+Planned for later 0.x versions: export to a text report and CSV, content hashes, and a
+command line.
 
 ## Building from source
 

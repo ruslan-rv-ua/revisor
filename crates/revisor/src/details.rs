@@ -2,8 +2,9 @@
 //! property of its entry before and after, a line each and in words, so a screen reader
 //! reads them one at a time and the whole text can be copied (#2).
 //!
-//! The lines come in a fixed order (#3): the path; the name, when only its case changed
-//! (#4); the change with what changed; the kind; the size of a file; the dates of creation
+//! The lines come in a fixed order (#3): the path, before and after for an entry renamed
+//! or moved (TASK-42 #8); the name, when only its case changed (#4); the change with what
+//! changed; the kind; the size of a file; the dates of creation
 //! and of the last write; the attributes; the file and product versions of an exe or dll;
 //! the target of a link; and, for an entry inaccessible in a snapshot, in which and why. A
 //! property has one value when the entry is in one snapshot only, «було …, стало …» when
@@ -150,8 +151,12 @@ pub struct Formats {
 pub struct Row<'a> {
     /// The whole path of the entry, as the list's columns show it.
     pub path: String,
+    /// The path the entry had in the earlier snapshot, when it is at another one now: in
+    /// another folder, or under a name that differs in more than case (TASK-42 #8).
+    pub former_path: Option<String>,
     pub change: RowChange,
-    /// The words of the column «Що змінилося» for a modified row; empty otherwise.
+    /// The fields that differ, in the words of the column «Що змінилося», for a modified,
+    /// renamed or moved row; empty otherwise.
     pub what_changed: String,
     /// The entry in the earlier and in the later snapshot; at least one of them.
     pub old: Option<&'a Entry>,
@@ -181,9 +186,17 @@ pub fn text(s: &dyn Strings, regional: &dyn Regional, formats: Formats, row: &Ro
     let mut line = |property: Property, value: String| {
         lines.push(format!("{}: {value}", s.property(property)));
     };
-    line(Property::Path, row.path.clone());
+    line(
+        Property::Path,
+        match &row.former_path {
+            Some(former) => s.before_after(former, &row.path),
+            None => row.path.clone(),
+        },
+    );
+    // A name that differs in case only: the path says nothing of it to the ear.
     if let (Some(a), Some(b)) = (row.old, row.new)
         && row.fields.contains(Fields::NAME)
+        && row.former_path.is_none()
     {
         line(
             Property::Name,

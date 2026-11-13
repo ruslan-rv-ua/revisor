@@ -53,7 +53,7 @@ use crate::profile_window::{self, Purpose};
 use crate::settings_window::{self, Values};
 use crate::snapshot_list::{Native, SnapshotList};
 use crate::snapshots::{Arrival, arrival, arrival_after_comparison};
-use crate::state::{AppState, ChangeType, SortColumn, Sources};
+use crate::state::{AppState, ChangeType, ShownTypes, SortColumn, Sources};
 use crate::status::Announcer;
 use crate::text_window;
 use crate::theme;
@@ -64,10 +64,11 @@ use crate::win32::lists::EmptyTexts;
 
 /// The commands that show or hide the types of the difference list's rows, in the order
 /// of [`ChangeType::ALL`] (TASK-13 #22).
-const TYPE_COMMANDS: [CommandId; 4] = [
+const TYPE_COMMANDS: [CommandId; ChangeType::ALL.len()] = [
     CommandId::ShowAdded,
     CommandId::ShowDeleted,
     CommandId::ShowModified,
+    CommandId::ShowMoved,
     CommandId::ShowInaccessible,
 ];
 
@@ -244,7 +245,7 @@ pub struct MainWindow {
     /// The field «Фільтр:» and the check boxes of the types under the difference list
     /// (TASK-13 #22, #24), which work once there is a difference.
     filter_field: TextCtrl,
-    type_boxes: [CheckBox; 4],
+    type_boxes: [CheckBox; ChangeType::ALL.len()],
     /// Says how many rows the filter shows once the typing in the field «Фільтр:» pauses
     /// (TASK-13 #26).
     showing_timer: Timer<Frame>,
@@ -316,7 +317,9 @@ impl MainWindow {
             .as_ref()
             .ok()
             .map(|settings| View {
-                types: settings.difference_types().unwrap_or([true; 4]),
+                types: settings
+                    .difference_types()
+                    .unwrap_or([true; ChangeType::ALL.len()]),
                 sort: settings.difference_sort().unwrap_or_default(),
                 layout: settings.difference_view().unwrap_or_default(),
             })
@@ -1090,6 +1093,7 @@ impl MainWindow {
             CommandId::ShowAdded => self.toggle_type(ChangeType::Added),
             CommandId::ShowDeleted => self.toggle_type(ChangeType::Deleted),
             CommandId::ShowModified => self.toggle_type(ChangeType::Modified),
+            CommandId::ShowMoved => self.toggle_type(ChangeType::Moved),
             CommandId::ShowInaccessible => self.toggle_type(ChangeType::Inaccessible),
             CommandId::SortByPath => self.sort_by(SortColumn::Path),
             CommandId::SortByName => self.sort_by(SortColumn::Name),
@@ -2139,7 +2143,7 @@ impl MainWindow {
     /// Shows the rows of `types` (#22), from the check boxes, the menu and its keys; the
     /// view is kept for the next differences and starts (#28), and the status bar says
     /// how many rows the list shows (#26).
-    fn set_types(&self, types: [bool; 4]) {
+    fn set_types(&self, types: ShownTypes) {
         let current = self.difference_list.borrow_mut().set_types(types);
         self.refresh_difference(current);
         if let Ok(settings) = &self.settings {

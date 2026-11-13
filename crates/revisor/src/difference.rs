@@ -24,12 +24,12 @@ use std::thread;
 
 use revisor_core::compare::{Difference, Side, Warning};
 use revisor_core::diff::{self, Change, ChangeKind, Fields, Inaccessible};
-use revisor_core::path::upcase;
+use revisor_core::path::{eq_ignore_case_os, upcase};
 use revisor_core::profiles::ProfileFile;
 use revisor_core::scan::{Entry, EntryKind, VersionInfo};
 use revisor_core::settings::{
-    AttributeFormat, ChangeType, DifferenceSort, DifferenceView, FocusAfterComparison, SizeFormat,
-    SortColumn, TreeNodeText,
+    AttributeFormat, ChangeType, DifferenceSort, DifferenceView, FocusAfterComparison, ShownTypes,
+    SizeFormat, SortColumn, TreeNodeText,
 };
 use revisor_core::store::{SnapshotInfo, Unavailable};
 
@@ -100,13 +100,19 @@ impl Column {
 }
 
 /// What a row is, as the column «Зміна» names it with the kind of the entry (#14, #15):
-/// the type of the row, with replaced entries apart from the other modified ones.
+/// the type of the row, with replaced entries apart from the other modified ones, and
+/// with what happened to a renamed or moved entry (TASK-42 #6).
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum RowChange {
     Added,
     Deleted,
     Modified,
     Replaced,
+    /// Another name in the same folder, also one that differs in case only.
+    Renamed,
+    /// Another folder, the same name.
+    Moved,
+    MovedAndRenamed,
     Inaccessible,
 }
 
@@ -178,6 +184,8 @@ pub struct SummaryText {
     pub modified: Counted,
     /// How many of the modified entries are replaced.
     pub replaced: Counted,
+    /// How many entries are renamed or moved (TASK-42 #10).
+    pub moved: Counted,
     pub inaccessible: Counted,
     pub size: SizeChange,
     pub warnings: Counted,
@@ -209,7 +217,7 @@ pub struct PairText {
 /// tree (TASK-33). The text filter is apart: it is not kept.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct View {
-    pub types: [bool; 4],
+    pub types: ShownTypes,
     pub sort: DifferenceSort,
     pub layout: DifferenceView,
 }
@@ -218,7 +226,7 @@ impl Default for View {
     /// Every type, by path, as a list (#28).
     fn default() -> Self {
         Self {
-            types: [true; 4],
+            types: [true; ChangeType::ALL.len()],
             sort: DifferenceSort::default(),
             layout: DifferenceView::default(),
         }
@@ -358,18 +366,21 @@ fn contains(hay: &[u16], needle: &[u16]) -> bool {
 /// The fewest rows a thread of the text filter checks: fewer are checked at once on one.
 const ROWS_PER_THREAD: usize = 32_768;
 
-/// A row of the difference list: a change or an inaccessible entry of the trees of one
-/// folder of the difference, by the entry's indices in them.
+/// A row of the difference list: a change or an inaccessible entry of a folder of the
+/// difference, by the entry's indices in the trees.
 #[derive(Clone, Copy, Debug)]
 struct Row {
-    /// The folder of the difference.
+    /// The folder of the difference whose row it is: its later tree holds `new`.
     folder: u32,
+    /// The folder of the difference whose earlier tree holds `old`: `folder`, or the one
+    /// that the entry, or a folder it is in, moved from (TASK-42).
+    old_folder: u32,
     /// The entry in the earlier tree, or [`NONE`].
     old: u32,
     /// The entry in the later tree, or [`NONE`].
     new: u32,
     kind: ChangeType,
-    /// What differs; empty unless the row is a modified entry.
+    /// What differs; empty unless the row is a modified, renamed or moved entry.
     fields: Fields,
 }
 
@@ -377,12 +388,14 @@ impl Row {
     fn change(folder: u32, change: &Change) -> Self {
         Self {
             folder,
+            old_folder: change.old_in.unwrap_or(folder),
             old: change.old.unwrap_or(NONE),
             new: change.new.unwrap_or(NONE),
             kind: match change.kind {
                 ChangeKind::Added => ChangeType::Added,
                 ChangeKind::Deleted => ChangeType::Deleted,
                 ChangeKind::Modified => ChangeType::Modified,
+                ChangeKind::Moved => ChangeType::Moved,
             },
             fields: change.fields,
         }
@@ -391,6 +404,7 @@ impl Row {
     fn inaccessible(folder: u32, entry: &Inaccessible) -> Self {
         Self {
             folder,
+            old_folder: entry.old_in.unwrap_or(folder),
             old: entry.old.unwrap_or(NONE),
             new: entry.new.unwrap_or(NONE),
             kind: ChangeType::Inaccessible,
@@ -404,14 +418,49 @@ impl Row {
 
     /// What the column «Зміна» says the row is.
     fn change_type(&self) -> RowChange {
+        let (folder, name) = (
+            self.fields.contains(Fields::FOLDER),
+            self.fields.contains(Fields::NAME),
+        );
         match self.kind {
             ChangeType::Added => RowChange::Added,
             ChangeType::Deleted => RowChange::Deleted,
             ChangeType::Modified if self.replaced() => RowChange::Replaced,
             ChangeType::Modified => RowChange::Modified,
+            ChangeType::Moved if !folder => RowChange::Renamed,
+            ChangeType::Moved if name => RowChange::MovedAndRenamed,
+            ChangeType::Moved => RowChange::Moved,
             ChangeType::Inaccessible => RowChange::Inaccessible,
         }
     }
+
+    /// The row's entry in the earlier tree.
+    fn earlier<'a>(&self, difference: &'a Difference) -> Option<&'a Entry> {
+        (self.old != NONE)
+            .then(|| &difference.folders[self.old_folder as usize].old[self.old as usize])
+    }
+
+    /// The row's entry in the later tree.
+    fn later<'a>(&self, difference: &'a Difference) -> Option<&'a Entry> {
+        (self.new != NONE).then(|| &difference.folders[self.folder as usize].new[self.new as usize])
+    }
+}
+
+/// The folders that were renamed or moved, by where they were — the folder of the
+/// difference and the entry of its earlier tree — with where they are: the folder of the
+/// difference and the entry of its later tree. What is left of a deleted entry of such a
+/// folder shows where the folder is now (TASK-42 #4).
+type MovedFolders = HashMap<(u32, u32), (u32, u32)>;
+
+fn moved_folders(rows: &[Row], difference: &Difference) -> MovedFolders {
+    rows.iter()
+        .filter(|row| row.kind == ChangeType::Moved)
+        .filter(|row| {
+            row.later(difference)
+                .is_some_and(|e| e.kind == EntryKind::Dir)
+        })
+        .map(|row| ((row.old_folder, row.old), (row.folder, row.new)))
+        .collect()
 }
 
 /// The rows of `difference` in tree order (#16, #20): the folders of the difference by
@@ -445,6 +494,9 @@ enum WhatChanged {
     Inaccessible(InaccessibleIn),
     /// The [`Field`] bits of the fields that differ.
     Fields(u16),
+    /// A renamed or moved entry: where it was, which every such row says in its own
+    /// words, and then the [`Field`] bits of the other fields that differ (TASK-42 #6).
+    Moved(u16),
 }
 
 /// The counts the summary is made of, counted once when the difference arrives.
@@ -454,9 +506,11 @@ struct Counts {
     deleted: u64,
     modified: u64,
     replaced: u64,
+    /// Renamed or moved.
+    moved: u64,
     inaccessible: u64,
     /// How the total size of the files changed: the added ones' sizes minus the deleted
-    /// ones' plus how the modified ones' changed (#7).
+    /// ones' plus how the modified and the moved ones' changed (#7, TASK-42 #10).
     size: i128,
 }
 
@@ -475,18 +529,32 @@ struct Pair {
     snapshots: [PairSnapshot; 2],
 }
 
+/// A tree of a folder of the difference, and how a folder of it is shown.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+enum FolderSide {
+    /// The earlier tree: a folder at the path it had.
+    Earlier,
+    /// The later tree.
+    Later,
+    /// The earlier tree: a folder at the path it shows at, which is the path it has now
+    /// when it, or a folder it is in, was renamed or moved (TASK-42 #4).
+    Shown,
+}
+
+/// A folder of a tree of the difference: the folder of the difference, the tree, and the
+/// entry; the entry [`NONE`] stands for the folder a tree's root lies in.
+type FolderAt = (u32, FolderSide, u32);
+
 /// The folders the rows' entries are in, each once, with the keys of their paths.
 #[derive(Default)]
 struct Folders {
-    /// By the folder of the difference, the tree (whether the later one) and the entry;
-    /// the entry [`NONE`] stands for the folder a tree's root lies in.
-    ids: HashMap<(u32, bool, u32), u32>,
+    ids: HashMap<FolderAt, u32>,
     /// The keys, one after another, and where each starts and how long it is.
     keys: Vec<u16>,
     spans: Vec<(u32, u32)>,
     /// What each folder is, as `ids` has it, and the folder it is in: [`NONE`] for a root,
     /// and for the folder a root lies in (TASK-33).
-    entries: Vec<(u32, bool, u32)>,
+    entries: Vec<FolderAt>,
     parents: Vec<u32>,
 }
 
@@ -496,7 +564,7 @@ impl Folders {
         &self.keys[start as usize..(start + len) as usize]
     }
 
-    fn add(&mut self, at: (u32, bool, u32), key: &[u16], parent: u32) -> u32 {
+    fn add(&mut self, at: FolderAt, key: &[u16], parent: u32) -> u32 {
         let id = self.spans.len() as u32;
         self.spans.push((self.keys.len() as u32, key.len() as u32));
         self.keys.extend_from_slice(key);
@@ -506,9 +574,9 @@ impl Folders {
         id
     }
 
-    /// The folder that is the entry `entry` of `tree`, the tree of `side` of the folder
-    /// `folder` of the difference.
-    fn of_entry(&mut self, tree: &[Entry], folder: u32, side: bool, entry: u32) -> u32 {
+    /// The folder that is the entry `entry` of `tree`, the tree of `side`, earlier or
+    /// later, of the folder `folder` of the difference, at the path it has in that tree.
+    fn of_entry(&mut self, tree: &[Entry], folder: u32, side: FolderSide, entry: u32) -> u32 {
         if let Some(&id) = self.ids.get(&(folder, side, entry)) {
             return id;
         }
@@ -526,9 +594,43 @@ impl Folders {
         self.add((folder, side, entry), &key, parent)
     }
 
+    /// The folder that is the entry `entry` of the earlier tree of the folder `folder` of
+    /// the difference, where it shows: at the path it has now when it was renamed or
+    /// moved, else in the folder its own folder shows at.
+    fn of_shown(
+        &mut self,
+        difference: &Difference,
+        moved: &MovedFolders,
+        folder: u32,
+        entry: u32,
+    ) -> u32 {
+        let tree = &difference.folders[folder as usize].old;
+        if moved.is_empty() {
+            return self.of_entry(tree, folder, FolderSide::Earlier, entry);
+        }
+        if let Some(&id) = self.ids.get(&(folder, FolderSide::Shown, entry)) {
+            return id;
+        }
+        if let Some(&(now_in, now)) = moved.get(&(folder, entry)) {
+            let later = &difference.folders[now_in as usize].new;
+            return self.of_entry(later, now_in, FolderSide::Later, now);
+        }
+        let at = &tree[entry as usize];
+        let (key, parent) = match at.parent {
+            Some(parent) => {
+                let parent = self.of_shown(difference, moved, folder, parent);
+                let mut key = self.key(parent).to_vec();
+                push_part(&mut key, &at.name);
+                (key, parent)
+            }
+            None => (path_key(&at.name), NONE),
+        };
+        self.add((folder, FolderSide::Shown, entry), &key, parent)
+    }
+
     /// The folder the root of a tree lies in: the tree of `side` of the folder `folder` of
     /// the difference, whose root is named by its whole path, `root`.
-    fn of_root(&mut self, root: &OsStr, folder: u32, side: bool) -> u32 {
+    fn of_root(&mut self, root: &OsStr, folder: u32, side: FolderSide) -> u32 {
         if let Some(&id) = self.ids.get(&(folder, side, NONE)) {
             return id;
         }
@@ -538,6 +640,16 @@ impl Folders {
             .unwrap_or_default();
         self.add((folder, side, NONE), &key, NONE)
     }
+}
+
+/// Where a renamed or moved entry was, for the text filter, which looks in the path it
+/// had too (TASK-42 #9).
+struct Former {
+    row: u32,
+    /// The folder it was in, at the path that one had.
+    folder: u32,
+    /// Its name then, upper-cased, among [`Index::former_names`].
+    name: (u32, u32),
 }
 
 /// The keys of the rows' names and folders, which sorting by name or folder and the text
@@ -556,33 +668,58 @@ struct Index {
     folders: Folders,
     /// The place of each folder in path order; folders with the same path share it.
     folder_rank: Vec<u32>,
+    /// Where the renamed and moved entries were, in the order of the rows, and their
+    /// upper-cased names then, one after another.
+    former: Vec<Former>,
+    former_names: Vec<u16>,
 }
 
 impl Index {
-    fn new(rows: &[Row], difference: &Difference) -> Self {
+    fn new(rows: &[Row], difference: &Difference, moved: &MovedFolders) -> Self {
         let mut names = Vec::new();
         let mut name_at = Vec::with_capacity(rows.len() + 1);
         let mut parent = Vec::with_capacity(rows.len());
         let mut own_folder = Vec::with_capacity(rows.len());
         let mut folders = Folders::default();
-        for row in rows {
-            let (tree, side, entry) = shown_entry(difference, row);
+        let mut former = Vec::new();
+        let mut former_names = Vec::new();
+        for (r, row) in rows.iter().enumerate() {
+            let (tree, entry) = shown_entry(difference, row);
             let at = &tree[entry as usize];
             name_at.push(names.len() as u32);
-            match at.parent {
-                Some(p) => {
-                    names.extend(at.name.encode_wide().map(upcase));
-                    parent.push(folders.of_entry(tree, row.folder, side, p));
-                }
-                None => {
-                    names.extend(root_name(&at.name).encode_wide().map(upcase));
-                    parent.push(folders.of_root(&at.name, row.folder, side));
-                }
-            }
+            names.extend(diff::name(tree, entry).encode_wide().map(upcase));
+            // An entry of the later tree is where that tree has it; one left only in the
+            // earlier tree shows where its folder is now.
+            let later = row.new != NONE;
+            let folder_of = |folders: &mut Folders, entry: u32| match later {
+                true => folders.of_entry(tree, row.folder, FolderSide::Later, entry),
+                false => folders.of_shown(difference, moved, row.old_folder, entry),
+            };
+            parent.push(match (at.parent, later) {
+                (Some(p), _) => folder_of(&mut folders, p),
+                (None, true) => folders.of_root(&at.name, row.folder, FolderSide::Later),
+                (None, false) => folders.of_root(&at.name, row.old_folder, FolderSide::Earlier),
+            });
             own_folder.push(match at.kind {
-                EntryKind::Dir => folders.of_entry(tree, row.folder, side, entry),
+                EntryKind::Dir => folder_of(&mut folders, entry),
                 EntryKind::File | EntryKind::Link => NONE,
             });
+            if row.kind == ChangeType::Moved {
+                let earlier = &difference.folders[row.old_folder as usize].old;
+                let was = &earlier[row.old as usize];
+                let side = FolderSide::Earlier;
+                let folder = match was.parent {
+                    Some(p) => folders.of_entry(earlier, row.old_folder, side, p),
+                    None => folders.of_root(&was.name, row.old_folder, side),
+                };
+                let start = former_names.len() as u32;
+                former_names.extend(diff::name(earlier, row.old).encode_wide().map(upcase));
+                former.push(Former {
+                    row: r as u32,
+                    folder,
+                    name: (start, former_names.len() as u32 - start),
+                });
+            }
         }
         name_at.push(names.len() as u32);
         let mut by_path: Vec<u32> = (0..folders.spans.len() as u32).collect();
@@ -602,6 +739,8 @@ impl Index {
             own_folder,
             folders,
             folder_rank,
+            former,
+            former_names,
         }
     }
 
@@ -654,11 +793,24 @@ impl FolderTexts {
         let f = folder as usize;
         &self.tails[self.tail_at[f] as usize..self.tail_at[f + 1] as usize]
     }
+
+    /// Whether the path of the entry `name` of the folder `folder` holds `needle`: the
+    /// path of the folder, the name, or the two across the separator. `across` is a
+    /// buffer to join them in.
+    fn path_holds(&self, folder: u32, name: &[u16], needle: &[u16], across: &mut Vec<u16>) -> bool {
+        self.holds[folder as usize] || contains(name, needle) || {
+            across.clear();
+            across.extend_from_slice(self.tail(folder));
+            across.extend_from_slice(&name[..name.len().min(needle.len() - 1)]);
+            contains(across, needle)
+        }
+    }
 }
 
 /// Which rows' paths hold `needle` (#24), by row: the path of the folder, the name, or
-/// the two across the separator. A million rows are checked on a few threads at once, so
-/// that typing in the field «Фільтр:» does not lag (#29).
+/// the two across the separator; for a renamed or moved entry, the path it had as well
+/// (TASK-42 #9). A million rows are checked on a few threads at once, so that typing in
+/// the field «Фільтр:» does not lag (#29).
 fn text_matches(index: &Index, needle: &[u16]) -> Vec<bool> {
     let folders = FolderTexts::new(&index.folders, needle);
     let check = |first: usize, out: &mut [bool]| {
@@ -666,13 +818,7 @@ fn text_matches(index: &Index, needle: &[u16]) -> Vec<bool> {
         for (i, out) in out.iter_mut().enumerate() {
             let row = (first + i) as u32;
             let folder = index.parent[row as usize];
-            let name = index.name(row);
-            *out = folders.holds[folder as usize] || contains(name, needle) || {
-                across.clear();
-                across.extend_from_slice(folders.tail(folder));
-                across.extend_from_slice(&name[..name.len().min(needle.len() - 1)]);
-                contains(&across, needle)
-            };
+            *out = folders.path_holds(folder, index.name(row), needle, &mut across);
         }
     };
     let mut matches = vec![false; index.parent.len()];
@@ -688,65 +834,105 @@ fn text_matches(index: &Index, needle: &[u16]) -> Vec<bool> {
             }
         });
     }
+    let mut across = Vec::new();
+    for former in &index.former {
+        let (start, len) = former.name;
+        let name = &index.former_names[start as usize..(start + len) as usize];
+        let matched = &mut matches[former.row as usize];
+        *matched = *matched || folders.path_holds(former.folder, name, needle, &mut across);
+    }
     matches
 }
 
 /// The tree of the entry a row shows and its index there: in the later tree where the
-/// entry is there, else in the earlier one (#13); `true` for the later tree.
-fn shown_entry<'a>(difference: &'a Difference, row: &Row) -> (&'a [Entry], bool, u32) {
-    let folder = &difference.folders[row.folder as usize];
+/// entry is there, else in the earlier one (#13).
+fn shown_entry<'a>(difference: &'a Difference, row: &Row) -> (&'a [Entry], u32) {
     if row.new != NONE {
-        (&folder.new, true, row.new)
+        (&difference.folders[row.folder as usize].new, row.new)
     } else {
-        (&folder.old, false, row.old)
+        (&difference.folders[row.old_folder as usize].old, row.old)
     }
 }
 
-/// The name of a root, which is named by its whole path: its last part, or the whole
-/// path for the root of a drive.
-fn root_name(path: &OsStr) -> &OsStr {
-    Path::new(path).file_name().unwrap_or(path)
+/// An entry's name as the column «Ім'я» shows it: a root, which is named by its whole
+/// path, by the last part of it.
+fn entry_name(tree: &[Entry], entry: u32) -> String {
+    diff::name(tree, entry).to_string_lossy().into_owned()
 }
 
-/// An entry's name as the column «Ім'я» shows it: a root by its last part.
-fn entry_name(entry: &Entry) -> String {
-    match entry.parent {
-        Some(_) => entry.name.to_string_lossy().into_owned(),
-        None => root_name(&entry.name).to_string_lossy().into_owned(),
+/// The path at which the entry `entry` of the earlier tree of the folder `folder` of the
+/// difference shows: the path it had, or, inside a folder that was renamed or moved, its
+/// path below the place that folder is at now (TASK-42 #4).
+fn shown_path(difference: &Difference, moved: &MovedFolders, folder: u32, entry: u32) -> PathBuf {
+    let tree = &difference.folders[folder as usize].old;
+    if moved.is_empty() {
+        return diff::path(tree, entry);
     }
+    let mut names = Vec::new();
+    let mut at = entry;
+    let mut path = loop {
+        if let Some(&(now_in, now)) = moved.get(&(folder, at)) {
+            break diff::path(&difference.folders[now_in as usize].new, now);
+        }
+        let here = &tree[at as usize];
+        match here.parent {
+            Some(parent) => {
+                names.push(&*here.name);
+                at = parent;
+            }
+            None => break PathBuf::from(&*here.name),
+        }
+    };
+    path.extend(names.iter().rev());
+    path
 }
 
 /// The whole path of the entry of the row `r`, as the list's columns show it: in the
 /// later snapshot, else in the earlier (TASK-14 #11).
 fn row_path(shown: &Shown, r: u32) -> PathBuf {
-    let (tree, _, at) = shown_entry(&shown.difference, &shown.rows[r as usize]);
-    diff::path(tree, at)
+    let row = &shown.rows[r as usize];
+    let difference = &shown.difference;
+    if row.new != NONE {
+        diff::path(&difference.folders[row.folder as usize].new, row.new)
+    } else {
+        shown_path(difference, &shown.moved, row.old_folder, row.old)
+    }
+}
+
+/// The folder of the index that a node of the difference tree which is no row is.
+fn node_folder(shown: &Shown, tree: &Tree, node: u32) -> FolderAt {
+    let index = shown
+        .index
+        .as_ref()
+        .expect("the tree is made from the index");
+    index.folders.entries[tree.folder(node) as usize]
 }
 
 /// The tree of a snapshot and the entry there that a node of the difference tree is:
 /// its row's, or its folder's.
 fn node_entry<'a>(shown: &'a Shown, tree: &Tree, node: u32) -> (&'a [Entry], u32) {
     match tree.row(node) {
-        Some(r) => {
-            let (entries, _, at) = shown_entry(&shown.difference, &shown.rows[r as usize]);
-            (entries, at)
-        }
+        Some(r) => shown_entry(&shown.difference, &shown.rows[r as usize]),
         None => {
-            let index = shown
-                .index
-                .as_ref()
-                .expect("the tree is made from the index");
-            let (folder, later, entry) = index.folders.entries[tree.folder(node) as usize];
+            let (folder, side, entry) = node_folder(shown, tree, node);
             let folder = &shown.difference.folders[folder as usize];
-            (if later { &folder.new } else { &folder.old }, entry)
+            match side {
+                FolderSide::Later => (&folder.new, entry),
+                FolderSide::Earlier | FolderSide::Shown => (&folder.old, entry),
+            }
         }
     }
 }
 
 /// The whole path of a folder of the tree that is no change itself.
 fn folder_path(shown: &Shown, tree: &Tree, node: u32) -> PathBuf {
-    let (entries, at) = node_entry(shown, tree, node);
-    diff::path(entries, at)
+    let (folder, side, entry) = node_folder(shown, tree, node);
+    let difference = &shown.difference;
+    match side {
+        FolderSide::Later => diff::path(&difference.folders[folder as usize].new, entry),
+        FolderSide::Earlier => diff::path(&difference.folders[folder as usize].old, entry),
+        FolderSide::Shown => shown_path(difference, &shown.moved, folder, entry),
+    }
 }
 
 /// A difference shown, with all the model knows of it.
@@ -755,6 +941,8 @@ struct Shown {
     pair: Pair,
     /// Every row, in tree order.
     rows: Vec<Row>,
+    /// The folders among them that were renamed or moved.
+    moved: MovedFolders,
     counts: Counts,
     /// The rows in the order of the view.
     order: Vec<u32>,
@@ -778,7 +966,7 @@ impl Shown {
         if self.tree.is_none() {
             let index = self
                 .index
-                .get_or_insert_with(|| Index::new(&self.rows, &self.difference));
+                .get_or_insert_with(|| Index::new(&self.rows, &self.difference, &self.moved));
             self.tree = Some(Tree::new(&self.rows, index));
         }
         let tree = self.tree.as_mut().expect("the tree was just made");
@@ -877,6 +1065,7 @@ impl List {
     /// focus is on the first row; its place comes back.
     pub fn replace(&mut self, difference: Difference, profile: ProfileFile) -> Option<usize> {
         let rows = rows_of(&difference);
+        let moved = moved_folders(&rows, &difference);
         let counts = count(&rows, &difference);
         let snapshot = |info: &SnapshotInfo| PairSnapshot {
             info: info.clone(),
@@ -893,6 +1082,7 @@ impl List {
             difference,
             pair,
             rows,
+            moved,
             counts,
             order: Vec::new(),
             visible: Vec::new(),
@@ -978,7 +1168,7 @@ impl List {
 
     /// Shows the rows of the types `types` (#22); the focus stays on its row, or goes to
     /// the nearest row shown when its own is hidden (#27). Its place comes back.
-    pub fn set_types(&mut self, types: [bool; 4]) -> Option<usize> {
+    pub fn set_types(&mut self, types: ShownTypes) -> Option<usize> {
         self.view.types = types;
         self.filter()
     }
@@ -1018,24 +1208,23 @@ impl List {
             return String::new();
         };
         let row = &shown.rows[r as usize];
-        let (tree, _, at) = shown_entry(&shown.difference, row);
+        let (tree, at) = shown_entry(&shown.difference, row);
         let entry = &tree[at as usize];
         match column {
-            Column::Name => entry_name(entry),
+            Column::Name => entry_name(tree, at),
             Column::Change => s.change(row.change_type(), entry.kind).to_string(),
-            Column::WhatChanged => what_changed_words(s, what_changed(&shown.difference, row)),
+            Column::WhatChanged => what_changed_text(s, &shown.difference, row),
             Column::Size => match entry.kind {
                 EntryKind::File => format_size(entry.size, self.size_format, s, &*self.regional),
                 _ => String::new(),
             },
             Column::DateModified => self.regional.file_time(entry.modified),
-            Column::Folder => match entry.parent {
-                Some(parent) => diff::path(tree, parent).to_string_lossy().into_owned(),
-                None => Path::new(&*entry.name)
-                    .parent()
-                    .map(|parent| parent.to_string_lossy().into_owned())
-                    .unwrap_or_default(),
-            },
+            // The folder the entry shows in: the one it is in now, and for an entry
+            // deleted inside a folder that moved, the place that folder is at now.
+            Column::Folder => row_path(shown, r)
+                .parent()
+                .map(|parent| parent.to_string_lossy().into_owned())
+                .unwrap_or_default(),
         }
     }
 
@@ -1093,27 +1282,37 @@ impl List {
     /// The details of the row `r`.
     fn row_details(&self, shown: &Shown, r: u32) -> Details {
         let row = &shown.rows[r as usize];
-        let folder = &shown.difference.folders[row.folder as usize];
-        let old = (row.old != NONE).then(|| &folder.old[row.old as usize]);
-        let new = (row.new != NONE).then(|| &folder.new[row.new as usize]);
+        let difference = &shown.difference;
+        let (old, new) = (row.earlier(difference), row.later(difference));
         let fields = match row.kind {
-            // An entry inaccessible in a tree may be modified too: its change says how.
-            ChangeType::Inaccessible if old.is_some() && new.is_some() => folder
+            // An entry inaccessible in a tree may be modified, renamed or moved too: its
+            // change says how.
+            ChangeType::Inaccessible if old.is_some() && new.is_some() => difference.folders
+                [row.folder as usize]
                 .diff
                 .changes
                 .iter()
-                .find(|c| c.old == Some(row.old) && c.new == Some(row.new))
+                .find(|c| {
+                    c.old == Some(row.old)
+                        && c.new == Some(row.new)
+                        && c.old_in.unwrap_or(row.folder) == row.old_folder
+                })
                 .map_or_else(Fields::default, |c| c.fields),
             _ => row.fields,
         };
         let what_changed = match row.kind {
-            ChangeType::Modified => {
-                what_changed_words(self.s, what_changed(&shown.difference, row))
+            ChangeType::Modified | ChangeType::Moved => {
+                fields_words(self.s, field_bits(difference, row))
             }
             _ => String::new(),
         };
+        // The path the entry had, when it is at another one now; a name that differs in
+        // case only has a line of its own instead (TASK-14 #4, TASK-42 #8).
+        let former_path = (old.is_some() && new.is_some() && path_differs(difference, row, fields))
+            .then(|| former_path(difference, row).to_string_lossy().into_owned());
         let subject = details::Row {
             path: row_path(shown, r).to_string_lossy().into_owned(),
+            former_path,
             change: row.change_type(),
             what_changed,
             old,
@@ -1125,9 +1324,9 @@ impl List {
             size: self.size_format,
             attributes: self.attribute_format,
         };
-        let (tree, _, at) = shown_entry(&shown.difference, row);
+        let (tree, at) = shown_entry(difference, row);
         Details {
-            name: entry_name(&tree[at as usize]),
+            name: entry_name(tree, at),
             text: details::text(self.s, &*self.regional, formats, &subject),
         }
     }
@@ -1227,12 +1426,12 @@ impl List {
         let long = self.node_text == TreeNodeText::Long;
         let change = tree.row(node.0).map(|r| {
             let row = &shown.rows[r as usize];
-            let (entries, _, at) = shown_entry(&shown.difference, row);
+            let (entries, at) = shown_entry(&shown.difference, row);
             let words = s
                 .change(row.change_type(), entries[at as usize].kind)
                 .to_string();
             let what = if long {
-                what_changed_words(s, what_changed(&shown.difference, row))
+                what_changed_text(s, &shown.difference, row)
             } else {
                 String::new()
             };
@@ -1382,11 +1581,12 @@ impl List {
             format_size(bytes, self.size_format, self.s, &*self.regional)
         };
         SummaryText {
-            changes: self.counted(c.added + c.deleted + c.modified),
+            changes: self.counted(c.added + c.deleted + c.modified + c.moved),
             added: self.counted(c.added),
             deleted: self.counted(c.deleted),
             modified: self.counted(c.modified),
             replaced: self.counted(c.replaced),
+            moved: self.counted(c.moved),
             inaccessible: self.counted(c.inaccessible),
             size: match c.size.cmp(&0) {
                 Ordering::Greater => SizeChange::Increased(size(c.size)),
@@ -1438,17 +1638,17 @@ impl List {
         match sort.column {
             SortColumn::Path => unreachable!("the tree order needs no sorting"),
             SortColumn::Name => {
-                let index = shown
-                    .index
-                    .get_or_insert_with(|| Index::new(&shown.rows, &shown.difference));
+                let index = shown.index.get_or_insert_with(|| {
+                    Index::new(&shown.rows, &shown.difference, &shown.moved)
+                });
                 order.sort_unstable_by(|&a, &b| {
                     direction(index.name(a).cmp(index.name(b))).then(a.cmp(&b))
                 });
             }
             SortColumn::Folder => {
-                let index = shown
-                    .index
-                    .get_or_insert_with(|| Index::new(&shown.rows, &shown.difference));
+                let index = shown.index.get_or_insert_with(|| {
+                    Index::new(&shown.rows, &shown.difference, &shown.moved)
+                });
                 let rank = |r: u32| index.folder_rank[index.parent[r as usize] as usize];
                 order.sort_unstable_by(|&a, &b| direction(rank(a).cmp(&rank(b))).then(a.cmp(&b)));
             }
@@ -1461,26 +1661,36 @@ impl List {
                 sort_by_key(&mut order, &keys, sort.descending);
             }
             SortColumn::WhatChanged => {
-                let codes: Vec<WhatChanged> = shown
+                // Each text once, ordered as the tree orders names. The rows of one code
+                // say the same; a renamed or moved entry says where it was, in its own
+                // words.
+                let mut texts: Vec<Vec<u16>> = Vec::new();
+                let mut text = |words: String| {
+                    texts.push(words.encode_utf16().map(upcase).collect());
+                    (texts.len() - 1) as u32
+                };
+                let mut of_code: HashMap<WhatChanged, u32> = HashMap::new();
+                let said: Vec<u32> = shown
                     .rows
                     .iter()
-                    .map(|row| what_changed(&shown.difference, row))
+                    .map(|row| match what_changed(&shown.difference, row) {
+                        WhatChanged::Moved(_) => {
+                            text(what_changed_text(self.s, &shown.difference, row))
+                        }
+                        code => *of_code
+                            .entry(code)
+                            .or_insert_with(|| text(what_changed_words(self.s, code))),
+                    })
                     .collect();
-                // Each text once, ordered as the tree orders names.
-                let mut texts: Vec<(Vec<u16>, WhatChanged)> = Vec::new();
-                for &code in &codes {
-                    if !texts.iter().any(|(_, c)| *c == code) {
-                        let text = what_changed_words(self.s, code);
-                        texts.push((text.encode_utf16().map(upcase).collect(), code));
-                    }
+                // The place of each text among them; the same text has the same place.
+                let mut by_text: Vec<u32> = (0..texts.len() as u32).collect();
+                by_text.sort_unstable_by(|&a, &b| texts[a as usize].cmp(&texts[b as usize]));
+                let mut rank = vec![0u32; texts.len()];
+                for pair in by_text.windows(2) {
+                    let (before, after) = (pair[0] as usize, pair[1] as usize);
+                    rank[after] = rank[before] + u32::from(texts[before] != texts[after]);
                 }
-                texts.sort_by(|a, b| a.0.cmp(&b.0));
-                let rank: HashMap<WhatChanged, u32> = texts
-                    .iter()
-                    .enumerate()
-                    .map(|(i, (_, code))| (*code, i as u32))
-                    .collect();
-                let keys: Vec<u32> = codes.iter().map(|code| rank[code]).collect();
+                let keys: Vec<u32> = said.iter().map(|&text| rank[text as usize]).collect();
                 sort_by_key(&mut order, &keys, sort.descending);
             }
             SortColumn::Size => {
@@ -1488,7 +1698,7 @@ impl List {
                     .rows
                     .iter()
                     .map(|row| {
-                        let (tree, _, at) = shown_entry(&shown.difference, row);
+                        let (tree, at) = shown_entry(&shown.difference, row);
                         let entry = &tree[at as usize];
                         // Folders and links have no size, so they come before the files.
                         (entry.kind == EntryKind::File).then_some(entry.size)
@@ -1501,7 +1711,7 @@ impl List {
                     .rows
                     .iter()
                     .map(|row| {
-                        let (tree, _, at) = shown_entry(&shown.difference, row);
+                        let (tree, at) = shown_entry(&shown.difference, row);
                         tree[at as usize].modified
                     })
                     .collect();
@@ -1522,7 +1732,7 @@ impl List {
         let text = (!needle.is_empty()).then(|| {
             let index = shown
                 .index
-                .get_or_insert_with(|| Index::new(&shown.rows, &shown.difference));
+                .get_or_insert_with(|| Index::new(&shown.rows, &shown.difference, &shown.moved));
             text_matches(index, needle)
         });
         let passed: Vec<bool> = shown
@@ -1571,20 +1781,70 @@ impl List {
 }
 
 /// The words of the column «Що змінилося» for `what`: the fields that differ, in the order
-/// of [`Field`], or in which snapshot an entry is inaccessible.
+/// of [`Field`], or in which snapshot an entry is inaccessible. For a renamed or moved
+/// entry these are the other fields that differ: where it was, which the column says
+/// first, is in [`what_changed_text`].
 fn what_changed_words(s: &dyn Strings, what: WhatChanged) -> String {
     match what {
         WhatChanged::Nothing => String::new(),
         WhatChanged::Inaccessible(which) => s.inaccessible_in(which).to_string(),
-        WhatChanged::Fields(bits) => {
-            let names: Vec<&str> = Field::ALL
-                .into_iter()
-                .filter(|field| bits & field.bit() != 0)
-                .map(|field| s.field(field))
-                .collect();
-            names.join(", ")
-        }
+        WhatChanged::Fields(bits) | WhatChanged::Moved(bits) => fields_words(s, bits),
     }
+}
+
+/// The names of the fields of `bits`, in the order of [`Field`].
+fn fields_words(s: &dyn Strings, bits: u16) -> String {
+    let names: Vec<&str> = Field::ALL
+        .into_iter()
+        .filter(|field| bits & field.bit() != 0)
+        .map(|field| s.field(field))
+        .collect();
+    names.join(", ")
+}
+
+/// What the column «Що змінилося» says for `row`. A renamed or moved entry says where it
+/// was — «з a.txt» — and then, after a semicolon, the other fields that differ (TASK-42
+/// #6, #7).
+fn what_changed_text(s: &dyn Strings, difference: &Difference, row: &Row) -> String {
+    match what_changed(difference, row) {
+        WhatChanged::Moved(bits) => {
+            let from = s.moved_from(&former_place(difference, row));
+            match bits {
+                0 => from,
+                _ => format!("{from}; {}", fields_words(s, bits)),
+            }
+        }
+        what => what_changed_words(s, what),
+    }
+}
+
+/// The path a renamed or moved entry had in the earlier snapshot.
+fn former_path(difference: &Difference, row: &Row) -> PathBuf {
+    diff::path(&difference.folders[row.old_folder as usize].old, row.old)
+}
+
+/// Where a renamed or moved entry was, as short as tells it from where it is (TASK-42 #6):
+/// the name it had when it was renamed in its folder, the folder it was in when it was
+/// moved under its name, and its whole path when both differ.
+fn former_place(difference: &Difference, row: &Row) -> String {
+    let earlier = &difference.folders[row.old_folder as usize].old;
+    let place = match row.change_type() {
+        RowChange::Moved => diff::folder(earlier, row.old),
+        RowChange::MovedAndRenamed => diff::path(earlier, row.old),
+        _ => PathBuf::from(diff::name(earlier, row.old)),
+    };
+    place.to_string_lossy().into_owned()
+}
+
+/// Whether an entry whose fields `fields` differ is at another path than it was, apart
+/// from the case of its name: in another folder, or under another name.
+fn path_differs(difference: &Difference, row: &Row, fields: Fields) -> bool {
+    let renamed = || {
+        let earlier = &difference.folders[row.old_folder as usize].old;
+        let later = &difference.folders[row.folder as usize].new;
+        !eq_ignore_case_os(diff::name(earlier, row.old), diff::name(later, row.new))
+    };
+    fields.contains(Fields::FOLDER) || (fields.contains(Fields::NAME) && renamed())
 }
 
 /// In which snapshot the entry of a row of `kind` is inaccessible, and why, as far as the
@@ -1672,10 +1932,10 @@ fn sort_by_key<K: Ord>(order: &mut [u32], keys: &[K], descending: bool) {
 }
 
 /// The place of a row's change among the others when sorted by «Зміна» (#21): by type in
-/// the order of the check boxes, replaced right after modified, then by the kind of the
-/// entry — file, folder, link.
+/// the order of the check boxes, replaced right after modified, renamed before moved,
+/// then by the kind of the entry — file, folder, link.
 fn change_rank(difference: &Difference, row: &Row) -> u8 {
-    let (tree, _, at) = shown_entry(difference, row);
+    let (tree, at) = shown_entry(difference, row);
     let kind = match tree[at as usize].kind {
         EntryKind::File => 0,
         EntryKind::Dir => 1,
@@ -1686,18 +1946,19 @@ fn change_rank(difference: &Difference, row: &Row) -> u8 {
         RowChange::Deleted => 1,
         RowChange::Modified => 2,
         RowChange::Replaced => 3,
-        RowChange::Inaccessible => 4,
+        RowChange::Renamed => 4,
+        RowChange::Moved => 5,
+        RowChange::MovedAndRenamed => 6,
+        RowChange::Inaccessible => 7,
     };
     change * 3 + kind
 }
 
-/// What the column «Що змінилося» says for `row` (#13, #15): the fields of a modified
-/// entry that differ, without the file ID, which «Замінено» says; for an inaccessible
-/// entry, in which snapshot it is so; nothing for an added or deleted one.
+/// What the column «Що змінилося» says for `row` (#13, #15), as a code: the fields of a
+/// modified, renamed or moved entry that differ; for an inaccessible entry, in which
+/// snapshot it is so; nothing for an added or deleted one.
 fn what_changed(difference: &Difference, row: &Row) -> WhatChanged {
-    let folder = &difference.folders[row.folder as usize];
-    let old = (row.old != NONE).then(|| &folder.old[row.old as usize]);
-    let new = (row.new != NONE).then(|| &folder.new[row.new as usize]);
+    let (old, new) = (row.earlier(difference), row.later(difference));
     match row.kind {
         ChangeType::Added | ChangeType::Deleted => WhatChanged::Nothing,
         ChangeType::Inaccessible => WhatChanged::Inaccessible(match (old, new) {
@@ -1714,66 +1975,80 @@ fn what_changed(difference: &Difference, row: &Row) -> WhatChanged {
             (None, Some(_)) => InaccessibleIn::Earlier,
             (None, None) => InaccessibleIn::Both,
         }),
-        ChangeType::Modified => {
-            let fields = row.fields;
-            let mut bits = 0u16;
-            let mut set = |field: Field| bits |= field.bit();
-            if fields.contains(Fields::VERSION) {
-                match (old.map(|e| e.version), new.map(|e| e.version)) {
-                    (Some(VersionInfo::Some(a)), Some(VersionInfo::Some(b))) => {
-                        if a.file != b.file {
-                            set(Field::FileVersion);
-                        }
-                        if a.product != b.product {
-                            set(Field::ProductVersion);
-                        }
-                    }
-                    // The version resource came or went.
-                    _ => set(Field::FileVersion),
-                }
-            }
-            for (flag, field) in [
-                (Fields::LINK_TARGET, Field::LinkTarget),
-                (Fields::SIZE, Field::Size),
-                (Fields::MODIFIED, Field::DateModified),
-                (Fields::CREATED, Field::DateCreated),
-                (Fields::ATTRIBUTES, Field::Attributes),
-                (Fields::NAME, Field::NameCase),
-            ] {
-                if fields.contains(flag) {
-                    set(field);
-                }
-            }
-            WhatChanged::Fields(bits)
-        }
+        ChangeType::Modified => WhatChanged::Fields(field_bits(difference, row)),
+        ChangeType::Moved => WhatChanged::Moved(field_bits(difference, row)),
     }
 }
 
-/// The counts of the summary (#7, #10, #16): changes by type, the replaced among the
-/// modified, the inaccessible entries apart, and the change of the total size of files.
+/// The [`Field`] bits of the fields of a modified, renamed or moved entry that differ,
+/// without the file ID, which «Замінено» says, and without the name and the folder of a
+/// renamed or moved one, which «Зміна» says: its name differs in more than case.
+fn field_bits(difference: &Difference, row: &Row) -> u16 {
+    let (old, new) = (row.earlier(difference), row.later(difference));
+    let fields = row.fields;
+    let mut bits = 0u16;
+    let mut set = |field: Field| bits |= field.bit();
+    if fields.contains(Fields::VERSION) {
+        match (old.map(|e| e.version), new.map(|e| e.version)) {
+            (Some(VersionInfo::Some(a)), Some(VersionInfo::Some(b))) => {
+                if a.file != b.file {
+                    set(Field::FileVersion);
+                }
+                if a.product != b.product {
+                    set(Field::ProductVersion);
+                }
+            }
+            // The version resource came or went.
+            _ => set(Field::FileVersion),
+        }
+    }
+    for (flag, field) in [
+        (Fields::LINK_TARGET, Field::LinkTarget),
+        (Fields::SIZE, Field::Size),
+        (Fields::MODIFIED, Field::DateModified),
+        (Fields::CREATED, Field::DateCreated),
+        (Fields::ATTRIBUTES, Field::Attributes),
+    ] {
+        if fields.contains(flag) {
+            set(field);
+        }
+    }
+    if fields.contains(Fields::NAME) && row.kind == ChangeType::Modified {
+        set(Field::NameCase);
+    }
+    bits
+}
+
+/// The counts of the summary (#7, #10, #16; TASK-42 #10): changes by type, the replaced
+/// among the modified, the inaccessible entries apart, and the change of the total size of
+/// files.
 fn count<'a>(rows: impl IntoIterator<Item = &'a Row>, difference: &Difference) -> Counts {
     let mut counts = Counts::default();
+    let file_size = |entry: Option<&Entry>| -> i128 {
+        match entry {
+            Some(entry) if entry.kind == EntryKind::File => i128::from(entry.size),
+            _ => 0,
+        }
+    };
     for row in rows {
-        let folder = &difference.folders[row.folder as usize];
-        let file_size = |tree: &[Entry], at: u32| -> i128 {
-            match tree.get(at as usize) {
-                Some(entry) if entry.kind == EntryKind::File => i128::from(entry.size),
-                _ => 0,
-            }
-        };
+        let (old, new) = (row.earlier(difference), row.later(difference));
         match row.kind {
             ChangeType::Added => {
                 counts.added += 1;
-                counts.size += file_size(&folder.new, row.new);
+                counts.size += file_size(new);
             }
             ChangeType::Deleted => {
                 counts.deleted += 1;
-                counts.size -= file_size(&folder.old, row.old);
+                counts.size -= file_size(old);
             }
             ChangeType::Modified => {
                 counts.modified += 1;
                 counts.replaced += u64::from(row.replaced());
-                counts.size += file_size(&folder.new, row.new) - file_size(&folder.old, row.old);
+                counts.size += file_size(new) - file_size(old);
+            }
+            ChangeType::Moved => {
+                counts.moved += 1;
+                counts.size += file_size(new) - file_size(old);
             }
             ChangeType::Inaccessible => counts.inaccessible += 1,
         }
