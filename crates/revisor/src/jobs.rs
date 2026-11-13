@@ -26,7 +26,7 @@ use revisor_core::store::{
 };
 
 use crate::difference::Export;
-use crate::export::{ExportWork, Exported};
+use crate::export::{ExportWork, Exported, Format};
 
 /// How long a comparison runs before the progress row shows it (TASK-11 #7): a shorter
 /// one shows no progress at all.
@@ -325,11 +325,11 @@ impl Jobs {
         }
     }
 
-    /// Starts exporting `export` to the file at `path` (TASK-39); the commands see to it
-    /// that no other export runs.
-    pub fn start_export(&mut self, export: Export, path: PathBuf) {
+    /// Starts exporting `export` to the file at `path` in `format` (TASK-39, TASK-40); the
+    /// commands see to it that no other export runs.
+    pub fn start_export(&mut self, export: Export, path: PathBuf, format: Format) {
         debug_assert!(self.export.is_none(), "one export at a time");
-        let job = Job::start(ExportWork::new(export, path.clone()));
+        let job = Job::start(ExportWork::new(export, path.clone(), format));
         self.export = Some(Exporting { path, job });
     }
 

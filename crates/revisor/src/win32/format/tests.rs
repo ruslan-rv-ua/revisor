@@ -186,3 +186,45 @@ fn grouping_follows_the_locale_string() {
     assert_eq!(grouping_field("3"), 30);
     assert_eq!(grouping_field("0"), 0);
 }
+
+#[test]
+fn the_list_separator_is_that_of_the_locale() {
+    // TASK-40 #5, #8: a semicolon in the Ukrainian region, a comma in the English one, and
+    // so is the delimiter of CSV «as in Windows».
+    let (list, decimal) = list_and_decimal_separators(UK);
+    assert_eq!(
+        (list.as_deref(), decimal.as_deref()),
+        (Some(";"), Some(","))
+    );
+    assert_eq!(
+        crate::export::windows_delimiter(list.as_deref(), decimal.as_deref()),
+        ';'
+    );
+    let (list, decimal) = list_and_decimal_separators(EN);
+    assert_eq!(
+        (list.as_deref(), decimal.as_deref()),
+        (Some(","), Some("."))
+    );
+    assert_eq!(
+        crate::export::windows_delimiter(list.as_deref(), decimal.as_deref()),
+        ','
+    );
+}
+
+#[test]
+fn the_offset_from_utc_is_whole_minutes_of_the_local_time() {
+    // TASK-40 #3: whatever the time zone of the computer, the offset takes the moment to
+    // the local time Windows gives for it.
+    let moment = 134_390_451_311_234_567; // 2026-11-13 12:05:31.1234567 UTC
+    let offset = utc_offset_minutes(moment).expect("Windows converts the moment");
+    assert!(offset.abs() <= 14 * 60, "{offset}");
+    let local = local_time(moment).unwrap();
+    let written = crate::difference::iso_time_for_tests(moment, &|_| Some(offset));
+    assert!(
+        written.starts_with(&format!(
+            "{:04}-{:02}-{:02} {:02}:{:02}:{:02}.1234567",
+            local.wYear, local.wMonth, local.wDay, local.wHour, local.wMinute, local.wSecond
+        )),
+        "{written}"
+    );
+}

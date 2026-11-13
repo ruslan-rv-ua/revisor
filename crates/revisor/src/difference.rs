@@ -39,6 +39,7 @@ use crate::details::{self, Formats, Inaccessibility, Property, Unreadable};
 use crate::i18n::Strings;
 use crate::keyboard::Focus;
 
+mod csv;
 mod report;
 mod tree;
 
@@ -2112,3 +2113,12 @@ pub fn arrival_after_snapshot(
 
 #[cfg(test)]
 pub(crate) mod tests;
+
+/// A moment as CSV writes it, for the tests of the offset from UTC that Windows gives.
+#[cfg(test)]
+pub(crate) fn iso_time_for_tests(
+    file_time: i64,
+    utc_offset: &dyn Fn(i64) -> Option<i32>,
+) -> String {
+    csv::iso_time(file_time, utc_offset)
+}

@@ -6,14 +6,15 @@
 //! whether showing a change no longer on disk in File Explorer asks first (TASK-14), and
 //! whether the list of typical folders offers other users' folders (TASK-43). The
 //! profile opened last and the view of the difference — its types, order, list or tree — are
-//! kept without a control. The settings lie on tabs (TASK-44): «Загальні», «Знімки» and
-//! «Різниця».
+//! kept without a control. The settings lie on tabs (TASK-44): «Загальні», «Знімки»,
+//! «Різниця» and «Експорт», which holds whether the exported file opens (TASK-39) and what
+//! separates the values of CSV (TASK-40).
 
 use std::rc::Rc;
 
 use revisor_core::settings::{
-    AttributeFormat, FocusAfterComparison, FocusAfterSnapshot, Language, SizeFormat, Theme,
-    TreeNodeText,
+    AttributeFormat, CsvDelimiter, FocusAfterComparison, FocusAfterSnapshot, Language, SizeFormat,
+    Theme, TreeNodeText,
 };
 use wxdragon::prelude::*;
 
@@ -36,6 +37,7 @@ pub struct Values {
     pub warn_missing_entry: bool,
     pub other_users_folders: bool,
     pub open_after_export: bool,
+    pub csv_delimiter: CsvDelimiter,
 }
 
 /// The tabs of the window (TASK-44), in their order. Settings added later go into the tab
@@ -81,12 +83,13 @@ pub(crate) enum Control {
     AttributeFormat,
     TreeNodes,
     WarnMissingEntry,
+    CsvDelimiter,
     OpenAfterExport,
 }
 
 impl Control {
     /// In tab order: tab by tab, as each tab shows them.
-    const ALL: [Control; 11] = [
+    const ALL: [Control; 12] = [
         Self::Language,
         Self::Theme,
         Self::FocusAfterSnapshot,
@@ -97,6 +100,7 @@ impl Control {
         Self::AttributeFormat,
         Self::TreeNodes,
         Self::WarnMissingEntry,
+        Self::CsvDelimiter,
         Self::OpenAfterExport,
     ];
 
@@ -112,7 +116,7 @@ impl Control {
             | Self::AttributeFormat
             | Self::TreeNodes
             | Self::WarnMissingEntry => Page::Difference,
-            Self::OpenAfterExport => Page::Export,
+            Self::CsvDelimiter | Self::OpenAfterExport => Page::Export,
         }
     }
 
@@ -129,6 +133,7 @@ impl Control {
             Self::ConfirmDeletion => |s| s.confirm_snapshot_deletion(),
             Self::WarnMissingEntry => |s| s.warn_missing_entry(),
             Self::OtherUsersFolders => |s| s.other_users_folders(),
+            Self::CsvDelimiter => |s| s.csv_delimiter(),
             Self::OpenAfterExport => |s| s.open_after_export(),
         }
     }
@@ -188,6 +193,7 @@ struct Window {
     confirm: CheckBox,
     other_users: CheckBox,
     warn_missing: CheckBox,
+    csv_delimiter: Choice,
     open_after_export: CheckBox,
 }
 
@@ -346,6 +352,16 @@ pub fn show(parent: &Frame, s: &'static dyn Strings, initial: Values) -> Option<
     difference.finish(&notebook, s, Page::Difference);
 
     let export = Tab::new(&notebook);
+    let options: Vec<&str> = CsvDelimiter::ALL
+        .iter()
+        .map(|&v| s.csv_delimiter_option(v))
+        .collect();
+    let csv_delimiter = export.choice(
+        s,
+        Control::CsvDelimiter,
+        &options,
+        position(&CsvDelimiter::ALL, &initial.csv_delimiter),
+    );
     let open_after_export =
         export.check_box(s, Control::OpenAfterExport, initial.open_after_export);
     export.finish(&notebook, s, Page::Export);
@@ -387,6 +403,7 @@ pub fn show(parent: &Frame, s: &'static dyn Strings, initial: Values) -> Option<
         confirm,
         other_users,
         warn_missing,
+        csv_delimiter,
         open_after_export,
     });
     // Access keys by the key's position, so they work in the Ukrainian layout too
@@ -427,6 +444,7 @@ impl Window {
             Control::SizeFormat => self.size_format.set_focus(),
             Control::AttributeFormat => self.attribute_format.set_focus(),
             Control::TreeNodes => self.tree_nodes.set_focus(),
+            Control::CsvDelimiter => self.csv_delimiter.set_focus(),
             Control::ConfirmDeletion => press(&self.confirm),
             Control::WarnMissingEntry => press(&self.warn_missing),
             Control::OtherUsersFolders => press(&self.other_users),
@@ -442,6 +460,7 @@ impl Window {
         let size = self.size_format.get_selection().unwrap_or(0) as usize;
         let attributes = self.attribute_format.get_selection().unwrap_or(0) as usize;
         let tree_nodes = self.tree_nodes.get_selection().unwrap_or(0) as usize;
+        let delimiter = self.csv_delimiter.get_selection().unwrap_or(0) as usize;
         Values {
             language: Language::ALL.get(language).copied().unwrap_or_default(),
             theme: Theme::ALL.get(theme).copied().unwrap_or_default(),
@@ -466,6 +485,10 @@ impl Window {
             warn_missing_entry: self.warn_missing.get_value(),
             other_users_folders: self.other_users.get_value(),
             open_after_export: self.open_after_export.get_value(),
+            csv_delimiter: CsvDelimiter::ALL
+                .get(delimiter)
+                .copied()
+                .unwrap_or_default(),
         }
     }
 }
@@ -499,7 +522,10 @@ mod tests {
             ]
         );
         // TASK-39 #9.
-        assert_eq!(on(Page::Export), [Control::OpenAfterExport]);
+        assert_eq!(
+            on(Page::Export),
+            [Control::CsvDelimiter, Control::OpenAfterExport]
+        );
         assert_eq!(Page::ALL[0], Page::General);
     }
 
@@ -576,6 +602,25 @@ mod tests {
             Control::OpenAfterExport.label(&Uk),
             "Відкривати файл після експорту (&O)"
         );
+        // TASK-40 #5.
+        assert_eq!(Control::CsvDelimiter.label(&En), "CSV &delimiter:");
+        assert_eq!(Control::CsvDelimiter.label(&Uk), "Роздільник у CSV (&D):");
+    }
+
+    #[test]
+    fn the_csv_delimiter_options_are_named_in_both_languages_in_setting_order() {
+        // TASK-40 #5; the first, as Windows has it, is the default.
+        let uk: Vec<&str> = CsvDelimiter::ALL
+            .iter()
+            .map(|&v| Uk.csv_delimiter_option(v))
+            .collect();
+        assert_eq!(uk, ["Як у Windows", "Кома", "Крапка з комою", "Табуляція"]);
+        let en: Vec<&str> = CsvDelimiter::ALL
+            .iter()
+            .map(|&v| En.csv_delimiter_option(v))
+            .collect();
+        assert_eq!(en, ["Same as Windows", "Comma", "Semicolon", "Tab"]);
+        assert_eq!(CsvDelimiter::ALL[0], CsvDelimiter::default());
     }
 
     #[test]

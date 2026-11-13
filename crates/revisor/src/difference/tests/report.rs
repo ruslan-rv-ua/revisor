@@ -215,7 +215,7 @@ fn the_file_name_offered_holds_the_profile_and_both_moments_without_colons() {
     let name = list
         .export_name(&|millis| format!("{millis}:00"))
         .expect("the list shows a difference");
-    assert_eq!(name, "Програми 1000_00 — 2000_00.txt");
+    assert_eq!(name, "Програми 1000_00 — 2000_00");
 }
 
 // --- The file (#8) ------------------------------------------------------------------
@@ -301,7 +301,11 @@ fn the_export_job_runs_one_at_a_time_and_ends_with_the_file_written() {
     let folder = Folder::new("job");
     let path = folder.0.join("звіт.txt");
     let mut jobs = Jobs::default();
-    jobs.start_export(ukrainian_list().export().unwrap(), path.clone());
+    jobs.start_export(
+        ukrainian_list().export().unwrap(),
+        path.clone(),
+        crate::export::Format::Text,
+    );
     assert!(jobs.runs(Kind::Export));
     assert!(jobs.flags(None).export_running);
     assert!(jobs.shown().is_none());

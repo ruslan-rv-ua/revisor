@@ -22,8 +22,8 @@ use revisor_core::compare::{self, CompareError, Difference};
 use revisor_core::job::{Cancel, Lost, Outcome};
 use revisor_core::profiles::{self, ProfileError, ProfileFile, Unreadable};
 use revisor_core::settings::{
-    DifferenceSort, DifferenceView, FocusAfterComparison, FocusAfterSnapshot, Language, Settings,
-    Theme,
+    CsvDelimiter, DifferenceSort, DifferenceView, ExportFormat, FocusAfterComparison,
+    FocusAfterSnapshot, Language, Settings, Theme,
 };
 use revisor_core::snapshot::{Phase, Report, SnapshotError};
 use revisor_core::store::{
@@ -1434,6 +1434,15 @@ impl MainWindow {
             .unwrap_or(false)
     }
 
+    /// What separates the values of CSV (TASK-40 #5); that of Windows by default.
+    fn csv_delimiter(&self) -> CsvDelimiter {
+        self.settings
+            .as_ref()
+            .ok()
+            .and_then(|settings| settings.csv_delimiter().ok())
+            .unwrap_or_default()
+    }
+
     /// Whether the list of typical folders offers other users' folders (TASK-43 #5); off by
     /// default.
     fn other_users_folders(&self) -> bool {
@@ -1462,6 +1471,7 @@ impl MainWindow {
             warn_missing_entry: self.warn_missing_entry(),
             other_users_folders: self.other_users_folders(),
             open_after_export: self.open_after_export(),
+            csv_delimiter: self.csv_delimiter(),
         };
         let Some(values) = settings_window::show(&self.frame, s, initial) else {
             return;
@@ -1481,6 +1491,7 @@ impl MainWindow {
                 .and_then(|()| settings.set_warn_missing_entry(values.warn_missing_entry))
                 .and_then(|()| settings.set_other_users_folders(values.other_users_folders))
                 .and_then(|()| settings.set_open_after_export(values.open_after_export))
+                .and_then(|()| settings.set_csv_delimiter(values.csv_delimiter))
                 .map_err(|e| reason(s, &e)),
             Err(message) => Err(message.clone()),
         };
@@ -2366,9 +2377,18 @@ impl MainWindow {
             let Some(export) = list.export() else {
                 return;
             };
-            let name = list.export_name(&win32::format::file_name_time);
-            (export, name.unwrap_or_default())
+            (export, list.export_name(&win32::format::file_name_time))
         };
+        // The type of file chosen last comes first (TASK-40 #1).
+        let last = self
+            .settings
+            .as_ref()
+            .ok()
+            .and_then(|settings| settings.export_format().ok())
+            .unwrap_or_default();
+        let name = name
+            .map(|name| format!("{name}.{}", last.extension()))
+            .unwrap_or_default();
         let folder = self
             .settings
             .as_ref()
@@ -2376,7 +2396,13 @@ impl MainWindow {
             .and_then(|settings| settings.export_folder().ok().flatten())
             .or_else(revisor_core::typical::documents)
             .unwrap_or_default();
-        let wildcard = format!("{}|*.txt", s.export_text_type());
+        // The types in the order of ExportFormat::ALL, which the index of the one chosen
+        // is a position in.
+        let wildcard = format!(
+            "{}|*.txt|{}|*.csv",
+            s.export_text_type(),
+            s.export_csv_type()
+        );
         let dialog = FileDialog::builder(&self.frame)
             .with_message(&plain(s.command(CommandId::Export)))
             .with_default_dir(&folder.to_string_lossy())
@@ -2384,18 +2410,39 @@ impl MainWindow {
             .with_wildcard(&wildcard)
             .with_style(FileDialogStyle::Save | FileDialogStyle::OverwritePrompt)
             .build();
+        dialog.set_filter_index(
+            ExportFormat::ALL
+                .iter()
+                .position(|&f| f == last)
+                .unwrap_or(0) as i32,
+        );
         let chosen = (dialog.show_modal() == ID_OK)
             .then(|| dialog.get_path())
             .flatten();
+        // The type of file chosen says the format, whatever the name's extension
+        // (decided 2026-11-14).
+        let format = usize::try_from(dialog.get_filter_index())
+            .ok()
+            .and_then(|i| ExportFormat::ALL.get(i).copied())
+            .unwrap_or_default();
         dialog.destroy();
         let Some(path) = chosen.map(PathBuf::from) else {
             return;
+        };
+        if let Ok(settings) = &self.settings {
+            let _ = settings.set_export_format(format);
+        }
+        let format = match format {
+            ExportFormat::Text => export::Format::Text,
+            ExportFormat::Csv => export::Format::Csv {
+                delimiter: export::csv_delimiter(self.csv_delimiter()),
+            },
         };
         if let (Ok(settings), Some(parent)) = (&self.settings, path.parent()) {
             // The next export starts there; a folder not kept only costs a click then.
             let _ = settings.set_export_folder(parent);
         }
-        self.jobs.borrow_mut().start_export(export, path);
+        self.jobs.borrow_mut().start_export(export, path, format);
         self.refresh_progress_row();
     }
 

@@ -5,8 +5,8 @@ use revisor_core::compare::{Side, Warning};
 use revisor_core::exclude::PatternError;
 use revisor_core::scan::EntryKind;
 use revisor_core::settings::{
-    AttributeFormat, ChangeType, DifferenceView, FocusAfterComparison, FocusAfterSnapshot,
-    Language, SizeFormat, Theme, TreeNodeText,
+    AttributeFormat, ChangeType, CsvDelimiter, DifferenceView, FocusAfterComparison,
+    FocusAfterSnapshot, Language, SizeFormat, Theme, TreeNodeText,
 };
 use revisor_core::typical::TypicalFolder;
 
@@ -1235,6 +1235,10 @@ impl Strings for Uk {
         "Текстовий звіт (*.txt)"
     }
 
+    fn export_csv_type(&self) -> &'static str {
+        "CSV (*.csv)"
+    }
+
     fn exporting(&self) -> &'static str {
         "Експорт різниці…"
     }
@@ -1265,6 +1269,19 @@ impl Strings for Uk {
 
     fn settings_export(&self) -> &'static str {
         "Експорт"
+    }
+
+    fn csv_delimiter(&self) -> &'static str {
+        "Роздільник у CSV"
+    }
+
+    fn csv_delimiter_option(&self, value: CsvDelimiter) -> &'static str {
+        match value {
+            CsvDelimiter::Windows => "Як у Windows",
+            CsvDelimiter::Comma => "Кома",
+            CsvDelimiter::Semicolon => "Крапка з комою",
+            CsvDelimiter::Tab => "Табуляція",
+        }
     }
 
     fn report_title(&self, version: &str) -> String {
