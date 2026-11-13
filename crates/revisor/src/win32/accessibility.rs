@@ -1,5 +1,6 @@
 //! What screen readers are told beyond what wx tells them: a window's accessible name, a
-//! polite live region (IAccPropServices), and the change of the status bar's message.
+//! property page (TASK-44), a polite live region (IAccPropServices), and the change of the
+//! status bar's message.
 
 use std::ffi::c_void;
 use std::mem::size_of;
@@ -7,7 +8,8 @@ use std::mem::size_of;
 use windows_sys::Win32::Foundation::HWND;
 use windows_sys::Win32::System::Com::{CLSCTX_INPROC_SERVER, CoCreateInstance};
 use windows_sys::Win32::UI::Accessibility::{
-    CLSID_AccPropServices, LiveSetting_Property_GUID, NotifyWinEvent, PROPID_ACC_NAME, Polite,
+    CLSID_AccPropServices, LiveSetting_Property_GUID, NotifyWinEvent, PROPID_ACC_NAME,
+    PROPID_ACC_ROLE, Polite, ROLE_SYSTEM_PROPERTYPAGE,
 };
 use windows_sys::Win32::UI::WindowsAndMessaging::{
     CHILDID_SELF, EVENT_OBJECT_LIVEREGIONCHANGED, OBJID_CLIENT,
@@ -98,10 +100,18 @@ impl AccProps {
     }
 
     fn set_live_polite(&self, hwnd: HWND) {
-        let polite = Variant {
+        self.set_i4(hwnd, LiveSetting_Property_GUID, Polite);
+    }
+
+    fn set_role(&self, hwnd: HWND, role: u32) {
+        self.set_i4(hwnd, PROPID_ACC_ROLE, role as i32);
+    }
+
+    fn set_i4(&self, hwnd: HWND, property: GUID, value: i32) {
+        let value = Variant {
             vt: VT_I4,
             reserved: [0; 3],
-            value: Polite,
+            value,
             padding: [0; 3],
         };
         // SAFETY: a live window and a VT_I4 VARIANT.
@@ -111,8 +121,8 @@ impl AccProps {
                 hwnd,
                 OBJID_CLIENT as u32,
                 CHILDID_SELF,
-                LiveSetting_Property_GUID,
-                polite,
+                property,
+                value,
             );
         }
     }
@@ -122,6 +132,16 @@ impl AccProps {
 pub fn set_accessible_name(hwnd: *mut c_void, name: &str) {
     if let Some(props) = acc_props() {
         props.set_name(hwnd, name);
+    }
+}
+
+/// Makes a window the property page `name` of a tab control, as the pages of Windows' own
+/// property sheets are: NVDA then says the page when the focus moves onto it, as Ctrl+Tab
+/// moves it. A wx page is a plain window, which NVDA passes over (TASK-44 #7).
+pub fn make_property_page(hwnd: *mut c_void, name: &str) {
+    if let Some(props) = acc_props() {
+        props.set_name(hwnd, name);
+        props.set_role(hwnd, ROLE_SYSTEM_PROPERTYPAGE);
     }
 }
 

@@ -26,6 +26,9 @@ release that section becomes the version's own, and the release page publishes i
 
 ### Changed
 
+- **Settings are on tabs**: General (language and theme), Snapshots, and Difference.
+  `Ctrl+Tab` or `Ctrl+PgDn` switch them, and NVDA names the tab it comes to. An access key
+  works on the tab shown, and OK keeps the settings of every tab.
 - **`Ctrl+5` shows or hides inaccessible entries**, which `Ctrl+4` did: the shortcuts follow
   the check boxes, and Renamed or moved is the fourth of them now.
 - **A name that changed in case only is a rename.** An entry whose name differs only in the

@@ -155,6 +155,10 @@ status bar; NVDA reads that without moving the focus, and `NVDA+End` repeats it.
 deleting a profile, Settings, Restart as administrator, sorting and About revisor are in the
 menus only.
 
+Settings has three tabs: General (language and theme), Snapshots and Difference. `Ctrl+Tab`
+and `Ctrl+Shift+Tab`, or `Ctrl+PgDn` and `Ctrl+PgUp`, switch them, and so do the arrows on the
+tab names; an access key works on the tab shown. OK keeps the settings of every tab.
+
 ## Where the data lives
 
 revisor is portable: everything it saves is in a `data` folder beside its executable, and no

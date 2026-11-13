@@ -177,12 +177,23 @@ pub fn bind<T: Copy + 'static>(
     targets: Vec<Target<T>>,
     act: impl Fn(T) + 'static,
 ) {
+    bind_where(dialog, targets, |_| true, act);
+}
+
+/// As [`bind`], but only the targets `shown` lets in have their keys at the moment: the
+/// controls of the tab shown (TASK-44). Another key goes on as if it were none.
+pub fn bind_where<T: Copy + 'static>(
+    dialog: &Dialog,
+    targets: Vec<Target<T>>,
+    shown: impl Fn(T) -> bool + 'static,
+    act: impl Fn(T) + 'static,
+) {
     let dispatcher = Rc::new(Dispatcher::default());
     let act = Rc::new(act);
     let (waiting, on_key) = (Rc::clone(&dispatcher), Rc::clone(&act));
     dialog.on_char_hook(move |data| {
         if let WindowEventData::Keyboard(key) = data {
-            let hit = find(Shortcut::from_event(&key), &targets);
+            let hit = find(Shortcut::from_event(&key), &targets).filter(|&(_, id)| shown(id));
             key.event.skip(hit.is_none());
             if let Some(id) = hit.and_then(|(how, id)| waiting.dispatch(how, id)) {
                 on_key(id);
@@ -331,8 +342,11 @@ mod tests {
         // The dialogs.
         let profile = english(crate::profile_window::targets());
         found.extend(problems("profile window", &profile, &[]));
-        let settings = english(crate::settings_window::targets());
-        found.extend(problems("settings window", &settings, &[]));
+        // The settings window: within each tab (TASK-44 #3).
+        for page in crate::settings_window::Page::ALL {
+            let settings = english(crate::settings_window::targets_of(page));
+            found.extend(problems(&format!("settings, {page:?}"), &settings, &[]));
+        }
         let snapshot = "07.11.2026 10:00";
         found.extend(problems(
             "«Порівняти з…»",

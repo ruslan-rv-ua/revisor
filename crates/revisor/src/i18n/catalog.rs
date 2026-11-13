@@ -974,6 +974,9 @@ fn entries_in(en: &dyn Strings, uk: &dyn Strings) -> Vec<Entry> {
         });
     }
     c.add("warn_missing_entry", |s| plain(s.warn_missing_entry()));
+    c.add("settings_general", |s| s.settings_general().into());
+    c.add("settings_snapshots", |s| s.settings_snapshots().into());
+    c.add("settings_difference", |s| s.settings_difference().into());
     c.add("entry_gone_question", |s| s.entry_gone_question().into());
     c.add("open", |s| plain(s.open()));
     c.add("no_folder_on_disk", |s| s.no_folder_on_disk("{path}"));
