@@ -4,8 +4,8 @@ use revisor_core::compare::{Side, Warning};
 use revisor_core::exclude::PatternError;
 use revisor_core::scan::EntryKind;
 use revisor_core::settings::{
-    AttributeFormat, ChangeType, DifferenceView, FocusAfterComparison, FocusAfterSnapshot,
-    Language, SizeFormat, Theme, TreeNodeText,
+    AttributeFormat, ChangeType, CsvDelimiter, DifferenceView, FocusAfterComparison,
+    FocusAfterSnapshot, Language, SizeFormat, Theme, TreeNodeText,
 };
 use revisor_core::typical::TypicalFolder;
 
@@ -1239,6 +1239,10 @@ impl Strings for En {
         "Text report (*.txt)"
     }
 
+    fn export_csv_type(&self) -> &'static str {
+        "CSV (*.csv)"
+    }
+
     fn exporting(&self) -> &'static str {
         "Exporting the difference…"
     }
@@ -1269,6 +1273,19 @@ impl Strings for En {
 
     fn settings_export(&self) -> &'static str {
         "Export"
+    }
+
+    fn csv_delimiter(&self) -> &'static str {
+        "CSV &delimiter"
+    }
+
+    fn csv_delimiter_option(&self, value: CsvDelimiter) -> &'static str {
+        match value {
+            CsvDelimiter::Windows => "Same as Windows",
+            CsvDelimiter::Comma => "Comma",
+            CsvDelimiter::Semicolon => "Semicolon",
+            CsvDelimiter::Tab => "Tab",
+        }
     }
 
     fn report_title(&self, version: &str) -> String {

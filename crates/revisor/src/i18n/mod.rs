@@ -15,8 +15,8 @@ use revisor_core::compare::Warning;
 use revisor_core::exclude::PatternError;
 use revisor_core::scan::EntryKind;
 use revisor_core::settings::{
-    AttributeFormat, ChangeType, DifferenceView, FocusAfterComparison, FocusAfterSnapshot,
-    Language, SizeFormat, Theme, TreeNodeText,
+    AttributeFormat, ChangeType, CsvDelimiter, DifferenceView, FocusAfterComparison,
+    FocusAfterSnapshot, Language, SizeFormat, Theme, TreeNodeText,
 };
 use revisor_core::typical::TypicalFolder;
 
@@ -486,6 +486,8 @@ pub trait Strings {
     // The export of the difference (TASK-39).
     /// The type of file of the save dialog: «Текстовий звіт (*.txt)».
     fn export_text_type(&self) -> &'static str;
+    /// The second type of file of the save dialog: «CSV (*.csv)» (TASK-40 #1).
+    fn export_csv_type(&self) -> &'static str;
     /// The progress row's text while the difference is exported.
     fn exporting(&self) -> &'static str;
     /// The status bar after the export: «Різницю експортовано: <file>.».
@@ -499,6 +501,10 @@ pub trait Strings {
     /// The setting «Відкривати файл після експорту», and the settings window's tab of it.
     fn open_after_export(&self) -> &'static str;
     fn settings_export(&self) -> &'static str;
+    /// The setting «Роздільник у CSV» (TASK-40 #5), without access key or colon, and its
+    /// values.
+    fn csv_delimiter(&self) -> &'static str;
+    fn csv_delimiter_option(&self, value: CsvDelimiter) -> &'static str;
     /// The first line of the report: «Звіт про різницю, revisor 0.5.0».
     fn report_title(&self, version: &str) -> String;
     /// The line of the filter of the report: the types shown, when not all are, and the

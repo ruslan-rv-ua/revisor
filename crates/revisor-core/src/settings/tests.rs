@@ -39,6 +39,9 @@ fn a_new_settings_file_is_made_with_the_defaults() {
     assert!(!settings.other_users_folders().unwrap());
     assert!(!settings.open_after_export().unwrap());
     assert_eq!(settings.export_folder().unwrap(), None);
+    // The text report first, and the list separator of Windows in CSV (TASK-40 #1, #5).
+    assert_eq!(settings.export_format().unwrap(), ExportFormat::Text);
+    assert_eq!(settings.csv_delimiter().unwrap(), CsvDelimiter::Windows);
     // The difference as a list, and the long text of a tree's nodes (TASK-33).
     assert_eq!(settings.difference_view().unwrap(), DifferenceView::List);
     assert_eq!(settings.tree_node_text().unwrap(), TreeNodeText::Long);
@@ -231,6 +234,28 @@ fn the_export_settings_survive_a_restart() {
     let settings = Settings::open(&db(&tmp)).unwrap();
     assert!(settings.open_after_export().unwrap());
     assert_eq!(settings.export_folder().unwrap().as_deref(), Some(folder));
+}
+
+#[test]
+fn the_export_format_and_the_csv_delimiter_survive_a_restart() {
+    // TASK-40 #1, #5.
+    for delimiter in CsvDelimiter::ALL {
+        let tmp = TempDir::new("settings");
+        {
+            let settings = Settings::open(&db(&tmp)).unwrap();
+            settings.set_export_format(ExportFormat::Csv).unwrap();
+            settings.set_csv_delimiter(delimiter).unwrap();
+        }
+        let settings = Settings::open(&db(&tmp)).unwrap();
+        assert_eq!(settings.export_format().unwrap(), ExportFormat::Csv);
+        assert_eq!(settings.csv_delimiter().unwrap(), delimiter);
+    }
+    let codes: Vec<&str> = CsvDelimiter::ALL.map(CsvDelimiter::as_str).to_vec();
+    assert_eq!(codes, ["windows", "comma", "semicolon", "tab"]);
+    let chars = CsvDelimiter::ALL.map(CsvDelimiter::char);
+    assert_eq!(chars, [None, Some(','), Some(';'), Some('\t')]);
+    assert_eq!(ExportFormat::parse("csv"), Some(ExportFormat::Csv));
+    assert_eq!(ExportFormat::parse("xlsx"), None);
 }
 
 #[test]

@@ -18,8 +18,8 @@ use revisor_core::compare::{Side, Warning};
 use revisor_core::exclude::PatternError;
 use revisor_core::scan::EntryKind;
 use revisor_core::settings::{
-    AttributeFormat, ChangeType, DifferenceView, FocusAfterComparison, FocusAfterSnapshot,
-    Language, SizeFormat, Theme, TreeNodeText,
+    AttributeFormat, ChangeType, CsvDelimiter, DifferenceView, FocusAfterComparison,
+    FocusAfterSnapshot, Language, SizeFormat, Theme, TreeNodeText,
 };
 use revisor_core::store::Unavailable;
 use revisor_core::typical::TypicalFolder;
@@ -996,6 +996,7 @@ fn entries_in(en: &dyn Strings, uk: &dyn Strings) -> Vec<Entry> {
     c.add("no_folder_on_disk", |s| s.no_folder_on_disk("{path}"));
     c.add("explorer_failed", |s| s.explorer_failed("{reason}"));
     c.add("export_text_type", |s| s.export_text_type().into());
+    c.add("export_csv_type", |s| s.export_csv_type().into());
     c.add("exporting", |s| s.exporting().into());
     c.add("exported", |s| s.exported("{file}"));
     c.add("export_cancelled", |s| s.export_cancelled().into());
@@ -1003,6 +1004,18 @@ fn entries_in(en: &dyn Strings, uk: &dyn Strings) -> Vec<Entry> {
     c.add("export_stopped", |s| s.export_stopped().into());
     c.add("open_failed", |s| s.open_failed("{reason}"));
     c.add("open_after_export", |s| plain(s.open_after_export()));
+    c.add("csv_delimiter", |s| plain(s.csv_delimiter()));
+    let delimiter_options = all!(CsvDelimiter {
+        Windows,
+        Comma,
+        Semicolon,
+        Tab
+    });
+    for value in delimiter_options {
+        c.add(format!("csv_delimiter_option.{value:?}"), |s| {
+            s.csv_delimiter_option(value).into()
+        });
+    }
     c.add("settings_export", |s| s.settings_export().into());
     c.add("report_title", |s| s.report_title("{version}"));
     c.add("report_filter.types", |s| {

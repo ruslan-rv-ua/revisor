@@ -66,6 +66,19 @@ The main scenario takes four steps, all from the keyboard:
   with spaces, which a screen reader would read aloud or out of order. The file is offered
   under the profile's name and the times of both snapshots, in Documents or the folder you
   exported to last; Settings › Export › Open the file after export opens it once saved.
+- **Open the difference in Excel or read it with a script.** The same command saves CSV when
+  you choose CSV (*.csv) as the type of file; the dialog offers the type you chose last. The
+  file has a line of column names and a line per entry shown, in the order of paths, and is
+  the same in every language and region: English column names and codes (`added`,
+  `modified`, `renamed`, `folder`…), sizes in bytes, local times in ISO 8601 with the offset
+  from UTC (`2026-11-13 14:05:31.1234567+02:00`), versions as four numbers, and each field as
+  a pair of columns, `_before` and `_after`. Settings › Export › CSV delimiter separates the
+  values by the list separator of Windows (a semicolon in the Ukrainian region), so Excel on
+  the same computer opens the file in columns with a double click, or by a comma, a semicolon
+  or a tab. The file is UTF-8 with a byte order mark, so Excel keeps Cyrillic, with values
+  quoted as RFC 4180 says; a script names the delimiter, as in
+  `Import-Csv -Delimiter ';'`. From 1.0 a change that breaks this format is a new major
+  version.
 - **A rename or a move is one change.** A file, folder or link that was renamed or moved
   within its volume, also from one folder of the profile to another, is one entry at its new
   path that says where it was, not one deleted and one added: revisor knows it by its NTFS
@@ -220,7 +233,7 @@ snapshots there; `scoop uninstall revisor --purge` deletes them.
   scheduled snapshot: its shortcuts work only in its own window.
 - **It is not signed**, by decision; see [Direct download](#direct-download).
 
-Planned for later 0.x versions: export to CSV, content hashes, and a command line.
+Planned for later 0.x versions: content hashes and a command line.
 
 ## Building from source
 

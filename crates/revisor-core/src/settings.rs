@@ -54,6 +54,8 @@ const KEY_THEME: &str = "theme";
 const KEY_OTHER_USERS_FOLDERS: &str = "other_users_folders";
 const KEY_OPEN_AFTER_EXPORT: &str = "open_after_export";
 const KEY_EXPORT_FOLDER: &str = "export_folder";
+const KEY_EXPORT_FORMAT: &str = "export_format";
+const KEY_CSV_DELIMITER: &str = "csv_delimiter";
 
 #[derive(Debug)]
 pub enum SettingsError {
@@ -210,6 +212,84 @@ impl AttributeFormat {
 
     pub fn parse(text: &str) -> Option<Self> {
         Self::ALL.into_iter().find(|v| v.as_str() == text)
+    }
+}
+
+/// The format the difference is exported in (TASK-40 #1): the type of file last chosen
+/// in the save dialog, which it offers first the next time.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub enum ExportFormat {
+    /// The text report, for reading (TASK-39).
+    #[default]
+    Text,
+    /// CSV, for Excel and scripts.
+    Csv,
+}
+
+impl ExportFormat {
+    /// Every value, in the order the save dialog lists the types of file.
+    pub const ALL: [Self; 2] = [Self::Text, Self::Csv];
+
+    /// The value as the database stores it.
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::Text => "text",
+            Self::Csv => "csv",
+        }
+    }
+
+    pub fn parse(text: &str) -> Option<Self> {
+        Self::ALL.into_iter().find(|v| v.as_str() == text)
+    }
+
+    /// The extension of the file: "txt", "csv".
+    pub fn extension(self) -> &'static str {
+        match self {
+            Self::Text => "txt",
+            Self::Csv => "csv",
+        }
+    }
+}
+
+/// What separates the values of a line of CSV (TASK-40 #5): the list separator of the
+/// regional settings of Windows, so Excel on the same computer opens the file in columns,
+/// or a character the user names.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub enum CsvDelimiter {
+    /// The list separator of Windows: «;» in the Ukrainian region, «,» in the English.
+    #[default]
+    Windows,
+    Comma,
+    Semicolon,
+    Tab,
+}
+
+impl CsvDelimiter {
+    /// Every value, in the order the settings window lists them.
+    pub const ALL: [Self; 4] = [Self::Windows, Self::Comma, Self::Semicolon, Self::Tab];
+
+    /// The value as the database stores it.
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::Windows => "windows",
+            Self::Comma => "comma",
+            Self::Semicolon => "semicolon",
+            Self::Tab => "tab",
+        }
+    }
+
+    pub fn parse(text: &str) -> Option<Self> {
+        Self::ALL.into_iter().find(|v| v.as_str() == text)
+    }
+
+    /// The character, or `None` for that of Windows, which the caller reads.
+    pub fn char(self) -> Option<char> {
+        match self {
+            Self::Windows => None,
+            Self::Comma => Some(','),
+            Self::Semicolon => Some(';'),
+            Self::Tab => Some('\t'),
+        }
     }
 }
 
@@ -671,6 +751,32 @@ impl Settings {
 
     pub fn set_export_folder(&self, folder: &Path) -> Result<(), SettingsError> {
         self.set(KEY_EXPORT_FOLDER, folder.to_string_lossy().into_owned())
+    }
+
+    /// The type of file the difference was last exported as (TASK-40 #1); the text
+    /// report when nothing is stored.
+    pub fn export_format(&self) -> Result<ExportFormat, SettingsError> {
+        Ok(match self.get(KEY_EXPORT_FORMAT)? {
+            Some(Value::Text(text)) => ExportFormat::parse(&text).unwrap_or_default(),
+            _ => ExportFormat::default(),
+        })
+    }
+
+    pub fn set_export_format(&self, value: ExportFormat) -> Result<(), SettingsError> {
+        self.set(KEY_EXPORT_FORMAT, value.as_str())
+    }
+
+    /// What separates the values of CSV (TASK-40 #5); that of Windows when nothing is
+    /// stored.
+    pub fn csv_delimiter(&self) -> Result<CsvDelimiter, SettingsError> {
+        Ok(match self.get(KEY_CSV_DELIMITER)? {
+            Some(Value::Text(text)) => CsvDelimiter::parse(&text).unwrap_or_default(),
+            _ => CsvDelimiter::default(),
+        })
+    }
+
+    pub fn set_csv_delimiter(&self, value: CsvDelimiter) -> Result<(), SettingsError> {
+        self.set(KEY_CSV_DELIMITER, value.as_str())
     }
 
     /// Whether the difference shows as a list or as a tree; as a list when nothing is

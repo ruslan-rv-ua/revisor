@@ -32,14 +32,14 @@ use crate::i18n::{Lang, Strings};
 
 /// How the lines of the report end: as Windows ends them, so every editor of Windows
 /// reads them (decided 2026-11-13).
-const NEWLINE: &str = "\r\n";
+pub(super) const NEWLINE: &str = "\r\n";
 
 /// The byte order mark of UTF-8, which tells every editor of Windows the encoding of the
 /// report (decided 2026-11-13).
-const BOM: &str = "\u{feff}";
+pub(super) const BOM: &str = "\u{feff}";
 
 /// How many rows are written between two looks at whether the export goes on.
-const ROWS_PER_CHECK: usize = 4096;
+pub(super) const ROWS_PER_CHECK: usize = 4096;
 
 /// What the export of the difference shown writes, taken from the list as it shows it
 /// (TASK-39 #3, #4): the header, and the rows the filter lets through in the order of
@@ -47,9 +47,9 @@ const ROWS_PER_CHECK: usize = 4096;
 pub struct Export {
     lang: Lang,
     header: Vec<String>,
-    difference: Arc<Difference>,
-    moved: MovedFolders,
-    rows: Vec<Row>,
+    pub(super) difference: Arc<Difference>,
+    pub(super) moved: MovedFolders,
+    pub(super) rows: Vec<Row>,
     formats: Formats,
 }
 
@@ -251,15 +251,15 @@ fn dates(regional: &dyn Regional, a: i64, b: i64) -> (String, String) {
 const NOT_IN_FILE_NAMES: &[char] = &['<', '>', ':', '"', '/', '\\', '|', '?', '*'];
 
 impl List {
-    /// The name of the file the save dialog offers for the difference shown (TASK-39 #2):
-    /// the profile and the moments of both snapshots, as `time` writes them for a name of
-    /// a file — «Програми 2026-11-13 14-05-33 — 2026-11-13 14-20-10.txt»; `None` before
-    /// the first comparison.
+    /// The name of the file the save dialog offers for the difference shown (TASK-39 #2),
+    /// without its extension, which the type of file adds (TASK-40 #1): the profile and the
+    /// moments of both snapshots, as `time` writes them for a name of a file — «Програми
+    /// 2026-11-13 14-05-33 — 2026-11-13 14-20-10»; `None` before the first comparison.
     pub fn export_name(&self, time: &dyn Fn(i64) -> String) -> Option<String> {
         let pair = &self.shown.as_ref()?.pair;
         let [earlier, later] = &pair.snapshots;
         let name = format!(
-            "{} {} — {}.txt",
+            "{} {} — {}",
             pair.profile.name,
             time(earlier.info.taken_at),
             time(later.info.taken_at)
