@@ -56,6 +56,11 @@ release that section becomes the version's own, and the release page publishes i
   the file that left shows as renamed or moved. A folder made in the place of a renamed one
   shows as Folder replaced, with all it holds as added.
 
+### Fixed
+
+- **An access key of a check box in Settings says its new state** also when the check box
+  already has the focus: it presses the check box as a click does. Before, NVDA said nothing.
+
 ## [0.3.0] - 2026-11-10
 
 ### Added

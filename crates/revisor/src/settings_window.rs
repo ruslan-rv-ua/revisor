@@ -244,6 +244,12 @@ impl Tab {
     }
 }
 
+/// Presses the check box as a click does: it toggles and takes the focus, and screen
+/// readers say its new state also when it had the focus already (TASK-39).
+fn press(check_box: &CheckBox) {
+    win32::focus::click(check_box.get_handle());
+}
+
 /// The position of `value` among `all`, or the first.
 fn position<V: PartialEq>(all: &[V], value: &V) -> usize {
     all.iter().position(|v| v == value).unwrap_or(0)
@@ -421,23 +427,10 @@ impl Window {
             Control::SizeFormat => self.size_format.set_focus(),
             Control::AttributeFormat => self.attribute_format.set_focus(),
             Control::TreeNodes => self.tree_nodes.set_focus(),
-            Control::ConfirmDeletion => {
-                self.confirm.set_value(!self.confirm.get_value());
-                self.confirm.set_focus();
-            }
-            Control::WarnMissingEntry => {
-                self.warn_missing.set_value(!self.warn_missing.get_value());
-                self.warn_missing.set_focus();
-            }
-            Control::OtherUsersFolders => {
-                self.other_users.set_value(!self.other_users.get_value());
-                self.other_users.set_focus();
-            }
-            Control::OpenAfterExport => {
-                let check_box = &self.open_after_export;
-                check_box.set_value(!check_box.get_value());
-                check_box.set_focus();
-            }
+            Control::ConfirmDeletion => press(&self.confirm),
+            Control::WarnMissingEntry => press(&self.warn_missing),
+            Control::OtherUsersFolders => press(&self.other_users),
+            Control::OpenAfterExport => press(&self.open_after_export),
         }
     }
 
@@ -574,6 +567,26 @@ mod tests {
             Control::OtherUsersFolders.label(&Uk),
             "Показувати теки інших користувачів у переліку типових тек (&O)"
         );
+        // TASK-39 #9: O again, on another tab.
+        assert_eq!(
+            Control::OpenAfterExport.label(&En),
+            "&Open the file after export"
+        );
+        assert_eq!(
+            Control::OpenAfterExport.label(&Uk),
+            "Відкривати файл після експорту (&O)"
+        );
+    }
+
+    #[test]
+    fn no_letter_repeats_on_one_tab() {
+        for page in Page::ALL {
+            let mut letters: Vec<u8> = targets_of(page).iter().filter_map(|t| t.letter()).collect();
+            let all = letters.len();
+            letters.sort_unstable();
+            letters.dedup();
+            assert_eq!(letters.len(), all, "{page:?}");
+        }
     }
 
     #[test]

@@ -1052,11 +1052,14 @@ impl MainWindow {
 
     /// The menu item of `id` is highlighted: an item of «Сортувати за» while the difference
     /// shows as a tree says why it is unavailable, in the status bar, which screen readers
-    /// read after the item (TASK-33 #5).
+    /// read after the item (TASK-33 #5); so does «Експортувати…», which has no shortcut to
+    /// say it with (TASK-39 #1).
     fn menu_item_highlighted(&self, id: CommandId) {
         let available = (command(id).available)(&self.state.borrow());
-        if let Err(reason @ Reason::TreeSortedByName) = available {
-            self.refuse(id, reason);
+        match available {
+            Err(reason @ Reason::TreeSortedByName) => self.refuse(id, reason),
+            Err(reason) if id == CommandId::Export => self.refuse(id, reason),
+            _ => {}
         }
     }
 

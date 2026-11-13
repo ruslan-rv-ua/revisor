@@ -4,8 +4,8 @@
 
 The language goes into the settings file of the scratch folder; the Ukrainian layout is on.
 
-- ``walk``: «Налаштування» opens on «Загальні» with the focus on «Мова»; Ctrl+Tab, Ctrl+Tab,
-  Ctrl+Tab go round the tabs, Ctrl+Shift+Tab back, Ctrl+PgUp and Ctrl+PgDn too, and NVDA names
+- ``walk``: «Налаштування» opens on «Загальні» with the focus on «Мова»; Ctrl+Tab four times
+  goes round the tabs (four since TASK-39 added «Експорт»), Ctrl+Shift+Tab back, Ctrl+PgUp and Ctrl+PgDn too, and NVDA names
   each tab; on «Різниця» Alt+L (a key of «Загальні») does nothing, Alt+S moves to «Розмір»;
   Shift+Tab from the first list reaches the tab names, where the arrows switch tabs; Alt+C on
   «Знімки» toggles the check box, Esc saves nothing (reopened, it is as before), then Alt+C and
@@ -41,11 +41,11 @@ revisor_nvda.EXT.update({VK_PRIOR, VK_NEXT})
 TCM_GETCURSEL = 0x130B
 
 WORDS = {
-    "uk": {"title": "Налаштування", "tabs": ("Загальні", "Знімки", "Різниця"),
+    "uk": {"title": "Налаштування", "tabs": ("Загальні", "Знімки", "Різниця", "Експорт"),
            "language": "Мова", "size": "Розмір", "confirm": "Підтверджувати видалення знімків",
            "focus": "Фокус після знімка", "comparison": "Фокус після порівняння",
            "tab": "вкладка"},
-    "en": {"title": "Settings", "tabs": ("General", "Snapshots", "Difference"),
+    "en": {"title": "Settings", "tabs": ("General", "Snapshots", "Difference", "Export"),
            "language": "Language", "size": "Size", "confirm": "Confirm snapshot deletion",
            "focus": "Focus after a snapshot", "comparison": "Focus after a comparison",
            "tab": "вкладка"},
@@ -117,10 +117,12 @@ def walk():
         for index, keys, label in [
             (1, (VK_TAB,), "Ctrl+Tab"),
             (2, (VK_TAB,), "Ctrl+Tab"),
+            (3, (VK_TAB,), "Ctrl+Tab"),
             (0, (VK_TAB,), "Ctrl+Tab round"),
-            (2, (VK_SHIFT, VK_TAB), "Ctrl+Shift+Tab round back"),
-            (1, (VK_PRIOR,), "Ctrl+PgUp"),
-            (2, (VK_NEXT,), "Ctrl+PgDn"),
+            (3, (VK_SHIFT, VK_TAB), "Ctrl+Shift+Tab round back"),
+            (2, (VK_PRIOR,), "Ctrl+PgUp"),
+            (3, (VK_NEXT,), "Ctrl+PgDn"),
+            (2, (VK_PRIOR,), "Ctrl+PgUp"),
         ]:
             ctrl(*keys)
             said = app.step(f"{label}: «{names[index]}»", 1.5)
@@ -201,7 +203,7 @@ def look():
             time.sleep(0.5)
             _, h = open_settings(app, f"{theme}: the settings")
             print(f"    window {rect_of(h)}")
-            for index in range(3):
+            for index in range(4):
                 time.sleep(0.5)
                 path = screenshot(h, os.path.join(SHOTS, f"{LANG}-{theme}-{index}.png"))
                 pages = [c for c in children(h) if class_name(c).startswith("wxWindow")
