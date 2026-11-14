@@ -454,6 +454,14 @@ pub trait Strings {
     /// The label of the setting «Вузли дерева», without access key or colon.
     fn tree_nodes(&self) -> &'static str;
     fn tree_node_option(&self, value: TreeNodeText) -> &'static str;
+    /// The list «Колонки списку різниці» of the settings window, with a check box for
+    /// each column, and its buttons (TASK-49).
+    fn difference_columns(&self) -> &'static str;
+    fn move_up(&self) -> &'static str;
+    fn move_down(&self) -> &'static str;
+    fn defaults(&self) -> &'static str;
+    /// The row of the column that cannot be hidden: "Ім'я (завжди видно)" (TASK-49 #3).
+    fn always_shown(&self, column: &str) -> String;
 
     // The details of a change (TASK-14).
     /// The name of a property, at the start of its line: "Розмір".

@@ -3,6 +3,7 @@ use crate::i18n::{En, Uk};
 use revisor_core::compare::{FolderDifference, Side};
 use revisor_core::diff::Diff;
 use revisor_core::scan::{FileId, Version};
+use revisor_core::settings::DifferenceColumns;
 use std::ffi::OsString;
 use std::path::PathBuf;
 use std::time::Instant;
@@ -371,6 +372,27 @@ fn each_column_says_its_part_of_the_entry_of_the_later_snapshot_or_the_earlier()
     );
     // Out of the rows, nothing.
     assert_eq!(list.cell(3, Column::Name), "");
+}
+
+#[test]
+fn a_row_gives_its_cells_in_the_order_of_the_columns_chosen() {
+    let mut made = Made::new(r"C:\Data");
+    made.modified("kept.txt", EntryKind::File, (5, 1_234_567), Fields::SIZE);
+    let list = showing(difference(vec![made.done()], Vec::new()));
+    // «Зміна» first, without «Тека» and «Дата зміни» (TASK-49 #2).
+    let mut columns = DifferenceColumns::default();
+    columns.move_up(1);
+    columns.set_shown(4, false);
+    columns.set_shown(5, false);
+    assert_eq!(
+        list.cells(0, &columns.shown()),
+        ["Modified", "kept.txt", "size", "1.17 MB"]
+    );
+    // By default, as before: the name first, the folder last.
+    assert_eq!(
+        list.cells(0, &DifferenceColumns::default().shown()),
+        ["kept.txt", "Modified", "size", "1.17 MB", "t0", r"C:\Data"]
+    );
 }
 
 #[test]

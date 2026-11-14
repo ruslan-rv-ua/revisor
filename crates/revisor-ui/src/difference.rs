@@ -65,41 +65,9 @@ pub trait Regional {
     fn attribute_letter(&self, flag: u32) -> Option<String>;
 }
 
-/// A column of the difference list, in the order the list shows them (#12): the name
-/// first and the longest, the folder, last, as screen readers read a row column by
-/// column.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub enum Column {
-    Name,
-    Change,
-    WhatChanged,
-    Size,
-    DateModified,
-    Folder,
-}
-
-impl Column {
-    pub const ALL: [Column; 6] = [
-        Self::Name,
-        Self::Change,
-        Self::WhatChanged,
-        Self::Size,
-        Self::DateModified,
-        Self::Folder,
-    ];
-
-    /// What sorting by this column is.
-    pub fn sort(self) -> SortColumn {
-        match self {
-            Self::Name => SortColumn::Name,
-            Self::Change => SortColumn::Change,
-            Self::WhatChanged => SortColumn::WhatChanged,
-            Self::Size => SortColumn::Size,
-            Self::DateModified => SortColumn::DateModified,
-            Self::Folder => SortColumn::Folder,
-        }
-    }
-}
+/// A column of the difference list (#12): which ones the list shows, in which order, the
+/// user chooses (TASK-49).
+pub use revisor_core::settings::DifferenceColumn as Column;
 
 /// What a row is, as the column «Зміна» names it with the kind of the entry (#14, #15):
 /// the type of the row, with replaced entries apart from the other modified ones, and
@@ -1246,6 +1214,12 @@ impl List {
                 .map(|parent| parent.to_string_lossy().into_owned())
                 .unwrap_or_default(),
         }
+    }
+
+    /// The texts of the cells of the row at `index`, one for each of `columns`, in their
+    /// order: what a screen reader reads of the row (TASK-49 #2).
+    pub fn cells(&self, index: usize, columns: &[Column]) -> Vec<String> {
+        columns.iter().map(|&c| self.cell(index, c)).collect()
     }
 
     /// The whole path of the entry of the row at `index` of the list, as its columns show

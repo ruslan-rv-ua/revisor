@@ -5,18 +5,20 @@
 //! nodes of the difference tree say (TASK-33), whether deleting snapshots asks first,
 //! whether showing a change no longer on disk in File Explorer asks first (TASK-14),
 //! whether the status bar names the path copied (TASK-41), and whether the list of typical
-//! folders offers other users' folders (TASK-43), and whether a snapshot that rights closed
-//! in part offers a restart as administrator (TASK-48). The
+//! folders offers other users' folders (TASK-43), whether a snapshot that rights closed
+//! in part offers a restart as administrator (TASK-48), and which columns the difference
+//! list shows in which order (TASK-49). The
 //! profile opened last and the view of the difference — its types, order, list or tree — are
 //! kept without a control. The settings lie on tabs (TASK-44): «Загальні», «Знімки»,
 //! «Різниця» and «Експорт», which holds whether the exported file opens (TASK-39) and what
 //! separates the values of CSV (TASK-40).
 
+use std::cell::RefCell;
 use std::rc::Rc;
 
 use revisor_core::settings::{
-    AttributeFormat, CsvDelimiter, FocusAfterComparison, FocusAfterSnapshot, Language, SizeFormat,
-    Theme, TreeNodeText,
+    AttributeFormat, CsvDelimiter, DifferenceColumn, DifferenceColumns, FocusAfterComparison,
+    FocusAfterSnapshot, Language, SizeFormat, Theme, TreeNodeText,
 };
 use wxdragon::prelude::*;
 
@@ -46,6 +48,7 @@ pub struct Values {
     pub sound_only_after_long: bool,
     pub speak_status: bool,
     pub offer_restart: bool,
+    pub difference_columns: DifferenceColumns,
 }
 
 /// The tabs of the window (TASK-44), in their order. Settings added later go into the tab
@@ -95,6 +98,10 @@ pub(crate) enum Control {
     SizeFormat,
     AttributeFormat,
     TreeNodes,
+    DifferenceColumns,
+    MoveUp,
+    MoveDown,
+    Defaults,
     WarnMissingEntry,
     ShowCopiedPath,
     CsvDelimiter,
@@ -103,7 +110,7 @@ pub(crate) enum Control {
 
 impl Control {
     /// In tab order: tab by tab, as each tab shows them.
-    const ALL: [Control; 18] = [
+    const ALL: [Control; 22] = [
         Self::Language,
         Self::Theme,
         Self::SoundAfterSnapshot,
@@ -118,6 +125,10 @@ impl Control {
         Self::SizeFormat,
         Self::AttributeFormat,
         Self::TreeNodes,
+        Self::DifferenceColumns,
+        Self::MoveUp,
+        Self::MoveDown,
+        Self::Defaults,
         Self::WarnMissingEntry,
         Self::ShowCopiedPath,
         Self::CsvDelimiter,
@@ -141,6 +152,10 @@ impl Control {
             | Self::SizeFormat
             | Self::AttributeFormat
             | Self::TreeNodes
+            | Self::DifferenceColumns
+            | Self::MoveUp
+            | Self::MoveDown
+            | Self::Defaults
             | Self::WarnMissingEntry
             | Self::ShowCopiedPath => Page::Difference,
             Self::CsvDelimiter | Self::OpenAfterExport => Page::Export,
@@ -161,6 +176,10 @@ impl Control {
             Self::SizeFormat => |s| s.size_format(),
             Self::AttributeFormat => |s| s.attribute_format(),
             Self::TreeNodes => |s| s.tree_nodes(),
+            Self::DifferenceColumns => |s| s.difference_columns(),
+            Self::MoveUp => |s| s.move_up(),
+            Self::MoveDown => |s| s.move_down(),
+            Self::Defaults => |s| s.defaults(),
             Self::ConfirmDeletion => |s| s.confirm_snapshot_deletion(),
             Self::WarnMissingEntry => |s| s.warn_missing_entry(),
             Self::ShowCopiedPath => |s| s.show_copied_path(),
@@ -189,19 +208,24 @@ impl Control {
         )
     }
 
-    /// The text of the control's label or check box: "&Focus after a snapshot:",
-    /// "Підтверджувати видалення знімків (&C)".
+    /// Whether the control is a button, which its access key presses (TASK-49).
+    fn is_button(self) -> bool {
+        matches!(self, Self::MoveUp | Self::MoveDown | Self::Defaults)
+    }
+
+    /// The text of the control's label, check box or button: "&Focus after a snapshot:",
+    /// "Підтверджувати видалення знімків (&C)", "Вгору (&U)".
     fn label(self, s: &dyn Strings) -> String {
-        if self.is_check_box() {
+        if self.is_check_box() || self.is_button() {
             access::label(s, self.name())
         } else {
             field_label(s, self.name())
         }
     }
 
-    /// The access key: a check box is pressed, a list takes the focus.
+    /// The access key: a check box or a button is pressed, a list takes the focus.
     fn target(self) -> Target<Control> {
-        let act = if self.is_check_box() {
+        let act = if self.is_check_box() || self.is_button() {
             Act::Press
         } else {
             Act::Focus
@@ -229,6 +253,7 @@ struct Window {
     size_format: Choice,
     attribute_format: Choice,
     tree_nodes: Choice,
+    columns: Rc<ColumnList>,
     confirm: CheckBox,
     other_users: CheckBox,
     warn_missing: CheckBox,
@@ -285,6 +310,63 @@ impl Tab {
         check_box
     }
 
+    /// Adds the list «Колонки списку різниці» with a check box for each column, in the
+    /// order of `initial`, and its buttons «Вгору», «Вниз», «Типові» in a row below it
+    /// (TASK-49 #1).
+    fn column_list(&self, s: &'static dyn Strings, initial: DifferenceColumns) -> Rc<ColumnList> {
+        let label = StaticText::builder(&self.panel)
+            .with_label(&Control::DifferenceColumns.label(s))
+            .build();
+        let list = ListCtrl::builder(&self.panel)
+            .with_style(ListCtrlStyle::Report | ListCtrlStyle::NoHeader | ListCtrlStyle::SingleSel)
+            .build();
+        let hwnd = list.get_handle();
+        win32::lists::enable_check_boxes(hwnd);
+        list.insert_column(0, "", ListColumnFormat::Left, 240);
+        for i in 0..initial.choices().len() {
+            list.insert_item(i as i64, "", None);
+        }
+        let kept = win32::lists::keep_checked(self.panel.get_handle(), hwnd, name_row(&initial));
+        let columns = Rc::new(ColumnList {
+            s,
+            list,
+            columns: RefCell::new(initial),
+            kept,
+        });
+        columns.fill();
+        win32::lists::select_only(hwnd, 0);
+        let button = |control: Control| {
+            Button::builder(&self.panel)
+                .with_label(&control.label(s))
+                .build()
+        };
+        let (up, down, defaults) = (
+            button(Control::MoveUp),
+            button(Control::MoveDown),
+            button(Control::Defaults),
+        );
+        let w = Rc::clone(&columns);
+        up.on_click(move |_| w.move_focused(true));
+        let w = Rc::clone(&columns);
+        down.on_click(move |_| w.move_focused(false));
+        let w = Rc::clone(&columns);
+        defaults.on_click(move |_| w.reset());
+
+        let side = SizerFlag::Left | SizerFlag::Right;
+        self.sizer.add(&label, 0, side | SizerFlag::Top, 12);
+        self.sizer.add_spacer(4);
+        // Six rows without a scroll bar.
+        list.set_min_size(Size::new(-1, 130));
+        self.sizer.add(&list, 0, SizerFlag::Expand | side, 12);
+        let row = BoxSizer::builder(Orientation::Horizontal).build();
+        row.add(&up, 0, SizerFlag::Right, 8);
+        row.add(&down, 0, SizerFlag::Right, 8);
+        row.add(&defaults, 0, SizerFlag::Right, 8);
+        self.sizer.add_sizer(&row, 0, side | SizerFlag::Top, 12);
+        win32::lists::fill_width(hwnd, 0);
+        columns
+    }
+
     /// Puts the tab into `notebook`, with room below its last control.
     fn finish(self, notebook: &Notebook, s: &dyn Strings, page: Page) {
         self.sizer.add_spacer(12);
@@ -292,6 +374,97 @@ impl Tab {
         // NVDA says the tab when Ctrl+Tab brings the focus onto its page (TASK-44 #7).
         win32::accessibility::make_property_page(self.panel.get_handle(), page.name(s));
         notebook.add_page(&self.panel, page.name(s), page == Page::General, None);
+    }
+}
+
+/// The list «Колонки списку різниці» (TASK-49): a row with a check box for each column,
+/// in the order the difference list shows them. The order and the widths are kept apart,
+/// the check boxes say which are shown.
+struct ColumnList {
+    s: &'static dyn Strings,
+    list: ListCtrl,
+    columns: RefCell<DifferenceColumns>,
+    /// The check box of «Ім'я», which cannot be unchecked (#3).
+    kept: Rc<win32::lists::KeptChecked>,
+}
+
+/// The row of «Ім'я» among `columns`.
+fn name_row(columns: &DifferenceColumns) -> usize {
+    columns
+        .choices()
+        .iter()
+        .position(|c| c.column == DifferenceColumn::Name)
+        .unwrap_or(0)
+}
+
+/// The text of the row of `column`: its name, and for «Ім'я» that it is always shown:
+/// "Ім'я (завжди видно)" (TASK-49 #3).
+fn column_row_text(s: &dyn Strings, column: DifferenceColumn) -> String {
+    let name = s.column(column);
+    if column.can_hide() {
+        name.to_string()
+    } else {
+        s.always_shown(name)
+    }
+}
+
+impl ColumnList {
+    /// Writes the rows as the columns are now: their texts and check boxes.
+    fn fill(&self) {
+        let hwnd = self.list.get_handle();
+        let columns = self.columns.borrow();
+        // The lock moves first, so that the row «Ім'я» leaves can be unchecked.
+        self.kept.set_row(name_row(&columns));
+        for (i, choice) in columns.choices().iter().enumerate() {
+            self.list
+                .set_item_text(i as i64, &column_row_text(self.s, choice.column));
+            win32::lists::set_checked(hwnd, i, choice.shown);
+        }
+    }
+
+    /// Takes the check boxes into the columns.
+    fn take_checks(&self) {
+        let hwnd = self.list.get_handle();
+        let mut columns = self.columns.borrow_mut();
+        for i in 0..columns.choices().len() {
+            columns.set_shown(i, win32::lists::is_checked(hwnd, i));
+        }
+    }
+
+    /// The columns as the user chose them.
+    fn chosen(&self) -> DifferenceColumns {
+        self.take_checks();
+        *self.columns.borrow()
+    }
+
+    /// «Вгору» or «Вниз»: moves the column of the selected row one place, and the
+    /// selection with it (#4). The keyboard focus stays where it is: in the list, NVDA
+    /// then reads the row in its new place.
+    fn move_focused(&self, up: bool) {
+        let hwnd = self.list.get_handle();
+        let Some(row) = win32::lists::focused_row(hwnd) else {
+            return;
+        };
+        self.take_checks();
+        let moved = {
+            let mut columns = self.columns.borrow_mut();
+            if up {
+                columns.move_up(row)
+            } else {
+                columns.move_down(row)
+            }
+        };
+        if let Some(to) = moved {
+            self.fill();
+            win32::lists::select_only(hwnd, to);
+        }
+    }
+
+    /// «Типові»: all six columns, in their default order and widths (#5); the selection
+    /// stays on its row.
+    fn reset(&self) {
+        *self.columns.borrow_mut() = DifferenceColumns::default();
+        self.fill();
     }
 }
 
@@ -421,6 +594,8 @@ pub fn show(parent: &Frame, s: &'static dyn Strings, initial: Values) -> Option<
         &options,
         position(&TreeNodeText::ALL, &initial.tree_node_text),
     );
+    // After «Вузли дерева» (TASK-49 #1).
+    let columns = difference.column_list(s, initial.difference_columns);
     let warn_missing =
         difference.check_box(s, Control::WarnMissingEntry, initial.warn_missing_entry);
     let show_copied_path =
@@ -476,6 +651,7 @@ pub fn show(parent: &Frame, s: &'static dyn Strings, initial: Values) -> Option<
         size_format,
         attribute_format,
         tree_nodes,
+        columns,
         confirm,
         other_users,
         warn_missing,
@@ -490,6 +666,15 @@ pub fn show(parent: &Frame, s: &'static dyn Strings, initial: Values) -> Option<
     });
     // Access keys by the key's position, so they work in the Ukrainian layout too
     // (document «Клавіші доступу»), and only those of the tab shown.
+    // Enter in the list of columns activates its row, which the list keeps for itself
+    // instead of pressing OK; it presses OK too. wx activates the row on Space as well,
+    // which there only checks or unchecks it.
+    let ok_dialog = dialog;
+    window.columns.list.on_item_activated(move |_| {
+        if !win32::focus::space_down() {
+            ok_dialog.end_modal(ID_OK);
+        }
+    });
     let (shown, w) = (Rc::clone(&window), Rc::clone(&window));
     let targets = Page::ALL.into_iter().flat_map(targets_of).collect();
     access::bind_where(
@@ -526,6 +711,11 @@ impl Window {
             Control::SizeFormat => self.size_format.set_focus(),
             Control::AttributeFormat => self.attribute_format.set_focus(),
             Control::TreeNodes => self.tree_nodes.set_focus(),
+            Control::DifferenceColumns => self.columns.list.set_focus(),
+            // The buttons act without the focus, so that it stays in the list (#4).
+            Control::MoveUp => self.columns.move_focused(true),
+            Control::MoveDown => self.columns.move_focused(false),
+            Control::Defaults => self.columns.reset(),
             Control::CsvDelimiter => self.csv_delimiter.set_focus(),
             Control::ConfirmDeletion => press(&self.confirm),
             Control::WarnMissingEntry => press(&self.warn_missing),
@@ -588,6 +778,7 @@ impl Window {
             sound_only_after_long: self.sound_only_after_long.get_value(),
             speak_status: self.speak_status.get_value(),
             offer_restart: self.offer_restart.get_value(),
+            difference_columns: self.columns.chosen(),
         }
     }
 }
@@ -630,6 +821,11 @@ mod tests {
                 Control::SizeFormat,
                 Control::AttributeFormat,
                 Control::TreeNodes,
+                // TASK-49 #1.
+                Control::DifferenceColumns,
+                Control::MoveUp,
+                Control::MoveDown,
+                Control::Defaults,
                 Control::WarnMissingEntry,
                 // TASK-41 #8.
                 Control::ShowCopiedPath,
@@ -690,6 +886,21 @@ mod tests {
         // TASK-33 #6.
         assert_eq!(Control::TreeNodes.label(&En), "&Tree nodes:");
         assert_eq!(Control::TreeNodes.label(&Uk), "Вузли дерева (&T):");
+        // TASK-49 #10.
+        assert_eq!(
+            Control::DifferenceColumns.label(&En),
+            "Difference list &columns:"
+        );
+        assert_eq!(
+            Control::DifferenceColumns.label(&Uk),
+            "Колонки списку різниці (&C):"
+        );
+        assert_eq!(Control::MoveUp.label(&En), "Move &up");
+        assert_eq!(Control::MoveUp.label(&Uk), "Вгору (&U)");
+        assert_eq!(Control::MoveDown.label(&En), "Move dow&n");
+        assert_eq!(Control::MoveDown.label(&Uk), "Вниз (&N)");
+        assert_eq!(Control::Defaults.label(&En), "&Defaults");
+        assert_eq!(Control::Defaults.label(&Uk), "Типові (&D)");
         assert_eq!(
             Control::WarnMissingEntry.label(&En),
             "&Warn when the entry is no longer on disk"
@@ -890,5 +1101,33 @@ mod tests {
             .map(|&v| En.focus_option(v))
             .collect();
         assert_eq!(en, ["If focus is in the list", "Always", "Never"]);
+    }
+
+    #[test]
+    fn the_column_rows_say_that_the_name_is_always_shown() {
+        // TASK-49 #3.
+        let uk: Vec<String> = DifferenceColumn::ALL
+            .iter()
+            .map(|&c| column_row_text(&Uk, c))
+            .collect();
+        assert_eq!(
+            uk,
+            [
+                "Ім'я (завжди видно)",
+                "Зміна",
+                "Що змінилося",
+                "Розмір",
+                "Дата зміни",
+                "Тека"
+            ]
+        );
+        assert_eq!(
+            column_row_text(&En, DifferenceColumn::Name),
+            "Name (always shown)"
+        );
+        let mut columns = DifferenceColumns::default();
+        assert_eq!(name_row(&columns), 0);
+        columns.move_down(0);
+        assert_eq!(name_row(&columns), 1);
     }
 }

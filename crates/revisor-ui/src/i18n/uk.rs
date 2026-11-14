@@ -1071,6 +1071,26 @@ impl Strings for Uk {
         "Вузли дерева"
     }
 
+    fn difference_columns(&self) -> &'static str {
+        "Колонки списку різниці"
+    }
+
+    fn move_up(&self) -> &'static str {
+        "Вгору"
+    }
+
+    fn move_down(&self) -> &'static str {
+        "Вниз"
+    }
+
+    fn defaults(&self) -> &'static str {
+        "Типові"
+    }
+
+    fn always_shown(&self, column: &str) -> String {
+        format!("{column} (завжди видно)")
+    }
+
     fn tree_node_option(&self, value: TreeNodeText) -> &'static str {
         match value {
             TreeNodeText::Long => "Ім'я, зміна й що змінилося",

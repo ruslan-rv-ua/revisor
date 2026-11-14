@@ -875,6 +875,12 @@ fn entries_in(en: &dyn Strings, uk: &dyn Strings) -> Vec<Entry> {
             s.tree_node_option(value).into()
         });
     }
+    // The list of the difference list's columns (TASK-49).
+    c.add("difference_columns", |s| plain(s.difference_columns()));
+    c.add("move_up", |s| plain(s.move_up()));
+    c.add("move_down", |s| plain(s.move_down()));
+    c.add("defaults", |s| plain(s.defaults()));
+    c.add("always_shown", |s| s.always_shown("{column}"));
 
     let properties = all!(Property {
         Path,

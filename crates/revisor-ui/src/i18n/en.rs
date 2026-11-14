@@ -1072,6 +1072,26 @@ impl Strings for En {
         "&Tree nodes"
     }
 
+    fn difference_columns(&self) -> &'static str {
+        "Difference list &columns"
+    }
+
+    fn move_up(&self) -> &'static str {
+        "Move &up"
+    }
+
+    fn move_down(&self) -> &'static str {
+        "Move dow&n"
+    }
+
+    fn defaults(&self) -> &'static str {
+        "&Defaults"
+    }
+
+    fn always_shown(&self, column: &str) -> String {
+        format!("{column} (always shown)")
+    }
+
     fn tree_node_option(&self, value: TreeNodeText) -> &'static str {
         match value {
             TreeNodeText::Long => "Name, change, and what changed",

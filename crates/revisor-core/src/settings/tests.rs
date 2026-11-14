@@ -526,3 +526,33 @@ fn the_comparison_focus_setting_is_kept_and_named() {
         FocusAfterComparison::default()
     );
 }
+
+#[test]
+fn the_difference_columns_and_their_widths_survive_a_restart() {
+    let tmp = TempDir::new("settings");
+    let mut chosen = DifferenceColumns::default();
+    {
+        let settings = Settings::open(&db(&tmp)).unwrap();
+        assert_eq!(
+            settings.difference_columns().unwrap(),
+            DifferenceColumns::default()
+        );
+        chosen.move_up(1);
+        chosen.set_shown(4, false);
+        chosen.set_shown(5, false);
+        settings.set_difference_columns(&chosen).unwrap();
+        // A width dragged with the mouse is kept on its own (TASK-49 #7).
+        settings
+            .set_difference_column_width(DifferenceColumn::Size, 123)
+            .unwrap();
+    }
+    chosen.set_width(DifferenceColumn::Size, 123);
+    let settings = Settings::open(&db(&tmp)).unwrap();
+    assert_eq!(settings.difference_columns().unwrap(), chosen);
+    // A value no revisor wrote falls back to the default.
+    settings.set(KEY_DIFFERENCE_COLUMNS, 7).unwrap();
+    assert_eq!(
+        settings.difference_columns().unwrap(),
+        DifferenceColumns::default()
+    );
+}
