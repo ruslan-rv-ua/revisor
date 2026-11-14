@@ -471,6 +471,14 @@ pub trait Strings {
     /// The check box of the setting «Показувати скопійований шлях у рядку стану»
     /// (TASK-41).
     fn show_copied_path(&self) -> &'static str;
+    /// The check box «Відтворювати звук після знімка» (TASK-46).
+    fn sound_after_snapshot(&self) -> &'static str;
+    /// The check box «Відтворювати звук після «Знімок + порівняння»» (TASK-46).
+    fn sound_after_snapshot_and_compare(&self) -> &'static str;
+    /// The check box «Лише після операцій, довших за 10 секунд» (TASK-46).
+    fn sound_only_after_long(&self) -> &'static str;
+    /// The check box «Передавати скрінрідеру повідомлення рядка стану» (TASK-46).
+    fn speak_status(&self) -> &'static str;
     /// The check box of the setting «Показувати теки інших користувачів у переліку
     /// типових тек» (TASK-43).
     fn other_users_folders(&self) -> &'static str;
