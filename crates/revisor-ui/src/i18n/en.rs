@@ -1233,6 +1233,14 @@ impl Strings for En {
         "Show &other users' folders in the typical folders list"
     }
 
+    fn offer_restart(&self) -> &'static str {
+        "Offer to &restart as administrator after a snapshot"
+    }
+
+    fn dont_offer_again(&self) -> &'static str {
+        "&Don't offer this again"
+    }
+
     fn settings_general(&self) -> &'static str {
         "General"
     }

@@ -7,7 +7,9 @@
 //! warns when it is no longer on disk (TASK-14), whether the difference shows as a list or
 //! as a tree, with how much its nodes say (TASK-33), the theme of the interface
 //! (TASK-34), whether the list of typical folders offers other users' folders (TASK-43),
-//! and which operations end with a sound and whether the status bar speaks (TASK-46).
+//! which operations end with a sound and whether the status bar speaks (TASK-46), and
+//! whether a snapshot that rights closed in part offers a restart as administrator
+//! (TASK-48).
 //! Each setting is one row of a key–value table, read and written through typed methods,
 //! so a later setting needs no change of the schema.
 
@@ -62,6 +64,7 @@ const KEY_SOUND_AFTER_SNAPSHOT: &str = "sound_after_snapshot";
 const KEY_SOUND_AFTER_SNAPSHOT_AND_COMPARE: &str = "sound_after_snapshot_and_compare";
 const KEY_SOUND_ONLY_AFTER_LONG: &str = "sound_only_after_long";
 const KEY_SPEAK_STATUS: &str = "speak_status";
+const KEY_OFFER_RESTART: &str = "offer_restart";
 
 #[derive(Debug)]
 pub enum SettingsError {
@@ -768,6 +771,16 @@ impl Settings {
 
     pub fn set_speak_status(&self, on: bool) -> Result<(), SettingsError> {
         self.set(KEY_SPEAK_STATUS, i64::from(on))
+    }
+
+    /// Whether a snapshot whose entries rights closed in part offers a restart as
+    /// administrator; on by default (TASK-48 #1).
+    pub fn offer_restart(&self) -> Result<bool, SettingsError> {
+        self.flag_on_by_default(KEY_OFFER_RESTART)
+    }
+
+    pub fn set_offer_restart(&self, on: bool) -> Result<(), SettingsError> {
+        self.set(KEY_OFFER_RESTART, i64::from(on))
     }
 
     /// A flag that is on unless off is stored.

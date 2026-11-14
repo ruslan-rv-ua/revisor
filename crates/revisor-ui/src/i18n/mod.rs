@@ -499,6 +499,12 @@ pub trait Strings {
     /// The check box of the setting «Показувати теки інших користувачів у переліку
     /// типових тек» (TASK-43).
     fn other_users_folders(&self) -> &'static str;
+    /// The check box of the setting «Пропонувати перезапуск від імені адміністратора після
+    /// знімка» (TASK-48).
+    fn offer_restart(&self) -> &'static str;
+    /// The check box «Більше не пропонувати» in the question about a restart as
+    /// administrator (TASK-48).
+    fn dont_offer_again(&self) -> &'static str;
     /// The tabs of the settings window (TASK-44): «Загальні», «Знімки», «Різниця».
     fn settings_general(&self) -> &'static str;
     fn settings_snapshots(&self) -> &'static str;
