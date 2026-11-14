@@ -881,7 +881,7 @@ dependencies = [
 
 [[package]]
 name = "revisor"
-version = "0.3.0"
+version = "0.4.0"
 dependencies = [
  "embed-manifest",
  "revisor-core",
@@ -892,7 +892,7 @@ dependencies = [
 
 [[package]]
 name = "revisor-core"
-version = "0.3.0"
+version = "0.4.0"
 dependencies = [
  "rusqlite",
  "windows-sys",
