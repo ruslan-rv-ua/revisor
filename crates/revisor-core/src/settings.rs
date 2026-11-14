@@ -56,6 +56,7 @@ const KEY_OPEN_AFTER_EXPORT: &str = "open_after_export";
 const KEY_EXPORT_FOLDER: &str = "export_folder";
 const KEY_EXPORT_FORMAT: &str = "export_format";
 const KEY_CSV_DELIMITER: &str = "csv_delimiter";
+const KEY_SHOW_COPIED_PATH: &str = "show_copied_path";
 
 #[derive(Debug)]
 pub enum SettingsError {
@@ -711,6 +712,19 @@ impl Settings {
 
     pub fn set_warn_missing_entry(&self, warn: bool) -> Result<(), SettingsError> {
         self.set(KEY_WARN_MISSING_ENTRY, i64::from(warn))
+    }
+
+    /// Whether the status bar names the path «Копіювати шлях» copied; off by default, so
+    /// that it says only «Шлях скопійовано.» (TASK-41 #8).
+    pub fn show_copied_path(&self) -> Result<bool, SettingsError> {
+        Ok(matches!(
+            self.get(KEY_SHOW_COPIED_PATH)?,
+            Some(Value::Integer(n)) if n != 0
+        ))
+    }
+
+    pub fn set_show_copied_path(&self, show: bool) -> Result<(), SettingsError> {
+        self.set(KEY_SHOW_COPIED_PATH, i64::from(show))
     }
 
     /// Whether the list of typical folders offers the folders of the other users of this

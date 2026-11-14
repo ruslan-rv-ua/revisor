@@ -28,6 +28,7 @@ pub enum CommandId {
     CancelComparison,
     Details,
     ShowInExplorer,
+    CopyPath,
     FilterByText,
     ShowAdded,
     ShowDeleted,
@@ -300,8 +301,8 @@ fn change_shown(state: &AppState) -> Result<(), Reason> {
     require(state.difference_rows > 0, Reason::NoChangeShown)
 }
 
-/// The change to act on is an entry or a folder, which File Explorer can show: not a node
-/// «Ще…» of the tree (TASK-37 #7).
+/// The change to act on is an entry or a folder, which File Explorer can show and whose path
+/// can be copied: not a node «Ще…» of the tree (TASK-37 #7, TASK-41 #4).
 fn entry_shown(state: &AppState) -> Result<(), Reason> {
     change_shown(state)?;
     require(!state.more_node, Reason::MoreNode)
@@ -597,6 +598,19 @@ pub static COMMANDS: &[Command] = &[
             entry_shown,
         )
     },
+    // Ctrl+Shift+C, as «Копіювати як шлях» in File Explorer and in Everything (TASK-41).
+    Command {
+        shortcut: Some(key(Key::Letter(b'C')).ctrl().shift()),
+        context: Some(ContextPlace {
+            pane: Pane::Difference,
+            group: 0,
+        }),
+        ..item(
+            CommandId::CopyPath,
+            place(MenuId::Difference, 0),
+            entry_shown,
+        )
+    },
     Command {
         shortcut: Some(key(Key::Letter(b'F')).ctrl()),
         ..item(
@@ -882,6 +896,50 @@ mod tests {
         assert_eq!(explorer.shortcut, Some(key(Key::Enter).ctrl()));
         assert_eq!(explorer.list_key, None);
         assert_eq!(letter(En.command(explorer.id)), Some(b'E'));
+    }
+
+    #[test]
+    fn copy_path_acts_on_the_entry_in_focus_as_file_explorer_does() {
+        // TASK-41 #1, #4: the conditions of «Показати в Провіднику» and their reasons.
+        let available = |state: &AppState| (command(CommandId::CopyPath).available)(state);
+        let rows = AppState {
+            has_difference: true,
+            difference_rows: 1,
+            ..AppState::new()
+        };
+        assert_eq!(available(&rows), Ok(()));
+        assert_eq!(
+            available(&AppState {
+                difference_rows: 0,
+                ..rows.clone()
+            }),
+            Err(Reason::NoChangeShown)
+        );
+        assert_eq!(available(&AppState::new()), Err(Reason::NoDifference));
+        let more = AppState {
+            layout: DifferenceView::Tree,
+            more_node: true,
+            ..rows
+        };
+        assert_eq!(available(&more), Err(Reason::MoreNode));
+        // Right after «Показати в Провіднику», in the menu and in the context menu, with
+        // Ctrl+Shift+C from anywhere in the window and the letter O.
+        let c = command(CommandId::CopyPath);
+        let at = |id| COMMANDS.iter().position(|c| c.id == id).unwrap();
+        assert_eq!(at(CommandId::CopyPath), at(CommandId::ShowInExplorer) + 1);
+        assert_eq!(c.place, place(MenuId::Difference, 0));
+        assert_eq!(
+            c.context,
+            Some(ContextPlace {
+                pane: Pane::Difference,
+                group: 0
+            })
+        );
+        assert_eq!(c.shortcut, Some(key(Key::Letter(b'C')).ctrl().shift()));
+        assert_eq!(c.scope, None);
+        assert_eq!(c.list_key, None);
+        assert!(!c.ellipsis, "it asks for nothing more");
+        assert_eq!(letter(En.command(c.id)), Some(b'O'));
     }
 
     #[test]

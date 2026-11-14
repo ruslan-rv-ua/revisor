@@ -1114,6 +1114,7 @@ impl MainWindow {
             CommandId::ViewAsTree => self.set_layout(DifferenceView::Tree),
             CommandId::Details => self.show_details(),
             CommandId::ShowInExplorer => self.show_in_explorer(),
+            CommandId::CopyPath => self.copy_path(),
             CommandId::Export => self.export(),
             CommandId::CancelExport => self.jobs.borrow().cancel(Kind::Export),
             CommandId::KeyboardShortcuts => help::show_shortcuts(&self.frame, s),
@@ -1424,6 +1425,16 @@ impl MainWindow {
             .unwrap_or(false)
     }
 
+    /// Whether the status bar names the path «Копіювати шлях» copied (TASK-41 #8); off by
+    /// default.
+    fn show_copied_path(&self) -> bool {
+        self.settings
+            .as_ref()
+            .ok()
+            .and_then(|settings| settings.show_copied_path().ok())
+            .unwrap_or(false)
+    }
+
     /// Whether the exported file opens in the program Windows assigns to it (TASK-39 #9);
     /// off by default.
     fn open_after_export(&self) -> bool {
@@ -1469,6 +1480,7 @@ impl MainWindow {
             tree_node_text: self.difference_list.borrow().node_text(),
             confirm_snapshot_deletion: self.confirm_deletion(),
             warn_missing_entry: self.warn_missing_entry(),
+            show_copied_path: self.show_copied_path(),
             other_users_folders: self.other_users_folders(),
             open_after_export: self.open_after_export(),
             csv_delimiter: self.csv_delimiter(),
@@ -1489,6 +1501,7 @@ impl MainWindow {
                     settings.set_confirm_snapshot_deletion(values.confirm_snapshot_deletion)
                 })
                 .and_then(|()| settings.set_warn_missing_entry(values.warn_missing_entry))
+                .and_then(|()| settings.set_show_copied_path(values.show_copied_path))
                 .and_then(|()| settings.set_other_users_folders(values.other_users_folders))
                 .and_then(|()| settings.set_open_after_export(values.open_after_export))
                 .and_then(|()| settings.set_csv_delimiter(values.csv_delimiter))
@@ -2360,6 +2373,31 @@ impl MainWindow {
         if let Err(e) = shown {
             self.fail(&s.explorer_failed(&reason(s, &e)));
         }
+    }
+
+    // --- Copying the path (TASK-41) -----------------------------------------------------
+
+    /// «Копіювати шлях»: puts the whole path of the entry with the focus on the clipboard,
+    /// with no quotes — or that of a folder of the tree that is no change itself — and the
+    /// status bar says so, with the path when the setting asks for it (#2, #3, #8); the
+    /// focus stays. The clipboard is flushed, so the path stays on it after revisor
+    /// closes. When the clipboard stays busy, wxWidgets says why in a window of its own,
+    /// which wxDragon cannot turn off, and the status bar says the path was not copied
+    /// (#9).
+    fn copy_path(&self) {
+        let s = self.s;
+        let Some(path) = self.difference_list.borrow().current_path() else {
+            return;
+        };
+        let text = path.to_string_lossy();
+        let clipboard = Clipboard::get();
+        if !clipboard.set_text(&text) {
+            self.say(s.path_not_copied());
+            return;
+        }
+        clipboard.flush();
+        let shown = self.show_copied_path().then_some(&*text);
+        self.say(&s.path_copied(shown));
     }
 
     // --- Export (TASK-39) ---------------------------------------------------------------

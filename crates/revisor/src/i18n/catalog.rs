@@ -142,6 +142,7 @@ fn entries_in(en: &dyn Strings, uk: &dyn Strings) -> Vec<Entry> {
             CancelComparison,
             Details,
             ShowInExplorer,
+            CopyPath,
             FilterByText,
             ShowAdded,
             ShowDeleted,
@@ -987,6 +988,7 @@ fn entries_in(en: &dyn Strings, uk: &dyn Strings) -> Vec<Entry> {
         });
     }
     c.add("warn_missing_entry", |s| plain(s.warn_missing_entry()));
+    c.add("show_copied_path", |s| plain(s.show_copied_path()));
     c.add("other_users_folders", |s| plain(s.other_users_folders()));
     c.add("settings_general", |s| s.settings_general().into());
     c.add("settings_snapshots", |s| s.settings_snapshots().into());
@@ -995,6 +997,9 @@ fn entries_in(en: &dyn Strings, uk: &dyn Strings) -> Vec<Entry> {
     c.add("open", |s| plain(s.open()));
     c.add("no_folder_on_disk", |s| s.no_folder_on_disk("{path}"));
     c.add("explorer_failed", |s| s.explorer_failed("{reason}"));
+    c.add("path_copied", |s| s.path_copied(None));
+    c.add("path_copied.with_path", |s| s.path_copied(Some("{path}")));
+    c.add("path_not_copied", |s| s.path_not_copied().into());
     c.add("export_text_type", |s| s.export_text_type().into());
     c.add("export_csv_type", |s| s.export_csv_type().into());
     c.add("exporting", |s| s.exporting().into());
