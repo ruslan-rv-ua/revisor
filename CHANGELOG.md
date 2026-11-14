@@ -33,6 +33,14 @@ release that section becomes the version's own, and the release page publishes i
   turns the offer off however the question is closed; Settings › Snapshots › Offer to restart
   as administrator after a snapshot turns it on or off. The status bar still says how many
   entries are inaccessible, and Restart as administrator stays in the menu.
+- **The columns of the difference list can be hidden and reordered.** Settings › Difference ›
+  Difference list columns lists the six columns with a check box each, and Move up, Move down
+  and Defaults below it; the list shows the columns checked, in that order, and NVDA reads a
+  row so. Name cannot be hidden, but it moves like the others. The difference shown takes the
+  new columns at OK, keeping the row selected and the order; the list can still be sorted by a
+  hidden column from the menu. A column resized with the mouse keeps its width after a
+  restart, and Defaults brings the widths back too. The tree, the exports and `revisor-cli`
+  do not change.
 
 ## [0.4.0] - 2026-11-14
 

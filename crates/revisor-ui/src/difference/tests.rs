@@ -1245,6 +1245,63 @@ fn the_list_keeps_up_with_a_million_rows() {
     assert!(worst.as_secs_f64() < 2.0, "{worst:?}");
 }
 
+/// How much shorter a row is without «Тека» and «Дата зміни» (TASK-49 #12): the
+/// characters of the cells of every row of a real difference, in Ukrainian and the user's
+/// regional formats. A profile over the folder in `REVISOR_MEASURE_FOLDER`, made in the
+/// temporary folder, takes a snapshot, another `REVISOR_MEASURE_PAUSE` seconds later (a
+/// minute by default), and compares them.
+/// `cargo test -p revisor-ui -- --ignored --nocapture the_row_without_the_folder`.
+#[test]
+#[ignore = "a measurement, on a folder of this computer"]
+fn the_row_without_the_folder_and_the_date_is_shorter() {
+    use crate::format::{Locale, RegionalFormat};
+    use revisor_core::job::Cancel;
+    use revisor_core::snapshot::{Progress, take};
+    use revisor_core::store::{ProfileSettings, Scope, Store};
+    let folder = PathBuf::from(std::env::var("REVISOR_MEASURE_FOLDER").unwrap());
+    let db = std::env::temp_dir().join(format!("revisor-measure-{}.db", std::process::id()));
+    let mut settings = ProfileSettings::new_profile();
+    settings.name = "measure".into();
+    settings.scope = Scope {
+        folders: vec![folder],
+        ..settings.scope
+    };
+    drop(Store::create(&db, &settings).unwrap());
+    let cancel = Cancel::new();
+    let a = take(&db, None, &Progress::default(), &cancel).unwrap();
+    let pause = std::env::var("REVISOR_MEASURE_PAUSE")
+        .ok()
+        .and_then(|p| p.parse().ok())
+        .unwrap_or(60);
+    std::thread::sleep(std::time::Duration::from_secs(pause));
+    let b = take(&db, None, &Progress::default(), &cancel).unwrap();
+    let store = Store::open(&db).unwrap();
+    let difference = revisor_core::compare::compare(&store, a.id, b.id, &cancel).unwrap();
+    drop(store);
+    let _ = std::fs::remove_file(&db);
+    let mut list = list_with(&Uk, Box::new(RegionalFormat(Locale::USER)));
+    list.replace(difference, programs());
+    let mut short = DifferenceColumns::default();
+    short.set_shown(4, false);
+    short.set_shown(5, false);
+    let length = |columns: &[Column]| -> usize {
+        (0..list.len())
+            .map(|row| {
+                list.cells(row, columns)
+                    .iter()
+                    .map(|c| c.chars().count())
+                    .sum::<usize>()
+            })
+            .sum()
+    };
+    let (all, without) = (length(&Column::ALL), length(&short.shown()));
+    println!(
+        "rows: {}, characters: {all} with all columns, {without} without the folder and the date: {:.1} % shorter",
+        list.len(),
+        100.0 * (all - without) as f64 / all as f64
+    );
+}
+
 // --- The difference as a tree (TASK-33) ---------------------------------------------
 
 mod tree;

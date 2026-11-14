@@ -59,8 +59,11 @@ The main scenario takes four steps, all from the keyboard:
   text, sort the list by any column, read the details of a change, before and after
   (`Alt+Enter`), show it in File Explorer (`Ctrl+Enter`), or copy its full path
   (`Ctrl+Shift+C`), which the status bar confirms; Settings › Difference › Show the copied path
-  in the status bar makes it name the path too. A difference of a million rows reads without
-  delay.
+  in the status bar makes it name the path too. Settings › Difference › Difference list columns
+  chooses which columns the list shows and in which order, so that NVDA reads, say, the change
+  first and no folder path: check or uncheck a column, Move up and Move down move it, Defaults
+  brings all six back; Name is always shown. A column you resize with the mouse keeps its width.
+  A difference of a million rows reads without delay.
 - **Save the difference as a text report.** Difference › Export… (`Alt`, `D`, `X`) saves the
   entries the difference shows, with its filter, as a text file to read in any editor or paste
   into a message: a header with the pair of snapshots, the summary, the filter and the folders

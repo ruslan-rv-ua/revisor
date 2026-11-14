@@ -411,11 +411,18 @@ fn column_row_text(s: &dyn Strings, column: DifferenceColumn) -> String {
 impl ColumnList {
     /// Writes the rows as the columns are now: their texts and check boxes.
     fn fill(&self) {
+        let rows = 0..self.columns.borrow().choices().len();
+        self.fill_rows(rows);
+    }
+
+    /// Writes the rows `rows` as the columns are now.
+    fn fill_rows(&self, rows: impl Iterator<Item = usize>) {
         let hwnd = self.list.get_handle();
         let columns = self.columns.borrow();
         // The lock moves first, so that the row «Ім'я» leaves can be unchecked.
         self.kept.set_row(name_row(&columns));
-        for (i, choice) in columns.choices().iter().enumerate() {
+        for i in rows {
+            let choice = columns.choices()[i];
             self.list
                 .set_item_text(i as i64, &column_row_text(self.s, choice.column));
             win32::lists::set_checked(hwnd, i, choice.shown);
@@ -454,9 +461,13 @@ impl ColumnList {
                 columns.move_down(row)
             }
         };
+        // The row the column goes to is written before the focus comes to it, and the row it
+        // leaves after: a screen reader then reads the column once, in its new place, and
+        // not the text that replaces it under the focus.
         if let Some(to) = moved {
-            self.fill();
+            self.fill_rows(std::iter::once(to));
             win32::lists::select_only(hwnd, to);
+            self.fill_rows(std::iter::once(row));
         }
     }
 
