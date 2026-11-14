@@ -11,6 +11,12 @@ release that section becomes the version's own, and the release page publishes i
 
 ### Added
 
+- **The path of a change can be copied.** Difference › Copy path, with `Ctrl+Shift+C` as in
+  File Explorer, and the same item of the context menu of the list and the tree put the full
+  path of the entry in focus on the clipboard, with no quotes; a folder of the tree that did
+  not change itself gives its own path. The status bar says Path copied., and the new setting
+  Show the copied path in the status bar, on the Difference tab and off by default, adds the
+  path. The path stays on the clipboard after revisor closes.
 - **The difference can be exported to CSV**, for Excel and scripts. Difference › Export…
   offers CSV (*.csv) as the second type of file, and the save dialog offers the type chosen
   last; the type chosen, not the name's extension, says the format. The file has a line of

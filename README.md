@@ -56,8 +56,10 @@ The main scenario takes four steps, all from the keyboard:
   as a tree of their folders (`Ctrl+T`), where a folder opens when you expand it, and a folder
   of more than a thousand entries shows them a thousand at a time. Filter it by type and by
   text, sort the list by any column, read the details of a change, before and after
-  (`Alt+Enter`), or show it in File Explorer (`Ctrl+Enter`). A difference of a million rows
-  reads without delay.
+  (`Alt+Enter`), show it in File Explorer (`Ctrl+Enter`), or copy its full path
+  (`Ctrl+Shift+C`), which the status bar confirms; Settings › Difference › Show the copied path
+  in the status bar makes it name the path too. A difference of a million rows reads without
+  delay.
 - **Save the difference as a text report.** Difference › Export… (`Alt`, `D`, `X`) saves the
   entries the difference shows, with its filter, as a text file to read in any editor or paste
   into a message: a header with the pair of snapshots, the summary, the filter and the folders
@@ -168,6 +170,7 @@ lists them in the application too.
 | `Ctrl+F7` | Compare the current snapshot with another one you choose |
 | `Alt+Enter` | Show the details of the change in focus, before and after; `Enter` in the difference list or tree does the same |
 | `Ctrl+Enter` | Show the change in File Explorer |
+| `Ctrl+Shift+C` | Copy the full path of the change in focus, or of the folder in focus in the tree |
 | `Ctrl+F` | Move to the Filter field; `Esc` there clears it |
 | `Ctrl+1` to `Ctrl+5` | Show or hide added, deleted, modified, renamed or moved, and inaccessible entries |
 | `Ctrl+T` | Show the difference as a tree, or as a list again |
