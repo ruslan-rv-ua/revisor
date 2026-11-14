@@ -483,13 +483,17 @@ impl<C: Control> TreeView<C> {
     }
 
     /// Expands the way to `node`, whose children come as the folders open, and selects it.
+    /// A folder already open is left as it is: wx sets the state of an item it expands
+    /// even then, and a screen reader says "expanded" after the node in focus (TASK-45).
     fn reveal(&self, node: NodeId, source: &dyn Source, way: &Way) {
         for above in source.path(node) {
             self.populate(above, source, way);
             let Some(item) = self.item(above) else {
                 return;
             };
-            self.control.expand(&item);
+            if !self.control.is_expanded(&item) {
+                self.control.expand(&item);
+            }
         }
         if let Some(item) = self.item(node) {
             self.control.select(&item);
