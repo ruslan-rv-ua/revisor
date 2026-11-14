@@ -16,8 +16,8 @@ use revisor_core::job::{Cancel, Outcome, Work};
 use revisor_core::settings::CsvDelimiter;
 
 use crate::difference::{Export, Regional};
+use crate::format::{self, Locale, RegionalFormat};
 use crate::i18n::{En, Lang, Strings, Uk};
-use crate::win32::format::{self, Locale, RegionalFormat};
 
 /// How an export ended: the file written, or why not.
 pub type Exported = Outcome<PathBuf, io::Error>;
@@ -195,9 +195,4 @@ fn create_beside(path: &Path) -> io::Result<(PathBuf, File)> {
         }
     }
     unreachable!("the loop returns by its hundredth attempt")
-}
-
-/// Opens `path` in the program Windows assigns to its type (TASK-39 #9).
-pub fn open(path: &Path) -> io::Result<()> {
-    crate::win32::shell::open_file(path)
 }

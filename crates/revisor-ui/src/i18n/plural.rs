@@ -29,7 +29,6 @@ impl Operands {
     /// Parses a decimal written with a dot, such as "1.5"; the digits after the dot are
     /// kept as written, because CLDR treats "1" and "1.0" differently. The first strings
     /// with a decimal come with TASK-13.
-    #[cfg_attr(not(test), expect(dead_code))]
     pub fn from_decimal(text: &str) -> Option<Self> {
         let (int, frac) = text.split_once('.').unwrap_or((text, ""));
         let all_digits = |s: &str| s.bytes().all(|b| b.is_ascii_digit());

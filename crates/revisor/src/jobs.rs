@@ -571,11 +571,16 @@ mod tests {
     use revisor_core::job::Cancel;
     use revisor_core::profiles;
     use revisor_core::scan::synthetic;
+    use revisor_core::settings::SizeFormat;
     use revisor_core::store::{ProfileSettings, Snapshot};
     use std::fs;
     use std::path::PathBuf;
     use std::thread;
     use std::time::{Duration, Instant};
+
+    use crate::difference::{List, View};
+    use crate::i18n::En;
+    use crate::win32::format::{Locale, RegionalFormat};
 
     /// A folder of profiles under the temp folder, removed on drop.
     struct Profiles(PathBuf);
@@ -1280,5 +1285,83 @@ mod tests {
             }
             assert_eq!(comment_of(&a, id).as_deref(), Some("Разом"));
         }
+    }
+
+    /// The export of an empty difference between two snapshots of `profile`: enough for a
+    /// job that writes a file.
+    fn export_of(profile: &ProfileFile) -> Export {
+        let snapshot = |id: i64| SnapshotInfo {
+            id,
+            taken_at: id * 1_000,
+            comment: None,
+        };
+        let difference = Difference {
+            earlier: snapshot(1),
+            later: snapshot(2),
+            folders: Vec::new(),
+            warnings: Vec::new(),
+        };
+        let mut list = List::new(
+            &En,
+            Box::new(RegionalFormat(Locale::USER)),
+            View::default(),
+            SizeFormat::default(),
+        );
+        list.replace(difference, profile.clone());
+        list.export()
+            .expect("a list with a difference has its export")
+    }
+
+    #[test]
+    fn the_export_job_runs_one_at_a_time_and_ends_with_the_file_written() {
+        // TASK-39 #8: a short export ends before the progress row would show it.
+        let profiles = Profiles::new("export");
+        let profile = profiles.profile("Export");
+        let path = profiles.0.join("звіт.txt");
+        let mut jobs = Jobs::default();
+        jobs.start_export(export_of(&profile), path.clone(), Format::Text);
+        assert!(jobs.runs(Kind::Export));
+        assert!(jobs.flags(None).export_running);
+        assert!(jobs.shown().is_none());
+        let events = poll_until_idle(&mut jobs);
+        match events.as_slice() {
+            [Event::Export(to, Ok(Outcome::Done(written)))] => {
+                assert_eq!(to, &path);
+                assert_eq!(written, &path);
+            }
+            other => panic!("{other:?}"),
+        }
+        assert!(!jobs.any());
+        let text = fs::read_to_string(&path).unwrap();
+        assert!(
+            text.starts_with("\u{feff}Difference report, revisor "),
+            "{text:.60}"
+        );
+    }
+
+    #[test]
+    fn the_export_job_writes_csv_when_asked() {
+        // TASK-40 #1: the type chosen says the format, whatever the extension.
+        let profiles = Profiles::new("export-csv");
+        let profile = profiles.profile("Export");
+        let path = profiles.0.join("звіт.txt");
+        let mut jobs = Jobs::default();
+        jobs.start_export(
+            export_of(&profile),
+            path.clone(),
+            Format::Csv { delimiter: ';' },
+        );
+        let events = poll_until_idle(&mut jobs);
+        assert!(
+            matches!(events.as_slice(), [Event::Export(_, Ok(Outcome::Done(_)))]),
+            "{events:?}"
+        );
+        let text = fs::read_to_string(&path).unwrap();
+        let header = text
+            .strip_prefix('\u{feff}')
+            .and_then(|text| text.split("\r\n").next())
+            .unwrap();
+        assert!(header.starts_with("path;change;kind;"), "{header}");
+        assert_eq!(header.matches(';').count(), 19, "{header}");
     }
 }

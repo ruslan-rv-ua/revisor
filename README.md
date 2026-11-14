@@ -19,6 +19,7 @@ first.
 - [Features](#features)
 - [Install](#install)
 - [Keyboard](#keyboard)
+- [Command line](#command-line)
 - [Where the data lives](#where-the-data-lives)
 - [What revisor deliberately does not do](#what-revisor-deliberately-does-not-do)
 - [Building from source](#building-from-source)
@@ -94,6 +95,10 @@ The main scenario takes four steps, all from the keyboard:
   with the reason. When permissions are the reason, revisor offers to restart as administrator
   with the same profile open, and as administrator it also reads folders closed even to
   administrators.
+- **The same from a script.** `revisor-cli.exe`, a console program beside `revisor.exe`, takes
+  a snapshot of a profile and compares two snapshots into the same text report or CSV, so a
+  script can take a snapshot, install a program silently and keep the difference; see
+  [Command line](#command-line).
 - **Accessibility first.** Native Windows controls throughout, tested with NVDA. Every command
   is in the menus with an access key, and the frequent ones have shortcuts. A command that
   cannot run now says why in the status bar, which screen readers read without moving the
@@ -105,8 +110,8 @@ The main scenario takes four steps, all from the keyboard:
 - **English and Ukrainian**, following Windows or chosen in Settings.
 - **Light or dark**, following Windows or chosen in Settings; a contrast theme of Windows
   always keeps its colors.
-- **Portable.** One executable without DLLs, and everything it saves lives in a `data` folder
-  beside it.
+- **Portable.** Two executables without DLLs, the window and the command line, and everything
+  they save lives in a `data` folder beside them.
 
 ## Install
 
@@ -120,16 +125,18 @@ scoop bucket add ruslan-rv-ua https://github.com/ruslan-rv-ua/scoop-bucket
 scoop install revisor
 ```
 
-scoop puts `revisor` on your `PATH` and in the Start menu and keeps your data across updates
-(see [Where the data lives](#where-the-data-lives)); `scoop update revisor` brings the newest
-release.
+scoop puts `revisor` and `revisor-cli` on your `PATH`, `revisor` in the Start menu, and keeps
+your data across updates (see [Where the data lives](#where-the-data-lives));
+`scoop update revisor` brings the newest release.
 
 ### Direct download
 
 Take `revisor-v<version>-x64.exe` and the `.sha256` file beside it from the
 [releases page](https://github.com/ruslan-rv-ua/revisor/releases). There is no archive to unpack
 and no installer to run: the `.exe` is the whole application. Put it in a folder you can write
-to, not in `Program Files`, because revisor creates its `data` folder beside itself.
+to, not in `Program Files`, because revisor creates its `data` folder beside itself. For the
+command line, take `revisor-cli-v<version>-x64.exe` and its `.sha256` the same way and put it
+beside `revisor.exe`: the two share the `data` folder.
 
 revisor is **not code-signed**, so the first time you run a downloaded copy, Windows SmartScreen
 shows "Windows protected your PC": choose **More info**, then **Run anyway**. Where Smart App
@@ -150,11 +157,11 @@ if ($want -and $got -and $want -eq $got) { 'MATCHES the published fingerprint' }
 It prints **MATCHES the published fingerprint** when the file is byte for byte the one that was
 published. Anything else, including an error above the answer, means do not run it. With
 several versions downloaded into the folder, name the file in the first line instead of
-`revisor-v*-x64.exe`.
+`revisor-v*-x64.exe`; check `revisor-cli-v*-x64.exe` the same way.
 
 Each release file is built by GitHub Actions from the tagged source. The same run checks that
-the file needs no Visual C++ runtime, is at most 10 MiB and names its version in its
-properties, and only then writes the `.sha256` and publishes both.
+neither exe needs the Visual C++ runtime, that each is at most 10 MiB and names its version in
+its properties, and only then writes the `.sha256` files and publishes them.
 
 ## Keyboard
 
@@ -194,6 +201,42 @@ readers), Snapshots, Difference and Export.
 `Ctrl+Tab` and `Ctrl+Shift+Tab`, or `Ctrl+PgDn` and `Ctrl+PgUp`, switch them, and so do the
 arrows on the tab names; an access key works on the tab shown. OK keeps the settings of every
 tab.
+
+## Command line
+
+`revisor-cli.exe`, beside `revisor.exe`, does the two things a script needs, on the profiles of
+the window and with the same report. It is a console program, so cmd, `.bat` files and
+PowerShell wait for it and get its exit code; the window keeps opening without a console.
+
+```powershell
+$before = revisor-cli snapshot --profile Programs
+# install the program silently
+revisor-cli snapshot --profile Programs --comment "after setup" | Out-Null
+revisor-cli compare --profile Programs --with $before --output setup.csv
+```
+
+- `revisor-cli snapshot --profile <name>` takes a snapshot of the profile, as `F5` does, and
+  writes the number of the new snapshot, and nothing else, to the output; `--comment <text>`
+  gives it a comment.
+- `revisor-cli compare --profile <name> --output <file>` compares the latest snapshot with the
+  one before it, or with the snapshot `--with <number>` names, and writes the whole difference
+  to the file: CSV when the file ends in `.csv`, the text report otherwise, or as
+  `--format text|csv` says. The formats are those of Difference › Export: the text report
+  follows the region of Windows and the settings Size and Attributes; CSV is the same
+  everywhere, with the delimiter of the setting CSV delimiter or of
+  `--delimiter comma|semicolon|tab|windows`. An existing file is replaced whole or not at all.
+- The profile is found by its name in the window, in any case; the `data` folder is the
+  window's, beside the exes.
+- Messages, a line when the work starts and a summary when it ends, go to the error stream,
+  in English or, with `--language uk`, in Ukrainian; `--progress` adds a line every 10 seconds,
+  and `--quiet` leaves errors only. Nothing is animated, so a screen reader reads it as it is.
+- Exit codes: 0 when the snapshot is saved or the report written, 1 when the work failed or
+  `Ctrl+C` canceled it, 2 for a wrong call. Anything but 0 is a failure, so `$?` in PowerShell
+  holds.
+- When another revisor action holds the profile, revisor-cli waits and says so once; `Ctrl+C`
+  cancels, and `--timeout <seconds>` gives up after that long (`0` fails at once).
+- `revisor-cli --help` and `revisor-cli <command> --help` describe every option, and
+  `revisor-cli --version` names the version. revisor-cli plays no sound and opens no file.
 
 ## Where the data lives
 
@@ -241,7 +284,7 @@ snapshots there; `scoop uninstall revisor --purge` deletes them.
   scheduled snapshot: its shortcuts work only in its own window.
 - **It is not signed**, by decision; see [Direct download](#direct-download).
 
-Planned for later 0.x versions: content hashes and a command line.
+Planned for later 0.x versions: content hashes.
 
 ## Building from source
 
@@ -264,7 +307,8 @@ cargo build --release
 ```
 
 The first build compiles wxWidgets and takes a few minutes; later builds take seconds. The
-result is a single executable, `target\release\revisor.exe`, with no DLLs beside it.
+result is two executables with no DLLs beside them: `target\release\revisor.exe`, the window,
+and `target\release\revisor-cli.exe`, the command line.
 
 Run the tests with `cargo test --workspace`. What changed in each release is in
 [CHANGELOG.md](CHANGELOG.md).

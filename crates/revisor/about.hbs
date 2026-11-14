@@ -3,7 +3,7 @@
   repository root, with cargo-about 0.9.3 (the version CI pins):
 
     cargo fetch --locked
-    cargo about generate --frozen -m crates/revisor/Cargo.toml -c crates/revisor/about.toml crates/revisor/about.hbs -o crates/revisor/THIRD-PARTY-LICENSES.txt
+    cargo about generate --frozen -m Cargo.toml -c crates/revisor/about.toml crates/revisor/about.hbs -o crates/revisor/THIRD-PARTY-LICENSES.txt
 
   CI runs the same commands (adding --fail, which turns an unidentified licence into an
   error) and fails if the result differs from the committed file.

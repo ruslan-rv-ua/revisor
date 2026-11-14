@@ -507,36 +507,3 @@ fn the_export_writes_csv_as_utf8_with_its_mark_and_lines_ending_in_crlf() {
     assert!(!other.exists());
     let _ = std::fs::remove_dir_all(&folder);
 }
-
-#[test]
-fn the_export_job_writes_csv_when_asked() {
-    use crate::export::Format;
-    use crate::jobs::{Event, Jobs};
-    let folder = std::env::temp_dir().join(format!("revisor-csv-job-{}", std::process::id()));
-    let _ = std::fs::remove_dir_all(&folder);
-    std::fs::create_dir_all(&folder).unwrap();
-    let path = folder.join("звіт.txt");
-    let mut jobs = Jobs::default();
-    let list = csv_list(&Uk, Box::new(Ukrainian));
-    jobs.start_export(
-        list.export().unwrap(),
-        path.clone(),
-        Format::Csv { delimiter: ';' },
-    );
-    let start = std::time::Instant::now();
-    let events = loop {
-        let events = jobs.poll();
-        if !events.is_empty() || start.elapsed().as_secs() > 10 {
-            break events;
-        }
-        std::thread::sleep(std::time::Duration::from_millis(10));
-    };
-    assert!(
-        matches!(events.as_slice(), [Event::Export(_, Ok(Outcome::Done(_)))]),
-        "{events:?}"
-    );
-    // The type chosen says the format, whatever the extension.
-    let text = std::fs::read_to_string(&path).unwrap();
-    assert!(text.starts_with(&format!("\u{feff}{}\r\n", COLUMNS.join(";"))));
-    let _ = std::fs::remove_dir_all(&folder);
-}

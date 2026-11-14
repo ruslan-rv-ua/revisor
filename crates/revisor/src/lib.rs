@@ -1,17 +1,16 @@
-//! revisor, the application: the windows on wxDragon over `revisor-core` (ADR-0005).
-//! `main.rs` only calls [`run`]; the library is there so that the development tools in
-//! `examples/` can reach the interface strings (TASK-17) and the sounds (TASK-46).
+//! revisor, the application: the windows on wxDragon over `revisor-ui` and `revisor-core`
+//! (ADR-0005, ADR-0015). `main.rs` only calls [`run`]; the library is there so that the
+//! development tools in `examples/` can reach the interface strings (TASK-17) and the
+//! sounds (TASK-46). The command line, `revisor-cli`, is a crate of its own over the same
+//! `revisor-ui`.
 mod access;
+mod catalog;
 mod commands;
 mod compare_window;
-mod details;
-mod difference;
+mod difference_arrival;
 mod difference_tree;
 mod explorer;
-mod export;
-mod failure;
 mod help;
-mod i18n;
 mod jobs;
 mod keyboard;
 mod keys;
@@ -31,21 +30,24 @@ mod typical_folders_window;
 mod win32;
 
 use std::ffi::OsStr;
-use std::path::{Path, PathBuf};
+use std::path::PathBuf;
 
 use i18n::{En, Lang, Strings, Uk};
 use main_window::MainWindow;
 use revisor_core::elevation;
 use revisor_core::settings::{Language, Settings};
+// What the window shares with the command line (TASK-47), under the names the modules of
+// the window have always used.
+use revisor_ui::{difference, export, failure, i18n, snapshot_text};
 
-pub use i18n::catalog::catalog;
+pub use catalog::catalog;
 
 /// Starts revisor: reads the language and the theme, opens the main window and runs the
 /// GUI.
 pub fn run() {
-    let data_dir = data_dir();
+    let data_dir = revisor_ui::data::dir();
     // Both are read before any window is made; the main window opens the settings itself.
-    let settings = Settings::open(&data_dir.join(main_window::SETTINGS_FILE)).ok();
+    let settings = Settings::open(&data_dir.join(revisor_ui::data::SETTINGS_FILE)).ok();
     let strings: &'static dyn Strings = match interface_language(settings.as_ref()) {
         Lang::Uk => &Uk,
         Lang::En => &En,
@@ -88,13 +90,6 @@ pub(crate) fn language_of(chosen: Language, windows: impl FnOnce() -> Lang) -> L
         Language::English => Lang::En,
         Language::Ukrainian => Lang::Uk,
     }
-}
-
-/// The data folder: revisor is portable, so all its data — the profiles and the settings
-/// — is in `data` next to the exe.
-fn data_dir() -> PathBuf {
-    let exe = std::env::current_exe().unwrap_or_default();
-    exe.parent().unwrap_or(Path::new("")).join("data")
 }
 
 /// The profile file named on the command line as `--profile <path>`: a revisor restarted

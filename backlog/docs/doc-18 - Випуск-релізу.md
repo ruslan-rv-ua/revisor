@@ -2,19 +2,20 @@
 id: doc-18
 title: Випуск релізу
 type: guide
-created_date: '2026-11-06 23:28'
-updated_date: '2026-11-09 13:04'
+created_date: 2026-11-06 23:28
+updated_date: '2026-11-14T21:42:00Z'
 ---
 # Випуск релізу
 
-> Як версія revisor потрапляє до людей: кроки випуску по порядку, що кожен має дати, і пастки. Механізм — `.github/workflows/release.yml`, маніфест scoop — `packaging/scoop/revisor.json`, рішення й причини — ADR-0010 і задача TASK-19. Зразок — чек-лист випуску pathmaster (кроки F1–F10) і `docs/release.md` tapir.
+> Як версія revisor потрапляє до людей: кроки випуску по порядку, що кожен має дати, і пастки. Механізм — `.github/workflows/release.yml`, маніфест scoop — `packaging/scoop/revisor.json`, рішення й причини — ADR-0010, ADR-0015 (два exe з 0.5.0) і задачі TASK-19 і TASK-47. Зразок — чек-лист випуску pathmaster (кроки F1–F10) і `docs/release.md` tapir.
 
 **Як ним користуватися.** Перед кожним релізом документ проходять, заповнюючи **копію**: біля кожного кроку — «пройдено», «не пройдено» чи «пропущено» з причиною, а вгорі — шапка нижче. **Непройдений крок зупиняє реліз.** Заповнену копію не публікуємо ні на сторінці релізу, ні в репозиторії: вона лишається в записах автора. Агент виконує кроки за словом автора, і кожен крок назовні — push, публікацію, `git flow release finish`, зміну bucket, запуск Excavator — автор дозволяє окремо.
 
 ```
 Реліз:           v_._._
 Дата:            ____-__-__
-Exe (SHA-256):   ________________________________________________________________
+revisor.exe (SHA-256):     ________________________________________________________________
+revisor-cli.exe (SHA-256): ________________________________________________________________
 NVDA:            ______
 Windows:         ______ (збірка)
 Пробний реліз:   v_._._-rc._ / не робили (причина)
@@ -32,13 +33,13 @@ Windows:         ______ (збірка)
 
 ## Кроки
 
-Кроки йдуть по порядку: жоден не можна зробити раніше за попередній. Р4, Р9 і засів bucket у Р10 стосуються упаковки. Як E3, F6 і F9 у pathmaster, вони обов'язкові для 0.1.0, а далі — лише коли змінилися релізний воркфлоу, маніфест scoop чи збірка exe (`[profile.release]`, `.cargo/config.toml`, `build.rs`, `app.rc`). Решту кроків проходять щоразу.
+Кроки йдуть по порядку: жоден не можна зробити раніше за попередній. Р4, Р9 і засів bucket у Р10 стосуються упаковки. Як E3, F6 і F9 у pathmaster, вони обов'язкові для 0.1.0, а далі — лише коли змінилися релізний воркфлоу, маніфест scoop чи збірка exe (`[profile.release]`, `.cargo/config.toml`, `build.rs` обох крейтів exe, `app.rc`, `cli.rc`). Решту кроків проходять щоразу.
 
 - [ ] **Р1. Гілка релізу.** `git switch develop`, `git pull`, тоді `git flow release start X.Y.Z`.
   *Очікується:* гілка `release/X.Y.Z` від вершини develop, яку бачив CI.
-- [ ] **Р2. Версія й CHANGELOG.** На гілці релізу змінити три файли:
+- [ ] **Р2. Версія й CHANGELOG.** На гілці релізу змінити чотири файли:
   - `version` у `[workspace.package]` у `Cargo.toml`;
-  - `FILEVERSION`, `PRODUCTVERSION` і рядки `FileVersion`, `ProductVersion` у `crates/revisor/resources/app.rc`;
+  - `FILEVERSION`, `PRODUCTVERSION` і рядки `FileVersion`, `ProductVersion` у `crates/revisor/resources/app.rc` і в `crates/revisor-cli/resources/cli.rc`;
   - `CHANGELOG.md`: розділ `[Unreleased]` стає `## [X.Y.Z] - YYYY-MM-DD` із датою випуску, а над ним відкривається новий порожній `## [Unreleased]`. Внизу `[Unreleased]` тепер порівнює з `vX.Y.Z`, а новий рядок `[X.Y.Z]` — `vX.Y.Z` з попереднім тегом.
 
   Тоді виконати `cargo update --workspace`, `cargo fmt --all -- --check`, `cargo test --workspace --locked` і `cargo clippy --workspace --all-targets --locked -- -D warnings` і закомітити на гілці релізу. Для 0.1.0 версія вже стоїть, тож крок лише ставить дату розділу [0.1.0].
@@ -52,15 +53,15 @@ Windows:         ______ (збірка)
 - [ ] **Р6. Завершення гілки релізу.** `git flow release finish X.Y.Z --no-ff --no-push -m "revisor vX.Y.Z"` (з `GIT_MERGE_AUTOEDIT=no`; `-M` і `--update-message` задають повідомлення двох злиттів, `--no-ff` дає окремий коміт злиття в main). Тоді **до push** прочитати ім'я тегу: `git tag --points-at main`. Лише коли це `vX.Y.Z`: `git push origin main develop vX.Y.Z`.
   *Очікується:* main має коміт злиття з тегом `vX.Y.Z`, develop — злиття гілки релізу, гілку релізу видалено. Тег без «v» нічого не запустить (пастка 1), а тег не на main лишив би hotfix без бази (пастка 2).
 - [ ] **Р7. Релізний воркфлоу.** `gh run watch` на запуску «Release» цього тегу, тоді `gh release view vX.Y.Z`.
-  *Очікується:* зелені всі кроки: тег і версії, розділ CHANGELOG, fmt, тести, clippy, файл ліцензій, таблиця імпорту без VCRUNTIME, MSVCP і api-ms-win-crt, розмір до 10 МіБ і VERSIONINFO з exe. На сторінці рівно два файли, `revisor-vX.Y.Z-x64.exe` і `revisor-vX.Y.Z-x64.exe.sha256`, текст сторінки — розділ версії з CHANGELOG.md, а реліз — «Latest», не pre-release. PDB лежить в артефактах запуску, а не на сторінці (пастка 8).
-- [ ] **Р8. Хеш завантажених файлів** — щоразу. Завантажити обидва файли наново й виконати перевірку з README (розділ «Direct download»).
-  *Очікується:* `MATCHES the published fingerprint`. Цей крок доводить, що інструкція для людей працює, а не лише що хеш записано.
-- [ ] **Р9. Чиста машина.** На комп'ютері без Visual C++ Redistributable запустити завантажений exe.
-  *Очікується:* SmartScreen показує попередження, яке описує README, «Докладніше» → «Виконати в будь-якому разі» його минає, і revisor запускається. Записати збірку Windows.
-- [ ] **Р10. scoop.** Перший реліз — засів bucket за розділом «Засів bucket». Кожен наступний — у bucket: Actions → Excavator → Run workflow (або `gh workflow run excavator.yml -R ruslan-rv-ua/scoop-bucket`).
+  *Очікується:* зелені всі кроки: тег і версії, розділ CHANGELOG, fmt, тести, clippy, файл ліцензій, таблиця імпорту без VCRUNTIME, MSVCP і api-ms-win-crt, розмір до 10 МіБ і VERSIONINFO з обох exe. На сторінці рівно чотири файли: `revisor-vX.Y.Z-x64.exe`, `revisor-cli-vX.Y.Z-x64.exe` і `.sha256` до кожного; текст сторінки — розділ версії з CHANGELOG.md, а реліз — «Latest», не pre-release. Обидва PDB лежать в артефакті запуску, а не на сторінці (пастка 8).
+- [ ] **Р8. Хеш завантажених файлів** — щоразу. Завантажити всі чотири файли наново й виконати перевірку з README (розділ «Direct download») для кожного exe.
+  *Очікується:* `MATCHES the published fingerprint` для обох. Цей крок доводить, що інструкція для людей працює, а не лише що хеш записано.
+- [ ] **Р9. Чиста машина.** На комп'ютері без Visual C++ Redistributable запустити обидва завантажені exe: revisor і `revisor-cli --version` у PowerShell.
+  *Очікується:* SmartScreen показує попередження, яке описує README, «Докладніше» → «Виконати в будь-якому разі» його минає, revisor запускається, а revisor-cli друкує версію й повертає 0 (`$LASTEXITCODE`). Записати збірку Windows.
+- [ ] **Р10. scoop.** Перший реліз — засів bucket за розділом «Засів bucket». Реліз, який змінює форму маніфесту (0.5.0 додає `revisor-cli.exe`: другий `url`, другий `hash`, `bin` з обома exe), — спершу руками, як за засіву (крок 2 того розділу, з версією й хешами цього релізу), бо Excavator змінює лише `version`, `url` і `hash` (пастка 11). Кожен наступний — у bucket: Actions → Excavator → Run workflow (або `gh workflow run excavator.yml -R ruslan-rv-ua/scoop-bucket`).
   *Очікується:* запуск Excavator зелений і комітить «revisor: Update to version X.Y.Z». CI bucket на цьому коміті не запускається (пастка 6). Червоний запуск — сигнал: помилка checkver означає, що змінилася сторінка релізу чи форма тегу, а помилка хешу — що `.sha256` не відповідає файлу. Тоді назад до Р8, а маніфест у bucket руками не правити. Пропущений крок затримує реліз не більше ніж на добу: щодобовий запуск о 04:20 UTC підхопить його сам.
 - [ ] **Р11. Оновлення в автора.** `scoop update`, тоді `scoop update revisor` і запуск.
-  *Очікується:* revisor X.Y.Z, профілі й знімки на місці (`~\scoop\persist\revisor\data`).
+  *Очікується:* revisor X.Y.Z, профілі й знімки на місці (`~\scoop\persist\revisor\data`), а `revisor-cli --version` каже X.Y.Z.
 
 ## Прохід з NVDA
 
@@ -97,12 +98,12 @@ python -X utf8 tools\nvda\release_pass.py en <exe> dark
 Для 0.1.0 і коли змінилася упаковка (розділ «Кроки»). Тег із дефісом проходить той самий воркфлоу, але реліз стає pre-release, тож ні API «latest release», ні Excavator його не бачать (пастка 5).
 
 1. На гілці `release/X.Y.Z` після Р2–Р3: `git tag -a vX.Y.Z-rc.N -m "revisor vX.Y.Z-rc.N"` (N від 1). Ім'я тегу перевірити (`git tag --points-at HEAD`) і запушити лише тег: `git push origin vX.Y.Z-rc.N`. Гілці релізу на origin бути не треба: тег несе свій коміт.
-2. Воркфлоу відкидає суфікс: звіряє X.Y.Z з Cargo.toml і app.rc і бере текст із розділу [X.Y.Z]. Exe каже X.Y.Z, бо числова версія VERSIONINFO має чотири числа й місця для rc у ній немає. На сторінці pre-release — `revisor-vX.Y.Z-rc.N-x64.exe` і його `.sha256`.
-3. Перевірити сторінку (pre-release, рівно два файли, текст розділу [X.Y.Z]) і що API, який читає checkver в Excavator, цього релізу не бачить: `gh api repos/ruslan-rv-ua/revisor/releases/latest` називає попередній реліз, а до першого відповідає 404. Локальний checkver без токена до першого релізу каже «X.Y.Z-» (пастка 5), а після нього — попередню версію.
-4. Завантажити обидва файли й пройти перевірку хешу з README (як Р8).
+2. Воркфлоу відкидає суфікс: звіряє X.Y.Z з Cargo.toml і app.rc і бере текст із розділу [X.Y.Z]. Exe каже X.Y.Z, бо числова версія VERSIONINFO має чотири числа й місця для rc у ній немає. На сторінці pre-release — `revisor-vX.Y.Z-rc.N-x64.exe`, `revisor-cli-vX.Y.Z-rc.N-x64.exe` і `.sha256` до кожного.
+3. Перевірити сторінку (pre-release, рівно чотири файли, текст розділу [X.Y.Z]) і що API, який читає checkver в Excavator, цього релізу не бачить: `gh api repos/ruslan-rv-ua/revisor/releases/latest` називає попередній реліз, а до першого відповідає 404. Локальний checkver без токена до першого релізу каже «X.Y.Z-» (пастка 5), а після нього — попередню версію.
+4. Завантажити всі чотири файли й пройти перевірку хешу з README для кожного exe (як Р8).
 5. Якщо Р9 цього релізу обов'язковий — пройти його на цьому файлі.
-6. Поставити rc із локального маніфесту: скопіювати `packaging/scoop/revisor.json` у тимчасову теку як `revisor.json`, поставити `version` `X.Y.Z-rc.N`, `url` на файл rc із `#/revisor.exe` і `hash` — перші 64 символи його `.sha256`; тоді `scoop install <тека>\revisor.json`. *Очікується:* ярлик «revisor» у меню «Пуск», запуск без вікна консолі, тека `~\scoop\persist\revisor\data`. У ньому створити профіль і зробити знімок; Р5 можна пройти на цьому exe.
-7. Коли X.Y.Z опубліковано (Р7): у тому самому локальному маніфесті поставити `version`, `url` і `hash` X.Y.Z і виконати `scoop update revisor`. *Очікується:* revisor X.Y.Z, профіль і знімки на місці. Тоді `scoop uninstall revisor` без `--purge`, щоб Р10 поставив revisor уже з bucket.
+6. Поставити rc із локального маніфесту: скопіювати `packaging/scoop/revisor.json` у тимчасову теку як `revisor.json`, поставити `version` `X.Y.Z-rc.N`, обидва `url` на файли rc із `#/revisor.exe` і `#/revisor-cli.exe`, а в `hash` — перші 64 символи `.sha256` кожного, у тому самому порядку; тоді `scoop install <тека>\revisor.json`. *Очікується:* ярлик «revisor» у меню «Пуск», запуск без вікна консолі, тека `~\scoop\persist\revisor\data`, а `revisor-cli --version` у PowerShell каже X.Y.Z і повертає 0. У ньому створити профіль і зробити знімок; Р5 можна пройти на цьому exe.
+7. Коли X.Y.Z опубліковано (Р7): у тому самому локальному маніфесті поставити `version`, обидва `url` і обидва `hash` X.Y.Z і виконати `scoop update revisor`. *Очікується:* revisor X.Y.Z, профіль і знімки на місці. Тоді `scoop uninstall revisor` без `--purge`, щоб Р10 поставив revisor уже з bucket.
 
 Пробний реліз лишається на сторінці релізів із позначкою pre-release.
 
@@ -111,7 +112,7 @@ python -X utf8 tools\nvda\release_pass.py en <exe> dark
 Один раз, після першого справжнього релізу: Excavator лише оновлює маніфести, які вже є в bucket (пастка 6).
 
 1. Клон ruslan-rv-ua/scoop-bucket, гілка main, оновлена.
-2. `packaging/scoop/revisor.json` скопіювати як `bucket/revisor.json`. `hash` — перші 64 символи `revisor-vX.Y.Z-x64.exe.sha256`, `version` і `url` — X.Y.Z, а коментарі «##» — словами для живої копії, як у `bucket/pathmaster.json`.
+2. `packaging/scoop/revisor.json` скопіювати як `bucket/revisor.json`. у `hash` — перші 64 символи `.sha256` кожного файлу, у порядку `url`, `version` і `url` — X.Y.Z, а коментарі «##» — словами для живої копії, як у `bucket/pathmaster.json`.
 3. `scoop install <bucket>\bucket\revisor.json`: ставиться, має ярлик, запускається; тоді `scoop uninstall revisor` без `--purge`.
 4. Розділ revisor у README bucket, як у сусідніх застосунків.
 5. Коміт «Add revisor X.Y.Z» і push у main. *Очікується:* CI bucket перевірив маніфест і не відкотив коміт.
@@ -130,11 +131,12 @@ python -X utf8 tools\nvda\release_pass.py en <exe> dark
 8. **PDB живе 90 днів.** Лише з PDB можна розібрати збій exe в користувача, а артефакт запуску GitHub зберігає 90 днів. Щоб мати його довше, завантажте його (`gh run download <запуск> -n revisor-vX.Y.Z-x64-pdb`) у записи релізу.
 9. **`--purge` видаляє дані.** `scoop uninstall revisor --purge` прибирає й `~\scoop\persist\revisor`, а без `--purge` дані лишаються.
 10. **NVDA і приватність.** Лог NVDA містить те, що автор читав до перевірки: скрипт читає лише те, що дописано після його старту, і перестає читати перед закриттям вікна. Під час ручного проходу так само — не копіювати в записи нічого зі старішої частини логу.
+11. **Excavator не змінює форми маніфесту.** Він переписує лише `version`, `url` і `hash` за шаблонами `autoupdate`. Коли реліз додає файл чи команду — як 0.5.0 додав `revisor-cli.exe`, — маніфест у bucket приводять до форми `packaging/scoop/revisor.json` руками, з версією й хешами цього релізу, і лише тоді запускають Excavator, який має сказати, що revisor актуальний.
 
 ## Коли щось пішло не так
 
 - **Тег запушено, а запуску «Release» немає.** Тег без «v» (пастка 1). Голий тег на origin видаляє лише автор, а правильний `vX.Y.Z` ставлять на той самий коміт у main.
 - **Запуск «Release» червоний.** Лог називає перевірку, що не пройшла. Далі — за пасткою 4.
-- **Реліз є, а bucket не оновився.** `gh run list -R ruslan-rv-ua/scoop-bucket --workflow excavator.yml`: лог Excavator каже, що він побачив. Найчастіше реліз позначено pre-release або на сторінці немає `.sha256`.
+- **Реліз є, а bucket не оновився.** `gh run list -R ruslan-rv-ua/scoop-bucket --workflow excavator.yml`: лог Excavator каже, що він побачив. Найчастіше реліз позначено pre-release, на сторінці немає `.sha256`, або маніфест у bucket має стару форму (один url), а реліз — два файли (пастка 11).
 - **Маніфест у bucket треба повернути.** Воркфлоу bucket «Set a manifest by hand (override)»: app, version, hash і url попередньої версії.
 - **Hotfix.** `git flow hotfix start X.Y.Z+1` від main, далі Р2–Р11: гілка hotfix замість гілки релізу, а `git flow hotfix finish` зливає її в main і develop і ставить тег `vX.Y.Z+1`.

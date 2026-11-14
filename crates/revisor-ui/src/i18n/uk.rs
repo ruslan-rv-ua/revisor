@@ -12,6 +12,7 @@ use revisor_core::typical::TypicalFolder;
 
 use super::plural::{Category, category};
 use super::{Failure, Lang, Strings, error_code, in_sentence, lower_first};
+use crate::cli::{Command as CliCommand, UsageError};
 use crate::commands::{CommandId, MenuId, Pane, Reason, SubmenuId};
 use crate::details::{Attribute, Inaccessibility, Property, Unreadable};
 use crate::difference::{
@@ -1389,6 +1390,172 @@ impl Strings for Uk {
         "Шлях не скопійовано."
     }
 
+    fn cli_help(&self, topic: Option<CliCommand>, version: &str) -> String {
+        let profile = "-p, --profile <назва>: профіль, за назвою у вікні revisor, без огляду \
+                       на регістр. Обов'язковий.";
+        let common = "--language en|uk: мова повідомлень, цієї довідки й текстового звіту. \
+                      Типово англійська.\n\
+                      --timeout <секунди>: скільки чекати, поки профіль зайнятий іншою дією \
+                      revisor; 0 — одразу збій. Без нього revisor-cli чекає скільки треба.\n\
+                      --progress: рядок прогресу раз на 10 секунд.\n\
+                      -q, --quiet: лише помилки.\n\
+                      -h, --help: ця довідка.";
+        match topic {
+            None => format!(
+                "revisor-cli {version}: знімки тек і різниця між ними з командного рядка. \
+                 Працює з профілями вікна revisor, у теці даних поруч із revisor.exe.\n\
+                 \n\
+                 Виклик:\n\
+                 revisor-cli snapshot --profile <назва> [параметри]\n\
+                 revisor-cli compare --profile <назва> --output <файл> [параметри]\n\
+                 revisor-cli <команда> --help\n\
+                 revisor-cli --version\n\
+                 \n\
+                 Команди:\n\
+                 snapshot: робить знімок профілю й пише у вивід номер нового знімка.\n\
+                 compare: порівнює останній знімок профілю з попереднім чи з іншим і пише \
+                 різницю у файл.\n\
+                 \n\
+                 Параметри обох команд:\n\
+                 {profile}\n\
+                 {common}\n\
+                 --version: версія revisor-cli.\n\
+                 \n\
+                 У вивід ідуть лише дані, а повідомлення — у потік помилок. Ctrl+C скасовує \
+                 роботу.\n\
+                 \n\
+                 Коди виходу:\n\
+                 0: готово.\n\
+                 1: не вдалося або скасовано через Ctrl+C.\n\
+                 2: неправильний виклик.\n"
+            ),
+            Some(CliCommand::Snapshot) => format!(
+                "revisor-cli snapshot: робить знімок профілю, як вікно revisor.\n\
+                 \n\
+                 Виклик:\n\
+                 revisor-cli snapshot --profile <назва> [--comment <текст>] [параметри]\n\
+                 \n\
+                 У вивід іде номер нового знімка й більше нічого, тож скрипт може його \
+                 запам'ятати: $before = revisor-cli snapshot -p Програми. Знімок зберігається, \
+                 навіть коли частина записів недоступна.\n\
+                 \n\
+                 Параметри:\n\
+                 {profile}\n\
+                 --comment <текст>: коментар до знімка.\n\
+                 {common}\n"
+            ),
+            Some(CliCommand::Compare) => format!(
+                "revisor-cli compare: порівнює два знімки профілю й пише всю різницю у файл, \
+                 без фільтрів вікна revisor.\n\
+                 \n\
+                 Виклик:\n\
+                 revisor-cli compare --profile <назва> --output <файл> [--with <номер>] \
+                 [параметри]\n\
+                 \n\
+                 Різниця йде від ранішого знімка до пізнішого. Звіт той самий, що його \
+                 експортує вікно: текстовий звіт пише числа й дати за регіональними \
+                 форматами Windows, а розміри й атрибути — за налаштуваннями вікна. Наявний \
+                 файл заступається, щойно звіт записано цілим.\n\
+                 \n\
+                 Параметри:\n\
+                 {profile}\n\
+                 -o, --output <файл>: файл звіту. Обов'язковий.\n\
+                 --with <номер>: порівнює останній знімок із цим, а не з попереднім; номер — \
+                 той, що написала revisor-cli snapshot.\n\
+                 --format text|csv: формат звіту. Без нього файл із розширенням .csv отримує \
+                 CSV, а будь-який інший — текстовий звіт.\n\
+                 --delimiter comma|semicolon|tab|windows: роздільник у CSV; windows — \
+                 роздільник елементів списку Windows. Без нього вирішує налаштування вікна \
+                 «Роздільник у CSV».\n\
+                 {common}\n"
+            ),
+        }
+    }
+
+    fn cli_usage_error(&self, error: &UsageError, command: Option<CliCommand>) -> String {
+        let why = match error {
+            UsageError::NoCommand => {
+                "команду не задано: потрібна snapshot або compare.".to_string()
+            }
+            UsageError::UnknownCommand(name) => {
+                format!("невідома команда «{name}»: потрібна snapshot або compare.")
+            }
+            UsageError::UnknownOption(option) => format!("невідомий параметр «{option}»."),
+            UsageError::NotForCommand { option, command } => {
+                format!("у команди {} немає параметра {option}.", command.name())
+            }
+            UsageError::MissingValue(option) => format!("параметру {option} потрібне значення."),
+            UsageError::UnexpectedValue(option) => {
+                format!("параметр {option} не приймає значення.")
+            }
+            UsageError::UnexpectedArgument(argument) => format!("зайвий аргумент «{argument}»."),
+            UsageError::Repeated(option) => format!("параметр {option} задано двічі."),
+            UsageError::InvalidValue { option, value } => {
+                format!("неправильне значення параметра {option}: «{value}».")
+            }
+            UsageError::Missing(option) => format!("потрібен параметр {option}."),
+            UsageError::QuietWithProgress => {
+                "параметри --quiet і --progress не можна поєднувати.".to_string()
+            }
+        };
+        format!("revisor-cli: {why}\nДовідка: {}", help_call(command))
+    }
+
+    fn cli_snapshot_started(&self, profile: &str) -> String {
+        format!("Знімок профілю «{profile}»…")
+    }
+
+    fn cli_compare_started(&self, profile: &str, earlier: i64, later: i64) -> String {
+        format!("Порівняння знімків {earlier} і {later} профілю «{profile}»…")
+    }
+
+    fn cli_waiting(&self) -> &'static str {
+        "Профіль зайнятий іншою дією revisor; чекаємо. Ctrl+C скасовує."
+    }
+
+    fn cli_busy_too_long(&self, seconds: u64) -> String {
+        if seconds == 0 {
+            "профіль зайнятий (--timeout 0)".to_string()
+        } else {
+            format!("профіль був зайнятий і через {seconds} с (--timeout)")
+        }
+    }
+
+    fn cli_run_as_administrator(&self, denied_text: &str) -> String {
+        format!(
+            "Записів, недоступних через права: {denied_text}. Щоб прочитати їх, запустіть \
+             revisor-cli від імені адміністратора й зробіть новий знімок."
+        )
+    }
+
+    fn cli_unknown_profile(&self, name: &str, profiles: &[String]) -> String {
+        if profiles.is_empty() {
+            format!("Профілю «{name}» немає, та й жодного профілю ще немає.")
+        } else {
+            let names: Vec<String> = profiles.iter().map(|p| format!("«{p}»")).collect();
+            format!("Профілю «{name}» немає. Профілі: {}.", names.join(", "))
+        }
+    }
+
+    fn cli_profiles_not_read(&self, folder: &str, reason: &str) -> String {
+        format!("Теку профілів «{folder}» не вдалося прочитати: {reason}.")
+    }
+
+    fn cli_too_few_snapshots(&self, profile: &str) -> String {
+        format!("Знімки не порівняно: у профілі «{profile}» менше двох знімків.")
+    }
+
+    fn cli_unknown_snapshot(&self, profile: &str, id: i64) -> String {
+        format!("Знімки не порівняно: у профілі «{profile}» немає знімка {id}.")
+    }
+
+    fn cli_with_latest(&self, id: i64) -> String {
+        format!(
+            "Знімки не порівняно: знімок {id} — останній; у --with задайте інший, щоб \
+             порівняти з ним."
+        )
+    }
+
     fn key_space(&self) -> &'static str {
         "ПРОБІЛ"
     }
@@ -1406,5 +1573,13 @@ impl Strings for Uk {
     }
     fn key_context_menu(&self) -> &'static str {
         "Клавіша контекстного меню"
+    }
+}
+
+/// How the help of `command`, or of the program, is called.
+fn help_call(command: Option<CliCommand>) -> String {
+    match command {
+        Some(command) => format!("revisor-cli {} --help", command.name()),
+        None => "revisor-cli --help".to_string(),
     }
 }

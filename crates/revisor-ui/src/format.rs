@@ -21,8 +21,12 @@ use windows_sys::Win32::UI::Shell::PropertiesSystem::{PDFF_DEFAULT, PSFormatForD
 use windows_sys::Win32::UI::Shell::StrFormatByteSizeW;
 use windows_sys::core::GUID;
 
-use super::wide;
 use crate::difference::Regional;
+
+/// `text` as a NUL-terminated UTF-16 string, as the Win32 calls take it.
+fn wide(text: &str) -> Vec<u16> {
+    text.encode_utf16().chain([0]).collect()
+}
 
 /// The locale whose format numbers and moments are written in.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]

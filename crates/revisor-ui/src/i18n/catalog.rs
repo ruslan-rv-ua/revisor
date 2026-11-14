@@ -1,5 +1,7 @@
 //! Every interface string in both languages as plain text, for proofreading with a screen
-//! reader (TASK-17, ADR-0009): `cargo run -p revisor --example strings` writes it to a file.
+//! reader (TASK-17, ADR-0009): `cargo run -p revisor --example strings` writes it to a file,
+//! adding the labels only the window makes — the menu items with their keys — through the
+//! window's own `catalog` module (TASK-47).
 //!
 //! Each string has an id — the method of [`Strings`] and, for a string chosen by a value,
 //! that value — then its English and Ukrainian text. Parameters show as `{name}`, and a
@@ -24,15 +26,14 @@ use revisor_core::settings::{
 use revisor_core::store::Unavailable;
 use revisor_core::typical::TypicalFolder;
 
-use super::{En, Failure, Strings, Uk};
-use crate::access::plain;
-use crate::commands::{COMMANDS, CommandId, MenuId, Pane, Reason, SubmenuId};
+use super::{En, Failure, Strings, Uk, plain};
+use crate::cli::{Command as CliCommand, UsageError};
+use crate::commands::{CommandId, MenuId, Pane, Reason, SubmenuId};
 use crate::details::{Attribute, Inaccessibility, Property, Unreadable};
 use crate::difference::{
     Column, Counted, Field, InaccessibleIn, NodeText, PairText, RowChange, SizeChange,
     SnapshotText, SummaryText,
 };
-use crate::menus;
 
 /// Counts that pick every plural form of both languages.
 const COUNTS: [u64; 3] = [1, 3, 5];
@@ -69,6 +70,16 @@ pub struct Entry {
     pub id: String,
     pub en: String,
     pub uk: String,
+}
+
+/// A string of the window's own, for the catalog the window writes (TASK-47): `text` in
+/// each language.
+pub fn entry(id: impl Into<String>, text: impl Fn(&dyn Strings) -> String) -> Entry {
+    Entry {
+        id: id.into(),
+        en: text(&En),
+        uk: text(&Uk),
+    }
 }
 
 /// The strings gathered so far, each as the two languages give it.
@@ -120,60 +131,51 @@ fn entries_in(en: &dyn Strings, uk: &dyn Strings) -> Vec<Entry> {
         Difference
     });
 
-    let commands: Vec<CommandId> = COMMANDS.iter().map(|command| command.id).collect();
-    each_variant_in!(
-        commands,
-        CommandId {
-            NewProfile,
-            EditProfile,
-            DeleteProfile,
-            Settings,
-            RestartAsAdmin,
-            Exit,
-            TakeSnapshot,
-            SnapshotAndCompare,
-            Comment,
-            DeleteSnapshots,
-            CancelSnapshot,
-            CancelCompaction,
-            CancelComment,
-            CompareWithPrevious,
-            CompareWith,
-            CancelComparison,
-            Details,
-            ShowInExplorer,
-            CopyPath,
-            FilterByText,
-            ShowAdded,
-            ShowDeleted,
-            ShowModified,
-            ShowMoved,
-            ShowInaccessible,
-            SortByPath,
-            SortByName,
-            SortByChange,
-            SortByWhatChanged,
-            SortBySize,
-            SortByDateModified,
-            SortByFolder,
-            SortAscending,
-            SortDescending,
-            ViewAsList,
-            ViewAsTree,
-            Export,
-            CancelExport,
-            KeyboardShortcuts,
-            About,
-        }
-    );
-    for command in COMMANDS {
-        c.add(format!("command.{:?}", command.id), |s| {
-            plain(s.command(command.id))
-        });
-    }
-    for command in COMMANDS {
-        c.add(format!("command.{:?} (menu item)", command.id), |s| {
-            menus::menu_label(s, command).replace('\t', "  [Tab]  ")
+    let commands = all!(CommandId {
+        NewProfile,
+        EditProfile,
+        DeleteProfile,
+        Settings,
+        RestartAsAdmin,
+        Exit,
+        TakeSnapshot,
+        SnapshotAndCompare,
+        Comment,
+        DeleteSnapshots,
+        CancelSnapshot,
+        CancelCompaction,
+        CancelComment,
+        CompareWithPrevious,
+        CompareWith,
+        CancelComparison,
+        Details,
+        ShowInExplorer,
+        CopyPath,
+        FilterByText,
+        ShowAdded,
+        ShowDeleted,
+        ShowModified,
+        ShowMoved,
+        ShowInaccessible,
+        SortByPath,
+        SortByName,
+        SortByChange,
+        SortByWhatChanged,
+        SortBySize,
+        SortByDateModified,
+        SortByFolder,
+        SortAscending,
+        SortDescending,
+        ViewAsList,
+        ViewAsTree,
+        Export,
+        CancelExport,
+        KeyboardShortcuts,
+        About,
+    });
+    for command in commands {
+        c.add(format!("command.{command:?}"), |s| {
+            plain(s.command(command))
         });
     }
     let menu_ids = all!(MenuId {
@@ -185,16 +187,10 @@ fn entries_in(en: &dyn Strings, uk: &dyn Strings) -> Vec<Entry> {
     });
     for menu in menu_ids {
         c.add(format!("menu.{menu:?}"), |s| plain(s.menu(menu)));
-        c.add(format!("menu.{menu:?} (menu bar)"), |s| {
-            menus::top_menu_label(s, menu)
-        });
     }
     for submenu in all!(SubmenuId { SortBy }) {
         c.add(format!("submenu.{submenu:?}"), |s| {
             plain(s.submenu(submenu))
-        });
-        c.add(format!("submenu.{submenu:?} (menu item)"), |s| {
-            menus::submenu_label(s, submenu)
         });
     }
     let reasons = all!(Reason {
@@ -235,9 +231,6 @@ fn entries_in(en: &dyn Strings, uk: &dyn Strings) -> Vec<Entry> {
     c.add("navigation", |s| s.navigation().into());
     c.add("switch_panes", |s| s.switch_panes().into());
     c.add("context_menu", |s| s.context_menu().into());
-    c.add("shortcuts_text (the window «Keyboard shortcuts»)", |s| {
-        menus::shortcuts_text(s)
-    });
 
     for pane in panes {
         c.add(format!("pane.{pane:?}"), |s| s.pane(pane).into());
@@ -1029,6 +1022,90 @@ fn entries_in(en: &dyn Strings, uk: &dyn Strings) -> Vec<Entry> {
             s.csv_delimiter_option(value).into()
         });
     }
+
+    // The command line (TASK-47).
+    let topics = [None, Some(CliCommand::Snapshot), Some(CliCommand::Compare)];
+    let _every_command_is_a_topic = |command: CliCommand| match command {
+        CliCommand::Snapshot | CliCommand::Compare => (),
+    };
+    for topic in topics {
+        let id = topic.map_or("program", CliCommand::name);
+        c.add(format!("cli_help.{id}"), |s| s.cli_help(topic, "{version}"));
+    }
+    let option = || "{option}".to_string();
+    let usage_errors = [
+        UsageError::NoCommand,
+        UsageError::UnknownCommand("{command}".into()),
+        UsageError::UnknownOption(option()),
+        UsageError::NotForCommand {
+            option: option(),
+            command: CliCommand::Snapshot,
+        },
+        UsageError::MissingValue(option()),
+        UsageError::UnexpectedValue(option()),
+        UsageError::UnexpectedArgument("{argument}".into()),
+        UsageError::Repeated(option()),
+        UsageError::InvalidValue {
+            option: option(),
+            value: "{value}".into(),
+        },
+        UsageError::Missing(option()),
+        UsageError::QuietWithProgress,
+    ];
+    each_variant_in!(
+        usage_errors,
+        UsageError {
+            NoCommand,
+            UnknownCommand,
+            UnknownOption,
+            NotForCommand,
+            MissingValue,
+            UnexpectedValue,
+            UnexpectedArgument,
+            Repeated,
+            InvalidValue,
+            Missing,
+            QuietWithProgress
+        }
+    );
+    for error in &usage_errors {
+        let id = format!("{error:?}");
+        let id = id.split(['(', ' ']).next().unwrap_or_default().to_string();
+        c.add(format!("cli_usage_error.{id}"), |s| {
+            s.cli_usage_error(error, None)
+        });
+    }
+    c.add("cli_usage_error.with_command", |s| {
+        s.cli_usage_error(&UsageError::Missing(option()), Some(CliCommand::Compare))
+    });
+    c.add("cli_snapshot_started", |s| {
+        s.cli_snapshot_started("{profile}")
+    });
+    c.add("cli_compare_started", |s| {
+        s.cli_compare_started("{profile}", 12, 15)
+    });
+    c.add("cli_waiting", |s| s.cli_waiting().into());
+    c.add("cli_busy_too_long", |s| s.cli_busy_too_long(30));
+    c.add("cli_busy_too_long.zero", |s| s.cli_busy_too_long(0));
+    c.add("cli_run_as_administrator", |s| {
+        s.cli_run_as_administrator("{count}")
+    });
+    c.add("cli_unknown_profile", |s| {
+        s.cli_unknown_profile("{name}", &["{profile}".into(), "{other profile}".into()])
+    });
+    c.add("cli_unknown_profile.none", |s| {
+        s.cli_unknown_profile("{name}", &[])
+    });
+    c.add("cli_profiles_not_read", |s| {
+        s.cli_profiles_not_read("{folder}", "{reason}")
+    });
+    c.add("cli_too_few_snapshots", |s| {
+        s.cli_too_few_snapshots("{profile}")
+    });
+    c.add("cli_unknown_snapshot", |s| {
+        s.cli_unknown_snapshot("{profile}", 7)
+    });
+    c.add("cli_with_latest", |s| s.cli_with_latest(15));
     c.add("settings_export", |s| s.settings_export().into());
     c.add("report_title", |s| s.report_title("{version}"));
     c.add("report_filter.types", |s| {
@@ -1100,14 +1177,19 @@ fn warning_name(warning: &Warning) -> &'static str {
     }
 }
 
-/// The catalog as text: per string a line with its id, then "en:" and "uk:" lines; the
-/// lines of a text with several lines follow, indented.
+/// The strings of revisor-ui as text, as [`text`] writes them.
 pub fn catalog() -> String {
+    text(&entries())
+}
+
+/// `entries` as text: per string a line with its id, then "en:" and "uk:" lines; the lines
+/// of a text with several lines follow, indented. The window adds its own entries to those
+/// of [`entries`] before it writes them (TASK-47).
+pub fn text(entries: &[Entry]) -> String {
     let mut text = String::from(
         "revisor: interface strings in English (en) and Ukrainian (uk).\n\
          {name} is a parameter; a count in parentheses after an id picks the plural form.\n",
     );
-    let entries = entries();
     text.push_str(&format!("Strings: {}.\n", entries.len()));
     for entry in entries {
         text.push('\n');

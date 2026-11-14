@@ -9,6 +9,26 @@ release that section becomes the version's own, and the release page publishes i
 
 ## [Unreleased]
 
+### Added
+
+- **A command line for scripts.** `revisor-cli.exe`, a console program beside `revisor.exe`,
+  works on the profiles of the window. `revisor-cli snapshot --profile <name>` takes a snapshot
+  and writes the number of the new snapshot, and nothing else, to the output; `--comment <text>`
+  gives it a comment. `revisor-cli compare --profile <name> --output <file>` compares the latest
+  snapshot with the one before it, or with the one `--with <number>` names, and writes the whole
+  difference, without the filters of the window, as the text report or, for a `.csv` file or
+  with `--format csv`, as CSV: the formats of Difference › Export, with the delimiter of the
+  setting CSV delimiter or of `--delimiter comma|semicolon|tab|windows`. An existing file is
+  replaced whole or not at all. Messages go to the error stream, in English by default and in
+  Ukrainian with `--language uk`; `--progress` adds a line of progress every 10 seconds, and
+  `--quiet` leaves errors only; nothing is animated. The exit code is 0 when the snapshot is
+  saved or the report written, 1 when the work failed or `Ctrl+C` canceled it, and 2 for a
+  wrong call. A profile another revisor action holds is waited for, as in the window, and
+  `--timeout <seconds>` limits the wait. cmd, `.bat` files and PowerShell wait for revisor-cli
+  and get its exit code; the window keeps opening without a console. The release publishes both
+  exes, each with its `.sha256` file, and scoop puts `revisor-cli` on the `PATH` beside
+  `revisor`.
+
 ## [0.4.0] - 2026-11-14
 
 ### Added

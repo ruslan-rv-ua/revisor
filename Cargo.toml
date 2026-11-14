@@ -1,6 +1,6 @@
 [workspace]
 resolver = "3"
-members = ["crates/revisor-core", "crates/revisor"]
+members = ["crates/revisor-core", "crates/revisor-ui", "crates/revisor", "crates/revisor-cli"]
 
 [workspace.package]
 version = "0.4.0"
