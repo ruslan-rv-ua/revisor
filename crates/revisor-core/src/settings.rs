@@ -9,7 +9,8 @@
 //! (TASK-34), whether the list of typical folders offers other users' folders (TASK-43),
 //! which operations end with a sound and whether the status bar speaks (TASK-46), and
 //! whether a snapshot that rights closed in part offers a restart as administrator
-//! (TASK-48).
+//! (TASK-48), and which columns the difference list shows, in which order and how wide
+//! (TASK-49, [`columns`]).
 //! Each setting is one row of a key–value table, read and written through typed methods,
 //! so a later setting needs no change of the schema.
 
@@ -21,6 +22,10 @@ use std::time::Duration;
 
 use rusqlite::types::Value;
 use rusqlite::{Connection, ErrorCode, OpenFlags, OptionalExtension, params};
+
+mod columns;
+
+pub use columns::{ColumnChoice, DifferenceColumn, DifferenceColumns};
 
 /// Version of the settings schema, kept in `PRAGMA user_version`. Until 0.1.0 is released
 /// the schema changes in place, without migrations, like the profiles' (brief, section 5).
@@ -65,6 +70,7 @@ const KEY_SOUND_AFTER_SNAPSHOT_AND_COMPARE: &str = "sound_after_snapshot_and_com
 const KEY_SOUND_ONLY_AFTER_LONG: &str = "sound_only_after_long";
 const KEY_SPEAK_STATUS: &str = "speak_status";
 const KEY_OFFER_RESTART: &str = "offer_restart";
+const KEY_DIFFERENCE_COLUMNS: &str = "difference_columns";
 
 #[derive(Debug)]
 pub enum SettingsError {
@@ -881,6 +887,31 @@ impl Settings {
 
     pub fn set_tree_node_text(&self, value: TreeNodeText) -> Result<(), SettingsError> {
         self.set(KEY_TREE_NODE_TEXT, value.as_str())
+    }
+
+    /// The columns of the difference list; all six, in their default order and widths,
+    /// when nothing is stored (TASK-49).
+    pub fn difference_columns(&self) -> Result<DifferenceColumns, SettingsError> {
+        Ok(match self.get(KEY_DIFFERENCE_COLUMNS)? {
+            Some(Value::Text(text)) => DifferenceColumns::parse(&text),
+            _ => DifferenceColumns::default(),
+        })
+    }
+
+    pub fn set_difference_columns(&self, value: &DifferenceColumns) -> Result<(), SettingsError> {
+        self.set(KEY_DIFFERENCE_COLUMNS, value.to_text())
+    }
+
+    /// Keeps the width of `column` the user dragged it to, the others as they are
+    /// (TASK-49 #7).
+    pub fn set_difference_column_width(
+        &self,
+        column: DifferenceColumn,
+        width: i32,
+    ) -> Result<(), SettingsError> {
+        let mut columns = self.difference_columns()?;
+        columns.set_width(column, width);
+        self.set_difference_columns(&columns)
     }
 
     /// The theme of the interface; «Same as Windows» when nothing is stored (TASK-34).

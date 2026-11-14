@@ -22,8 +22,8 @@ use revisor_core::compare::{self, CompareError, Difference};
 use revisor_core::job::{Cancel, Lost, Outcome};
 use revisor_core::profiles::{self, ProfileError, ProfileFile, Unreadable};
 use revisor_core::settings::{
-    CsvDelimiter, DifferenceSort, DifferenceView, ExportFormat, FocusAfterComparison,
-    FocusAfterSnapshot, Language, Settings, Theme,
+    CsvDelimiter, DifferenceColumns, DifferenceSort, DifferenceView, ExportFormat,
+    FocusAfterComparison, FocusAfterSnapshot, Language, Settings, Theme,
 };
 use revisor_core::snapshot::{Phase, Report, SnapshotError};
 use revisor_core::store::{Compacted, ProfileSettings, SnapshotInfo, Store, StoreError};
@@ -89,9 +89,46 @@ const COMPARISON_BAR_AFTER: Duration = Duration::from_secs(5);
 /// database it is about to write or delete (TASK-11 #17).
 const HOLD_RETRY: Duration = Duration::from_millis(50);
 
-/// The widths of the difference list's columns, in the order of [`Column::ALL`]: the
-/// folder, the longest, comes last (TASK-13 #12).
-const COLUMN_WIDTHS: [i32; 6] = [220, 140, 200, 90, 160, 420];
+/// The columns the difference lists show (TASK-49): as the settings chose them, with the
+/// shown ones in their order, which the lists' columns follow by index.
+struct ListColumns {
+    chosen: DifferenceColumns,
+    shown: Vec<Column>,
+}
+
+impl ListColumns {
+    fn new(chosen: DifferenceColumns) -> Self {
+        Self {
+            shown: chosen.shown(),
+            chosen,
+        }
+    }
+
+    /// The column at `index` of the list.
+    fn at(&self, index: impl TryInto<usize>) -> Option<Column> {
+        let index = index.try_into().ok()?;
+        self.shown.get(index).copied()
+    }
+}
+
+/// Gives the difference list `list`, which has no rows, the columns shown, in their
+/// order and widths (TASK-49 #2). Hidden columns are not there at all, rather than
+/// narrowed to nothing: NVDA's table commands would still stop on a column without
+/// width, and its divider could be dragged open.
+fn insert_columns(list: &ListCtrl, s: &dyn Strings, columns: &ListColumns) {
+    for (i, &column) in columns.shown.iter().enumerate() {
+        let format = match column {
+            Column::Size => ListColumnFormat::Right,
+            _ => ListColumnFormat::Left,
+        };
+        list.insert_column(
+            i as i64,
+            s.column(column),
+            format,
+            columns.chosen.width(column),
+        );
+    }
+}
 
 /// The height of the field «Порівняння»: the line of the pair, the summary and a warning
 /// show at once; more warnings scroll (TASK-13 #1).
@@ -242,6 +279,8 @@ pub struct MainWindow {
     /// seconds with a large difference (TASK-13 #29), so the other list is disabled — no
     /// stop for Tab — and has no size instead.
     differences: [ListCtrl; 2],
+    /// The columns both difference lists show (TASK-49).
+    columns: Rc<RefCell<ListColumns>>,
     /// Which of `differences` is shown, while the difference shows as a list.
     shown_difference: Cell<usize>,
     /// The difference trees (TASK-33): two tree controls over `difference_list`, which
@@ -358,6 +397,14 @@ impl MainWindow {
                 .unwrap_or_default(),
         );
         let difference_list = Rc::new(RefCell::new(list));
+        // Which columns the difference list shows, as kept (TASK-49).
+        let columns = Rc::new(RefCell::new(ListColumns::new(
+            settings
+                .as_ref()
+                .ok()
+                .and_then(|settings| settings.difference_columns().ok())
+                .unwrap_or_default(),
+        )));
 
         let panel = Panel::builder(&frame).build();
         // Made in tab order. Each label comes right before its control, so screen readers
@@ -399,21 +446,14 @@ impl MainWindow {
                     ListCtrlStyle::Report | ListCtrlStyle::Virtual | ListCtrlStyle::SingleSel,
                 )
                 .build();
-            for (i, column) in Column::ALL.into_iter().enumerate() {
-                let format = match column {
-                    Column::Size => ListColumnFormat::Right,
-                    _ => ListColumnFormat::Left,
-                };
-                list.insert_column(i as i64, s.column(column), format, COLUMN_WIDTHS[i]);
-            }
+            insert_columns(&list, s, &columns.borrow());
             // The headers sort the list (TASK-13 #21).
             win32::lists::full_row_select(list.get_handle());
             let model = Rc::clone(&difference_list);
+            let shown = Rc::clone(&columns);
             list.set_virtual_text_callback(move |row, column| {
                 let row = usize::try_from(row).unwrap_or(usize::MAX);
-                let column = usize::try_from(column)
-                    .ok()
-                    .and_then(|i| Column::ALL.get(i).copied());
+                let column = shown.borrow().at(column);
                 column.map_or_else(String::new, |column| model.borrow().cell(row, column))
             });
             list
@@ -534,6 +574,7 @@ impl MainWindow {
             difference_holder,
             difference_empty_texts,
             differences,
+            columns,
             shown_difference: Cell::new(0),
             trees,
             shown_tree: Cell::new(0),
@@ -748,6 +789,11 @@ impl MainWindow {
                 |f| list.on_item_focused(f),
                 move |w, event| w.difference_focused(i, event.get_item_index()),
             );
+            // A column the user resized keeps its width (TASK-49 #7).
+            let w = Rc::clone(self);
+            win32::lists::on_column_resized(list.get_handle(), move |column, width| {
+                w.column_resized(i, column, width);
+            });
         }
         // The difference trees (TASK-33): a node gets its children as it first expands
         // (#2), the focus picks the node selected, a right click selects the node under
@@ -1558,6 +1604,7 @@ impl MainWindow {
             sound_only_after_long: self.sound_setting(false).only_after_long,
             speak_status: self.speak_status.get(),
             offer_restart: self.offer_restart_setting(),
+            difference_columns: self.columns.borrow().chosen,
         };
         let Some(values) = settings_window::show(&self.frame, s, initial) else {
             return;
@@ -1588,6 +1635,7 @@ impl MainWindow {
                 .and_then(|()| settings.set_sound_only_after_long(values.sound_only_after_long))
                 .and_then(|()| settings.set_speak_status(values.speak_status))
                 .and_then(|()| settings.set_offer_restart(values.offer_restart))
+                .and_then(|()| settings.set_difference_columns(&values.difference_columns))
                 .map_err(|e| reason(s, &e)),
             Err(message) => Err(message.clone()),
         };
@@ -1615,6 +1663,7 @@ impl MainWindow {
             list.set_node_text(values.tree_node_text);
         }
         self.restyle_difference();
+        self.set_columns(values.difference_columns);
         // «Same as Windows» is read now, not at the start: the language of Windows may
         // have changed meanwhile, and the next start would take the new one.
         let next = crate::language_of(values.language, win32::language::ui_language);
@@ -2260,7 +2309,11 @@ impl MainWindow {
             check_box.enable(has_difference);
         }
         self.filter_field.enable(has_difference);
-        let arrow = Column::ALL
+        // On a column shown; sorted by a hidden one, the headers show no arrow (TASK-49 #8).
+        let arrow = self
+            .columns
+            .borrow()
+            .shown
             .iter()
             .position(|column| column.sort() == view.sort.column)
             .map(|i| (i, view.sort.descending));
@@ -2360,10 +2413,7 @@ impl MainWindow {
     /// list is sorted by it already, the other way (#21). Without a difference there is
     /// nothing to sort, as the commands say.
     fn sort_by_column(&self, column: i32) {
-        let Some(column) = usize::try_from(column)
-            .ok()
-            .and_then(|i| Column::ALL.get(i))
-        else {
+        let Some(column) = self.columns.borrow().at(column) else {
             return;
         };
         let (sort, has_difference) = {
@@ -2376,6 +2426,85 @@ impl MainWindow {
         let column = column.sort();
         let descending = sort.column == column && !sort.descending;
         self.set_sort(DifferenceSort { column, descending });
+    }
+
+    /// The user resized the column at `index` of the difference list `list` to `width`:
+    /// the other list takes the width too, and it is kept for the next starts (TASK-49 #7).
+    fn column_resized(&self, list: usize, index: usize, width: i32) {
+        let column = {
+            let mut columns = self.columns.borrow_mut();
+            let Some(column) = columns.at(index) else {
+                return;
+            };
+            columns.chosen.set_width(column, width);
+            column
+        };
+        self.differences[1 - list].set_column_width(index as i64, width);
+        if let Ok(settings) = &self.settings {
+            let _ = settings.set_difference_column_width(column, width);
+        }
+    }
+
+    /// The difference lists show the columns `chosen` in the settings (TASK-49 #6). Only
+    /// new widths change in place. Other columns are built anew in the list not shown,
+    /// which has no rows; it takes the rows, the row selected and the focus, and the shown
+    /// one's place, as for a new difference, so a screen reader names the list and reads
+    /// the row in its new columns. The view, its order among them, stays.
+    fn set_columns(&self, chosen: DifferenceColumns) {
+        let (same, same_layout) = {
+            let columns = self.columns.borrow();
+            (
+                columns.chosen == chosen,
+                columns.chosen.same_layout(&chosen),
+            )
+        };
+        if same {
+            return;
+        }
+        *self.columns.borrow_mut() = ListColumns::new(chosen);
+        if same_layout {
+            for list in &self.differences {
+                for (i, column) in chosen.shown().into_iter().enumerate() {
+                    list.set_column_width(i as i64, chosen.width(column));
+                }
+            }
+            return;
+        }
+        let rebuild = |list: &ListCtrl| {
+            list.clear_all();
+            insert_columns(list, self.s, &self.columns.borrow());
+        };
+        let old = self.difference();
+        let next = 1 - self.shown_difference.get();
+        let new = &self.differences[next];
+        rebuild(new);
+        if self.layout() == DifferenceView::Tree {
+            // Both lists are disabled and keep no rows the tree needs; going back to the
+            // list counts and selects them again.
+            rebuild(old);
+            self.describe_difference();
+            return;
+        }
+        let had_focus = win32::focus::focused_window() == old.get_handle();
+        let (count, current) = {
+            let model = self.difference_list.borrow();
+            (model.len(), model.current())
+        };
+        new.set_item_count(count as i64);
+        if let Some(row) = current {
+            win32::lists::select_only(new.get_handle(), row);
+        }
+        new.enable(true);
+        self.shown_difference.set(next);
+        self.place_difference_lists();
+        self.describe_difference();
+        if had_focus {
+            new.set_focus();
+        }
+        // Disabled once the focus has left it, so that the focus does not go elsewhere.
+        old.enable(false);
+        old.set_item_count(0);
+        rebuild(old);
     }
 
     /// The text of the field «Фільтр:» changed as the user typed: the list follows at
