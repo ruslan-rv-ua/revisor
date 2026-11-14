@@ -1478,9 +1478,18 @@ impl MainWindow {
         }
     }
 
-    /// Ends an operation that started at `started` with its sound, if its settings want
-    /// one (TASK-46 #3, #5); `snapshot_and_compare` says whose settings.
-    fn chime(&self, snapshot_and_compare: bool, started: Option<Instant>, done: bool) {
+    /// Ends a snapshot or «Знімок + порівняння» with its sound, if the settings of its
+    /// operation want one (TASK-46 #3, #5–#7): `done` when it succeeded, timed from the
+    /// start of its snapshot, or of the whole command.
+    fn chime(&self, end: sound::End, done: bool) {
+        let Some(operation) = sound::operation(end) else {
+            return;
+        };
+        let (snapshot_and_compare, started) = match (operation, end) {
+            (sound::Operation::Snapshot, _) => (false, self.snapshot_started.get()),
+            (_, sound::End::Comparison) => (true, self.snapshot_and_compare_started.get()),
+            _ => (true, self.snapshot_started.get()),
+        };
         let lasted = started.map_or(Duration::ZERO, |at| at.elapsed());
         if let Some(chime) = sound::chime(self.sound_setting(snapshot_and_compare), lasted, done) {
             win32::sound::play(chime);
@@ -2706,7 +2715,7 @@ impl MainWindow {
             );
             self.say(&text);
             // The snapshot is saved and nothing failed: «готово» (TASK-46 #6).
-            self.chime(true, self.snapshot_started.get(), true);
+            self.chime(sound::End::NothingToCompare, true);
             self.offer_restart(&profile, &report, CommandId::SnapshotAndCompare);
             return;
         };
@@ -2780,7 +2789,7 @@ impl MainWindow {
         self.say(&text);
         // After the whole command, from the start of its snapshot (TASK-46 #3, #5); before
         // the restart offer, whose window would hold it up.
-        self.chime(true, self.snapshot_and_compare_started.get(), done);
+        self.chime(sound::End::Comparison, done);
         self.offer_restart(&profile, &report, CommandId::SnapshotAndCompare);
     }
 
@@ -2800,6 +2809,8 @@ impl MainWindow {
     /// TASK-8 (#8). Its row is in the list already.
     fn report_superseded(&self, superseded: Superseded) {
         let Superseded { profile, report } = superseded;
+        // Silent: the user has just replaced the comparison (TASK-46 #7).
+        self.chime(sound::End::Superseded, true);
         self.say(&self.snapshot_report(&report));
         self.offer_restart(&profile, &report, CommandId::SnapshotAndCompare);
     }
@@ -2918,10 +2929,11 @@ impl MainWindow {
         // snapshot stopped on closing or restarting ends silent. One that a comparison took
         // from «Знімок + порівняння» comes with no `then` and sounds as a regular one
         // (TASK-46 #3, #7).
-        if !stopped {
-            let done = matches!(outcome, Ok(Outcome::Done(_)));
-            self.chime(then.is_some(), self.snapshot_started.get(), done);
-        }
+        let end = sound::End::Snapshot {
+            of_snapshot_and_compare: then.is_some(),
+            stopped,
+        };
+        self.chime(end, matches!(outcome, Ok(Outcome::Done(_))));
         match outcome {
             Ok(Outcome::Done(report)) => {
                 self.report_snapshot(&ended.profile, &report, !stopped, focus);

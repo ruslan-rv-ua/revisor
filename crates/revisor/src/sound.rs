@@ -27,6 +27,47 @@ pub struct SoundSetting {
     pub only_after_long: bool,
 }
 
+/// The operation whose sound settings an end follows.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Operation {
+    Snapshot,
+    SnapshotAndCompare,
+}
+
+/// How a snapshot or «Знімок + порівняння» came to an end, as the window sees it.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum End {
+    /// A snapshot ended without going on to a comparison: a regular one — also one a
+    /// comparison took from «Знімок + порівняння» (TASK-12 #11) — or that of «Знімок +
+    /// порівняння» failed or cancelled, `of_snapshot_and_compare`; `stopped` on closing
+    /// or restarting.
+    Snapshot {
+        of_snapshot_and_compare: bool,
+        stopped: bool,
+    },
+    /// «Знімок + порівняння» saved its snapshot and had nothing to compare it with.
+    NothingToCompare,
+    /// The comparison of «Знімок + порівняння» ended.
+    Comparison,
+    /// Another comparison took the place of the comparison of «Знімок + порівняння».
+    Superseded,
+}
+
+/// Whose settings `end` sounds by, or `None` when it ends silent: a snapshot stopped on
+/// closing or restarting, and a comparison the user replaced themselves (TASK-46 #6, #7).
+pub fn operation(end: End) -> Option<Operation> {
+    match end {
+        End::Snapshot { stopped: true, .. } | End::Superseded => None,
+        End::Snapshot {
+            of_snapshot_and_compare: false,
+            ..
+        } => Some(Operation::Snapshot),
+        End::Snapshot { .. } | End::NothingToCompare | End::Comparison => {
+            Some(Operation::SnapshotAndCompare)
+        }
+    }
+}
+
 /// The sound an operation that ran for `lasted` ends with, `done` telling whether it
 /// succeeded; none while its check box is off, or for a short operation while the
 /// threshold is on — strictly longer than [`LONG_AFTER`] (TASK-46 #3, #5).
@@ -148,6 +189,35 @@ mod tests {
         };
         assert_eq!(chime(always, Duration::ZERO, true), Some(Chime::Done));
         assert_eq!(chime(always, Duration::ZERO, false), Some(Chime::NoResult));
+    }
+
+    #[test]
+    fn each_end_follows_the_settings_of_its_operation() {
+        let snapshot = |of_snapshot_and_compare, stopped| End::Snapshot {
+            of_snapshot_and_compare,
+            stopped,
+        };
+        assert_eq!(operation(snapshot(false, false)), Some(Operation::Snapshot));
+        // The snapshot of «Знімок + порівняння» failed or cancelled ends that command.
+        assert_eq!(
+            operation(snapshot(true, false)),
+            Some(Operation::SnapshotAndCompare)
+        );
+        assert_eq!(
+            operation(End::Comparison),
+            Some(Operation::SnapshotAndCompare)
+        );
+        // TASK-46 #6: nothing to compare with is still the end of «Знімок + порівняння».
+        assert_eq!(
+            operation(End::NothingToCompare),
+            Some(Operation::SnapshotAndCompare)
+        );
+        // TASK-46 #7: a comparison that replaced the comparison is silent; the snapshot it
+        // took over arrives as a regular one and follows the snapshot's settings.
+        assert_eq!(operation(End::Superseded), None);
+        // Stopped on closing or restarting: silent.
+        assert_eq!(operation(snapshot(false, true)), None);
+        assert_eq!(operation(snapshot(true, true)), None);
     }
 
     #[test]
