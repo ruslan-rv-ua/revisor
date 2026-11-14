@@ -49,7 +49,7 @@ use crate::keys::Shortcut;
 use crate::menus::{
     context_label, context_menu, menu_label, submenu_label, top_menu_label, window_title,
 };
-use crate::message_box::{ask_text, choose, confirm, tell};
+use crate::message_box::{ask_text, choose, confirm, confirm_with_check_box, tell};
 use crate::profile_window::{self, Purpose};
 use crate::settings_window::{self, Values};
 use crate::snapshot_list::{Native, SnapshotList};
@@ -1419,6 +1419,16 @@ impl MainWindow {
             .unwrap_or(true)
     }
 
+    /// Whether a snapshot that rights closed in part offers a restart as administrator
+    /// (TASK-48 #1); on by default.
+    fn offer_restart_setting(&self) -> bool {
+        self.settings
+            .as_ref()
+            .ok()
+            .and_then(|settings| settings.offer_restart().ok())
+            .unwrap_or(true)
+    }
+
     fn language(&self) -> Language {
         self.settings
             .as_ref()
@@ -1547,6 +1557,7 @@ impl MainWindow {
             sound_after_snapshot_and_compare: self.sound_setting(true).on,
             sound_only_after_long: self.sound_setting(false).only_after_long,
             speak_status: self.speak_status.get(),
+            offer_restart: self.offer_restart_setting(),
         };
         let Some(values) = settings_window::show(&self.frame, s, initial) else {
             return;
@@ -1576,6 +1587,7 @@ impl MainWindow {
                 })
                 .and_then(|()| settings.set_sound_only_after_long(values.sound_only_after_long))
                 .and_then(|()| settings.set_speak_status(values.speak_status))
+                .and_then(|()| settings.set_offer_restart(values.offer_restart))
                 .map_err(|e| reason(s, &e)),
             Err(message) => Err(message.clone()),
         };
@@ -3052,21 +3064,51 @@ impl MainWindow {
     }
 
     /// Offers a restart as administrator after the snapshot of `report` when rights
-    /// closed some of its entries and revisor runs as a standard user (TASK-8 #7, #16,
-    /// #18); the question is titled after `command`, which took the snapshot. The restart
-    /// the user agrees to is the command «Перезапустити як адміністратор» (ADR-0013).
+    /// closed some of its entries, revisor runs as a standard user (TASK-8 #7, #16, #18)
+    /// and the setting does not forbid it (TASK-48 #2, #3); the question is titled after
+    /// `command`, which took the snapshot. The restart the user agrees to is the command
+    /// «Перезапустити як адміністратор» (ADR-0013). «Більше не пропонувати», ticked,
+    /// turns the setting off however the question is closed, without a word of its own
+    /// (TASK-48 #4, #5).
     fn offer_restart(&self, profile: &ProfileFile, report: &Report, command: CommandId) {
         let s = self.s;
-        if report.denied > 0 && !self.elevated {
-            let question =
-                s.restart_question(&win32::format::format_count(Locale::USER, report.denied));
-            let title = plain(s.command(command));
-            if confirm(&self.frame, s, &title, &question, |s| s.restart(), true) {
-                // On the snapshotted profile, whichever is open by now.
-                self.event(Source::Command(CommandId::RestartAsAdmin), || {
-                    self.restart_now(Some(profile));
-                });
+        if !restart_offered(
+            report.denied > 0,
+            self.elevated,
+            self.offer_restart_setting(),
+        ) {
+            return;
+        }
+        let question =
+            s.restart_question(&win32::format::format_count(Locale::USER, report.denied));
+        let title = plain(s.command(command));
+        let (restart, never_again) = confirm_with_check_box(
+            &self.frame,
+            s,
+            &title,
+            &question,
+            |s| s.restart(),
+            |s| s.dont_offer_again(),
+            true,
+        );
+        if never_again {
+            // Before the restart, which the new revisor would otherwise not know of.
+            let saved = match &self.settings {
+                Ok(settings) => settings.set_offer_restart(false).map_err(|e| reason(s, &e)),
+                Err(message) => Err(message.clone()),
+            };
+            // In the status bar and in a window, whatever the question came after.
+            if let Err(reason) = saved {
+                let text = s.settings_not_saved(&reason);
+                self.say(&text);
+                tell(&self.frame, s, &title, &text);
             }
+        }
+        if restart {
+            // On the snapshotted profile, whichever is open by now.
+            self.event(Source::Command(CommandId::RestartAsAdmin), || {
+                self.restart_now(Some(profile));
+            });
         }
     }
 
@@ -3287,6 +3329,13 @@ fn file_name(path: &Path) -> String {
         .into_owned()
 }
 
+/// Whether a snapshot offers a restart as administrator (TASK-8 #7; TASK-48 #2, #3): only
+/// when rights closed some of its entries (`denied`), revisor runs as a standard user, and
+/// the setting «Пропонувати перезапуск від імені адміністратора після знімка» is on.
+fn restart_offered(denied: bool, elevated: bool, setting: bool) -> bool {
+    denied && !elevated && setting
+}
+
 /// Gives the window the same icon Explorer shows for the exe. wxMSW does not adopt the
 /// exe's icon resource for a frame, so the frame takes it from the SVG that app.ico is
 /// generated from. A failure leaves the generic window icon, which is not worth failing over.
@@ -3303,6 +3352,23 @@ fn set_frame_icon(frame: &Frame) {
 mod tests {
     use super::*;
     use crate::i18n::En;
+
+    #[test]
+    fn a_restart_is_offered_only_as_a_standard_user_after_denied_entries_while_the_setting_allows()
+    {
+        // TASK-48 #2, #3, #9: of every combination, only one asks.
+        let mut asking = Vec::new();
+        for denied in [false, true] {
+            for elevated in [false, true] {
+                for setting in [false, true] {
+                    if restart_offered(denied, elevated, setting) {
+                        asking.push((denied, elevated, setting));
+                    }
+                }
+            }
+        }
+        assert_eq!(asking, [(true, false, true)]);
+    }
 
     #[test]
     fn the_cancel_button_keeps_its_label_from_a_snapshot_to_its_comparison() {

@@ -991,6 +991,8 @@ fn entries_in(en: &dyn Strings, uk: &dyn Strings) -> Vec<Entry> {
     });
     c.add("speak_status", |s| plain(s.speak_status()));
     c.add("other_users_folders", |s| plain(s.other_users_folders()));
+    c.add("offer_restart", |s| plain(s.offer_restart()));
+    c.add("dont_offer_again", |s| plain(s.dont_offer_again()));
     c.add("settings_general", |s| s.settings_general().into());
     c.add("settings_snapshots", |s| s.settings_snapshots().into());
     c.add("settings_difference", |s| s.settings_difference().into());

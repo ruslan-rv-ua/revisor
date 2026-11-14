@@ -1229,6 +1229,14 @@ impl Strings for Uk {
         "Показувати теки інших користувачів у переліку типових тек"
     }
 
+    fn offer_restart(&self) -> &'static str {
+        "Пропонувати перезапуск від імені адміністратора після знімка"
+    }
+
+    fn dont_offer_again(&self) -> &'static str {
+        "Більше не пропонувати"
+    }
+
     fn settings_general(&self) -> &'static str {
         "Загальні"
     }

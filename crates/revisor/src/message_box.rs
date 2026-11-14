@@ -11,6 +11,7 @@ use wxdragon::prelude::*;
 
 use crate::access::{self, Act, Name, Target, compose};
 use crate::i18n::{En, Strings};
+use crate::win32;
 
 /// How wide the text of a message box gets before it wraps, in pixels.
 const TEXT_WIDTH: i32 = 440;
@@ -89,7 +90,7 @@ pub fn tell(parent: &dyn WxWidget, s: &dyn Strings, title: &str, text: &str) {
         .with_label(s.ok())
         .build();
     dialog.set_escape_id(ID_OK);
-    show(&dialog, text, &[&ok], &ok);
+    show(&dialog, text, None, &[&ok], &ok);
 }
 
 /// Asks a question with the buttons `act` and Cancel; Esc cancels. Returns whether the
@@ -118,7 +119,56 @@ pub fn choose(
     decline: Option<Name>,
     decline_default: bool,
 ) -> bool {
+    ask(parent, s, title, text, act, decline, decline_default, None).0
+}
+
+/// As [`confirm`], with the check box `check` above the buttons, unticked at first; its
+/// access key toggles it. Returns whether the user chose `act` and whether the check box
+/// was ticked, however the box was closed (TASK-48: «Більше не пропонувати»).
+pub fn confirm_with_check_box(
+    parent: &dyn WxWidget,
+    s: &dyn Strings,
+    title: &str,
+    text: &str,
+    act: Name,
+    check: Name,
+    cancel_default: bool,
+) -> (bool, bool) {
+    ask(
+        parent,
+        s,
+        title,
+        text,
+        act,
+        None,
+        cancel_default,
+        Some(check),
+    )
+}
+
+/// The id the access key of the check box of [`ask`] dispatches; no button has it.
+const CHECK_BOX: i32 = -1;
+
+/// The question of [`choose`], with the check box `check` above the buttons when there is
+/// one: returns the choice and whether the check box was ticked.
+#[allow(clippy::too_many_arguments)]
+fn ask(
+    parent: &dyn WxWidget,
+    s: &dyn Strings,
+    title: &str,
+    text: &str,
+    act: Name,
+    decline: Option<Name>,
+    decline_default: bool,
+    check: Option<Name>,
+) -> (bool, bool) {
     let dialog = Dialog::builder(parent, title).build();
+    // Made before the buttons, so the tab order goes from it to them.
+    let check_box = check.map(|name| {
+        CheckBox::builder(&dialog)
+            .with_label(&access::label(s, name))
+            .build()
+    });
     let act_button = Button::builder(&dialog)
         .with_id(ID_OK)
         .with_label(&access::label(s, act))
@@ -135,18 +185,37 @@ pub fn choose(
     // The box closes once Alt is up, as every button pressed by its access key acts.
     let mut targets = vec![Target::of(act, Act::Press, ID_OK)];
     targets.extend(decline.map(|name| Target::of(name, Act::Press, ID_CANCEL)));
-    access::bind(&dialog, targets, move |id| dialog.end_modal(id));
+    targets.extend(check.map(|name| Target::of(name, Act::Press, CHECK_BOX)));
+    access::bind(&dialog, targets, move |id| match check_box {
+        // Pressed as a click does, so screen readers say its new state.
+        Some(check_box) if id == CHECK_BOX => win32::focus::click(check_box.get_handle()),
+        _ => dialog.end_modal(id),
+    });
     let default = if decline_default {
         &cancel
     } else {
         &act_button
     };
-    show(&dialog, text, &[&act_button, &cancel], default) == ID_OK
+    let (closed_by, ticked) = show(
+        &dialog,
+        text,
+        check_box.as_ref(),
+        &[&act_button, &cancel],
+        default,
+    );
+    (closed_by == ID_OK, ticked)
 }
 
-/// Lays out the text above the buttons, shows the dialog with the focus on its default
-/// button, and returns the id of the button that closed it.
-fn show(dialog: &Dialog, text: &str, buttons: &[&Button], default: &Button) -> i32 {
+/// Lays out the text, the check box `check` if there is one, and the buttons below them,
+/// shows the dialog with the focus on its default button, and returns the id of the button
+/// that closed it and whether the check box was ticked.
+fn show(
+    dialog: &Dialog,
+    text: &str,
+    check: Option<&CheckBox>,
+    buttons: &[&Button],
+    default: &Button,
+) -> (i32, bool) {
     // "&" would underline the next letter as an access key.
     let label = StaticText::builder(dialog)
         .with_label(&text.replace('&', "&&"))
@@ -163,6 +232,14 @@ fn show(dialog: &Dialog, text: &str, buttons: &[&Button], default: &Button) -> i
     }
     let sizer = BoxSizer::builder(Orientation::Vertical).build();
     sizer.add(&label, 0, SizerFlag::All, 12);
+    if let Some(check) = check {
+        sizer.add(
+            check,
+            0,
+            SizerFlag::Left | SizerFlag::Right | SizerFlag::Bottom,
+            12,
+        );
+    }
     sizer.add_sizer(
         &row,
         0,
@@ -174,7 +251,8 @@ fn show(dialog: &Dialog, text: &str, buttons: &[&Button], default: &Button) -> i
     default.set_default();
     default.set_focus();
     let closed_by = dialog.show_modal();
+    let ticked = check.is_some_and(CheckBox::get_value);
     // A plain wxDragon Dialog is not destroyed when dropped.
     dialog.destroy();
-    closed_by
+    (closed_by, ticked)
 }

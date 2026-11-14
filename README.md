@@ -94,7 +94,10 @@ The main scenario takes four steps, all from the keyboard:
 - **Nothing hidden by permissions.** An entry revisor cannot read is kept, marked inaccessible,
   with the reason. When permissions are the reason, revisor offers to restart as administrator
   with the same profile open, and as administrator it also reads folders closed even to
-  administrators.
+  administrators. Who works as a standard user on purpose turns the offer off with Don't offer
+  this again in the question itself, or with Settings › Snapshots › Offer to restart as
+  administrator after a snapshot; the status bar still says how many entries are inaccessible,
+  and Restart as administrator stays in the menu.
 - **The same from a script.** `revisor-cli.exe`, a console program beside `revisor.exe`, takes
   a snapshot of a profile and compares two snapshots into the same text report or CSV, so a
   script can take a snapshot, install a program silently and keep the difference; see

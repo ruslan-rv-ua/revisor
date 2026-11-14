@@ -28,6 +28,11 @@ release that section becomes the version's own, and the release page publishes i
   and get its exit code; the window keeps opening without a console. The release publishes both
   exes, each with its `.sha256` file, and scoop puts `revisor-cli` on the `PATH` beside
   `revisor`.
+- **The offer to restart as administrator can be turned off.** The question that follows a
+  snapshot whose entries permissions closed has a check box, Don't offer this again, which
+  turns the offer off however the question is closed; Settings › Snapshots › Offer to restart
+  as administrator after a snapshot turns it on or off. The status bar still says how many
+  entries are inaccessible, and Restart as administrator stays in the menu.
 
 ## [0.4.0] - 2026-11-14
 

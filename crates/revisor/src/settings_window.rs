@@ -5,7 +5,8 @@
 //! nodes of the difference tree say (TASK-33), whether deleting snapshots asks first,
 //! whether showing a change no longer on disk in File Explorer asks first (TASK-14),
 //! whether the status bar names the path copied (TASK-41), and whether the list of typical
-//! folders offers other users' folders (TASK-43). The
+//! folders offers other users' folders (TASK-43), and whether a snapshot that rights closed
+//! in part offers a restart as administrator (TASK-48). The
 //! profile opened last and the view of the difference — its types, order, list or tree — are
 //! kept without a control. The settings lie on tabs (TASK-44): «Загальні», «Знімки»,
 //! «Різниця» and «Експорт», which holds whether the exported file opens (TASK-39) and what
@@ -44,6 +45,7 @@ pub struct Values {
     pub sound_after_snapshot_and_compare: bool,
     pub sound_only_after_long: bool,
     pub speak_status: bool,
+    pub offer_restart: bool,
 }
 
 /// The tabs of the window (TASK-44), in their order. Settings added later go into the tab
@@ -88,6 +90,7 @@ pub(crate) enum Control {
     FocusAfterSnapshot,
     ConfirmDeletion,
     OtherUsersFolders,
+    OfferRestart,
     FocusAfterComparison,
     SizeFormat,
     AttributeFormat,
@@ -100,7 +103,7 @@ pub(crate) enum Control {
 
 impl Control {
     /// In tab order: tab by tab, as each tab shows them.
-    const ALL: [Control; 17] = [
+    const ALL: [Control; 18] = [
         Self::Language,
         Self::Theme,
         Self::SoundAfterSnapshot,
@@ -110,6 +113,7 @@ impl Control {
         Self::FocusAfterSnapshot,
         Self::ConfirmDeletion,
         Self::OtherUsersFolders,
+        Self::OfferRestart,
         Self::FocusAfterComparison,
         Self::SizeFormat,
         Self::AttributeFormat,
@@ -129,9 +133,10 @@ impl Control {
             | Self::SoundAfterSnapshotAndCompare
             | Self::SoundOnlyAfterLong
             | Self::SpeakStatus => Page::General,
-            Self::FocusAfterSnapshot | Self::ConfirmDeletion | Self::OtherUsersFolders => {
-                Page::Snapshots
-            }
+            Self::FocusAfterSnapshot
+            | Self::ConfirmDeletion
+            | Self::OtherUsersFolders
+            | Self::OfferRestart => Page::Snapshots,
             Self::FocusAfterComparison
             | Self::SizeFormat
             | Self::AttributeFormat
@@ -160,6 +165,7 @@ impl Control {
             Self::WarnMissingEntry => |s| s.warn_missing_entry(),
             Self::ShowCopiedPath => |s| s.show_copied_path(),
             Self::OtherUsersFolders => |s| s.other_users_folders(),
+            Self::OfferRestart => |s| s.offer_restart(),
             Self::CsvDelimiter => |s| s.csv_delimiter(),
             Self::OpenAfterExport => |s| s.open_after_export(),
         }
@@ -178,6 +184,7 @@ impl Control {
                 | Self::WarnMissingEntry
                 | Self::ShowCopiedPath
                 | Self::OtherUsersFolders
+                | Self::OfferRestart
                 | Self::OpenAfterExport
         )
     }
@@ -232,6 +239,7 @@ struct Window {
     sound_after_snapshot_and_compare: CheckBox,
     sound_only_after_long: CheckBox,
     speak_status: CheckBox,
+    offer_restart: CheckBox,
 }
 
 /// A tab under construction: its panel and the column of its controls.
@@ -371,6 +379,8 @@ pub fn show(parent: &Frame, s: &'static dyn Strings, initial: Values) -> Option<
     );
     let other_users =
         snapshots.check_box(s, Control::OtherUsersFolders, initial.other_users_folders);
+    // Last on the tab (TASK-48 #1).
+    let offer_restart = snapshots.check_box(s, Control::OfferRestart, initial.offer_restart);
     snapshots.finish(&notebook, s, Page::Snapshots);
 
     let difference = Tab::new(&notebook);
@@ -476,6 +486,7 @@ pub fn show(parent: &Frame, s: &'static dyn Strings, initial: Values) -> Option<
         sound_after_snapshot_and_compare,
         sound_only_after_long,
         speak_status,
+        offer_restart,
     });
     // Access keys by the key's position, so they work in the Ukrainian layout too
     // (document «Клавіші доступу»), and only those of the tab shown.
@@ -520,6 +531,7 @@ impl Window {
             Control::WarnMissingEntry => press(&self.warn_missing),
             Control::ShowCopiedPath => press(&self.show_copied_path),
             Control::OtherUsersFolders => press(&self.other_users),
+            Control::OfferRestart => press(&self.offer_restart),
             Control::OpenAfterExport => press(&self.open_after_export),
             Control::SoundAfterSnapshot => press(&self.sound_after_snapshot),
             Control::SoundAfterSnapshotAndCompare => press(&self.sound_after_snapshot_and_compare),
@@ -575,6 +587,7 @@ impl Window {
             sound_after_snapshot_and_compare: self.sound_after_snapshot_and_compare.get_value(),
             sound_only_after_long: self.sound_only_after_long.get_value(),
             speak_status: self.speak_status.get_value(),
+            offer_restart: self.offer_restart.get_value(),
         }
     }
 }
@@ -606,6 +619,8 @@ mod tests {
                 Control::FocusAfterSnapshot,
                 Control::ConfirmDeletion,
                 Control::OtherUsersFolders,
+                // TASK-48 #1: last.
+                Control::OfferRestart,
             ]
         );
         assert_eq!(
@@ -700,6 +715,15 @@ mod tests {
         assert_eq!(
             Control::OtherUsersFolders.label(&Uk),
             "Показувати теки інших користувачів у переліку типових тек (&O)"
+        );
+        // TASK-48 #1, #8: R, free on «Знімки».
+        assert_eq!(
+            Control::OfferRestart.label(&En),
+            "Offer to &restart as administrator after a snapshot"
+        );
+        assert_eq!(
+            Control::OfferRestart.label(&Uk),
+            "Пропонувати перезапуск від імені адміністратора після знімка (&R)"
         );
         // TASK-39 #9: O again, on another tab.
         assert_eq!(
