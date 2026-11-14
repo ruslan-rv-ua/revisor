@@ -1,7 +1,10 @@
-//! revisor, the application: the windows on wxDragon over `revisor-core` (ADR-0005).
-//! `main.rs` only calls [`run`]; the library is there so that the development tools in
-//! `examples/` can reach the interface strings (TASK-17) and the sounds (TASK-46).
+//! revisor, the application: the windows on wxDragon over `revisor-core` (ADR-0005), and
+//! the command line (TASK-47, ADR-0015). `main.rs` only calls [`run`], and
+//! `bin/revisor-cli.rs` only [`cli::run`]; the library is also there so that the
+//! development tools in `examples/` can reach the interface strings (TASK-17) and the
+//! sounds (TASK-46).
 mod access;
+pub mod cli;
 mod commands;
 mod compare_window;
 mod details;
@@ -21,6 +24,7 @@ mod message_box;
 mod profile_window;
 mod settings_window;
 mod snapshot_list;
+mod snapshot_text;
 mod snapshots;
 pub mod sound;
 mod state;

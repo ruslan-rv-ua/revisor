@@ -369,3 +369,74 @@ fn a_snapshot_job_cancelled_while_saving_saves_nothing() {
     assert!(matches!(outcome, Ok(Outcome::Cancelled)), "{outcome:?}");
     assert!(Store::open(&tmp.db()).unwrap().list().unwrap().is_empty());
 }
+
+/// Waits until the snapshot of `job` waits for the database.
+fn wait_until_waiting(job: &Job<SnapshotWork>) {
+    let deadline = Instant::now() + Duration::from_secs(60);
+    while !job.progress().is_waiting() {
+        assert!(Instant::now() < deadline, "the snapshot never waited");
+        thread::sleep(Duration::from_millis(1));
+    }
+}
+
+#[test]
+fn a_snapshot_taken_when_free_waits_for_a_busy_database_and_saves_once_it_is_free() {
+    let tmp = TempDir::new("snapshot");
+    tmp.write(r"app\a.txt", b"a");
+    drop(profile(&tmp, &[tmp.path().join("app")], &[]));
+
+    let lock = WriteLock::take(&tmp);
+    let mut job = Job::start(SnapshotWork::when_free(&tmp.db(), Some("cli")));
+    wait_until_waiting(&job);
+    // Longer than SQLite's own wait would have been: the rule of the store has no limit.
+    thread::sleep(Duration::from_millis(300));
+    assert!(job.poll().is_none());
+    drop(lock);
+    let outcome = poll_until_ended(&mut job);
+
+    let Ok(Outcome::Done(report)) = outcome else {
+        panic!("{outcome:?}");
+    };
+    assert!(!job.progress().is_waiting());
+    let saved = Store::open(&tmp.db()).unwrap().list().unwrap();
+    assert_eq!(saved.len(), 1);
+    assert_eq!(saved[0].id, report.id);
+    assert_eq!(saved[0].comment.as_deref(), Some("cli"));
+}
+
+#[test]
+fn a_snapshot_taken_when_free_waits_for_a_database_it_cannot_even_open() {
+    let tmp = TempDir::new("snapshot");
+    tmp.write(r"app\a.txt", b"a");
+    drop(profile(&tmp, &[tmp.path().join("app")], &[]));
+
+    let lock = rusqlite::Connection::open(tmp.db()).unwrap();
+    lock.execute_batch("BEGIN EXCLUSIVE").unwrap();
+    let mut job = Job::start(SnapshotWork::when_free(&tmp.db(), None));
+    wait_until_waiting(&job);
+    assert_eq!(
+        job.progress().entries(),
+        0,
+        "the scan began before the open"
+    );
+    lock.execute_batch("ROLLBACK").unwrap();
+    let outcome = poll_until_ended(&mut job);
+    assert!(matches!(outcome, Ok(Outcome::Done(_))), "{outcome:?}");
+}
+
+#[test]
+fn a_snapshot_waiting_for_a_busy_database_is_cancelled_and_saves_nothing() {
+    let tmp = TempDir::new("snapshot");
+    tmp.write(r"app\a.txt", b"a");
+    drop(profile(&tmp, &[tmp.path().join("app")], &[]));
+
+    let lock = WriteLock::take(&tmp);
+    let job = Job::start(SnapshotWork::when_free(&tmp.db(), None));
+    wait_until_waiting(&job);
+    job.cancel();
+    let outcome = job.wait();
+    drop(lock);
+
+    assert!(matches!(outcome, Ok(Outcome::Cancelled)), "{outcome:?}");
+    assert!(Store::open(&tmp.db()).unwrap().list().unwrap().is_empty());
+}

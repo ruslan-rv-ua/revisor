@@ -1541,8 +1541,7 @@ impl List {
 
     /// The summary, which names the list (#3, #7, #8, #10, #25); `None` before the first
     /// comparison. The window takes it as [`List::list_name`] and in
-    /// [`List::comparison_text`].
-    #[cfg_attr(not(test), expect(dead_code))]
+    /// [`List::comparison_text`], and the command line ends a comparison with it (TASK-47).
     pub fn summary(&self) -> Option<String> {
         self.shown.as_ref().map(|shown| self.summary_line(shown))
     }

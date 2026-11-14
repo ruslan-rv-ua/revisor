@@ -11,6 +11,7 @@ use revisor_core::typical::TypicalFolder;
 
 use super::plural::{Category, category};
 use super::{Failure, Lang, Strings, error_code, in_sentence, lower_first};
+use crate::cli::args::{Command as CliCommand, UsageError};
 use crate::commands::{CommandId, MenuId, Pane, Reason, SubmenuId};
 use crate::details::{Attribute, Inaccessibility, Property, Unreadable};
 use crate::difference::{
@@ -1394,6 +1395,177 @@ impl Strings for En {
         "The path was not copied."
     }
 
+    fn cli_help(&self, topic: Option<CliCommand>, version: &str) -> String {
+        let profile = "-p, --profile <name>: the profile, by its name in the revisor window, \
+                       in any case. Required.";
+        let common = "--language en|uk: the language of the messages, of this help and of \
+                      the text report. English by default.\n\
+                      --timeout <seconds>: how long to wait while another revisor action holds \
+                      the profile; 0 fails at once. Without it, revisor-cli waits as long as it \
+                      takes.\n\
+                      --progress: a line of progress every 10 seconds.\n\
+                      -q, --quiet: errors only.\n\
+                      -h, --help: this help.";
+        match topic {
+            None => format!(
+                "revisor-cli {version}: snapshots of folders and the differences between them, \
+                 from the command line. It works with the profiles of the revisor window, in \
+                 the data folder beside revisor.exe.\n\
+                 \n\
+                 Usage:\n\
+                 revisor-cli snapshot --profile <name> [options]\n\
+                 revisor-cli compare --profile <name> --output <file> [options]\n\
+                 revisor-cli <command> --help\n\
+                 revisor-cli --version\n\
+                 \n\
+                 Commands:\n\
+                 snapshot: takes a snapshot of a profile and writes the number of the new \
+                 snapshot to the output.\n\
+                 compare: compares the latest snapshot of a profile with the one before it, or \
+                 with another, and writes the difference to a file.\n\
+                 \n\
+                 Options of both commands:\n\
+                 {profile}\n\
+                 {common}\n\
+                 --version: the version of revisor-cli.\n\
+                 \n\
+                 The output carries data only; messages go to the error stream. Ctrl+C \
+                 cancels the work.\n\
+                 \n\
+                 Exit codes:\n\
+                 0: done.\n\
+                 1: failed, or canceled with Ctrl+C.\n\
+                 2: a wrong call.\n"
+            ),
+            Some(CliCommand::Snapshot) => format!(
+                "revisor-cli snapshot: takes a snapshot of a profile, as the revisor window \
+                 does.\n\
+                 \n\
+                 Usage:\n\
+                 revisor-cli snapshot --profile <name> [--comment <text>] [options]\n\
+                 \n\
+                 The output gets the number of the new snapshot and nothing else, so a script \
+                 can keep it: $before = revisor-cli snapshot -p Programs. A snapshot is saved \
+                 even when some of its entries are inaccessible.\n\
+                 \n\
+                 Options:\n\
+                 {profile}\n\
+                 --comment <text>: the comment of the snapshot.\n\
+                 {common}\n"
+            ),
+            Some(CliCommand::Compare) => format!(
+                "revisor-cli compare: compares two snapshots of a profile and writes the whole \
+                 difference to a file, without the filters of the revisor window.\n\
+                 \n\
+                 Usage:\n\
+                 revisor-cli compare --profile <name> --output <file> [--with <number>] \
+                 [options]\n\
+                 \n\
+                 The difference goes from the earlier snapshot to the later one. The report \
+                 is the one the window exports: the text report writes numbers and dates as \
+                 the region of Windows does, and sizes and attributes as the settings of the \
+                 window say. A file already there is replaced, once the report is whole.\n\
+                 \n\
+                 Options:\n\
+                 {profile}\n\
+                 -o, --output <file>: the file of the report. Required.\n\
+                 --with <number>: compares the latest snapshot with this one rather than with \
+                 the one before it; the number is the one revisor-cli snapshot wrote.\n\
+                 --format text|csv: the format of the report. Without it, a file ending in \
+                 .csv gets CSV, and any other file the text report.\n\
+                 --delimiter comma|semicolon|tab|windows: the delimiter of CSV; windows is the \
+                 list separator of Windows. Without it, the setting “CSV delimiter” of the \
+                 window decides.\n\
+                 {common}\n"
+            ),
+        }
+    }
+
+    fn cli_usage_error(&self, error: &UsageError, command: Option<CliCommand>) -> String {
+        let why = match error {
+            UsageError::NoCommand => "no command: give snapshot or compare.".to_string(),
+            UsageError::UnknownCommand(name) => {
+                format!("unknown command “{name}”: give snapshot or compare.")
+            }
+            UsageError::UnknownOption(option) => format!("unknown option “{option}”."),
+            UsageError::NotForCommand { option, command } => {
+                format!("the command {} has no option {option}.", command.name())
+            }
+            UsageError::MissingValue(option) => format!("the option {option} needs a value."),
+            UsageError::UnexpectedValue(option) => format!("the option {option} takes no value."),
+            UsageError::UnexpectedArgument(argument) => {
+                format!("unexpected argument “{argument}”.")
+            }
+            UsageError::Repeated(option) => format!("the option {option} is given twice."),
+            UsageError::InvalidValue { option, value } => {
+                format!("“{value}” is not a value of the option {option}.")
+            }
+            UsageError::Missing(option) => format!("the option {option} is required."),
+            UsageError::QuietWithProgress => {
+                "the options --quiet and --progress do not go together.".to_string()
+            }
+        };
+        format!("revisor-cli: {why}\nFor help: {}", help_call(command))
+    }
+
+    fn cli_snapshot_started(&self, profile: &str) -> String {
+        format!("Taking a snapshot of the profile “{profile}”…")
+    }
+
+    fn cli_compare_started(&self, profile: &str, earlier: i64, later: i64) -> String {
+        format!("Comparing snapshots {earlier} and {later} of the profile “{profile}”…")
+    }
+
+    fn cli_waiting(&self) -> &'static str {
+        "Another revisor action holds the profile; waiting for it. Ctrl+C cancels."
+    }
+
+    fn cli_busy_too_long(&self, seconds: u64) -> String {
+        if seconds == 0 {
+            "the profile is busy (--timeout 0)".to_string()
+        } else {
+            format!("the profile was still busy after {seconds} s (--timeout)")
+        }
+    }
+
+    fn cli_run_as_administrator(&self, denied_text: &str) -> String {
+        format!(
+            "Entries inaccessible because of access rights: {denied_text}. To read them, run \
+             revisor-cli as administrator and take a new snapshot."
+        )
+    }
+
+    fn cli_unknown_profile(&self, name: &str, profiles: &[String]) -> String {
+        if profiles.is_empty() {
+            format!("There is no profile “{name}”, and no profiles at all yet.")
+        } else {
+            let names: Vec<String> = profiles.iter().map(|p| format!("“{p}”")).collect();
+            format!(
+                "There is no profile “{name}”. Profiles: {}.",
+                names.join(", ")
+            )
+        }
+    }
+
+    fn cli_profiles_not_read(&self, folder: &str, reason: &str) -> String {
+        format!("The folder of profiles “{folder}” cannot be read: {reason}.")
+    }
+
+    fn cli_too_few_snapshots(&self, profile: &str) -> String {
+        format!("The snapshots were not compared: the profile “{profile}” has fewer than two.")
+    }
+
+    fn cli_unknown_snapshot(&self, profile: &str, id: i64) -> String {
+        format!("The snapshots were not compared: the profile “{profile}” has no snapshot {id}.")
+    }
+
+    fn cli_with_latest(&self, id: i64) -> String {
+        format!(
+            "The snapshots were not compared: snapshot {id} is the latest; --with names \
+             another one to compare it with."
+        )
+    }
+
     fn key_space(&self) -> &'static str {
         "Spacebar"
     }
@@ -1411,5 +1583,13 @@ impl Strings for En {
     }
     fn key_context_menu(&self) -> &'static str {
         "Application key"
+    }
+}
+
+/// How the help of `command`, or of the program, is called.
+fn help_call(command: Option<CliCommand>) -> String {
+    match command {
+        Some(command) => format!("revisor-cli {} --help", command.name()),
+        None => "revisor-cli --help".to_string(),
     }
 }

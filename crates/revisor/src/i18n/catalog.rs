@@ -26,6 +26,7 @@ use revisor_core::typical::TypicalFolder;
 
 use super::{En, Failure, Strings, Uk};
 use crate::access::plain;
+use crate::cli::args::{Command as CliCommand, UsageError};
 use crate::commands::{COMMANDS, CommandId, MenuId, Pane, Reason, SubmenuId};
 use crate::details::{Attribute, Inaccessibility, Property, Unreadable};
 use crate::difference::{
@@ -1029,6 +1030,90 @@ fn entries_in(en: &dyn Strings, uk: &dyn Strings) -> Vec<Entry> {
             s.csv_delimiter_option(value).into()
         });
     }
+
+    // The command line (TASK-47).
+    let topics = [None, Some(CliCommand::Snapshot), Some(CliCommand::Compare)];
+    let _every_command_is_a_topic = |command: CliCommand| match command {
+        CliCommand::Snapshot | CliCommand::Compare => (),
+    };
+    for topic in topics {
+        let id = topic.map_or("program", CliCommand::name);
+        c.add(format!("cli_help.{id}"), |s| s.cli_help(topic, "{version}"));
+    }
+    let option = || "{option}".to_string();
+    let usage_errors = [
+        UsageError::NoCommand,
+        UsageError::UnknownCommand("{command}".into()),
+        UsageError::UnknownOption(option()),
+        UsageError::NotForCommand {
+            option: option(),
+            command: CliCommand::Snapshot,
+        },
+        UsageError::MissingValue(option()),
+        UsageError::UnexpectedValue(option()),
+        UsageError::UnexpectedArgument("{argument}".into()),
+        UsageError::Repeated(option()),
+        UsageError::InvalidValue {
+            option: option(),
+            value: "{value}".into(),
+        },
+        UsageError::Missing(option()),
+        UsageError::QuietWithProgress,
+    ];
+    each_variant_in!(
+        usage_errors,
+        UsageError {
+            NoCommand,
+            UnknownCommand,
+            UnknownOption,
+            NotForCommand,
+            MissingValue,
+            UnexpectedValue,
+            UnexpectedArgument,
+            Repeated,
+            InvalidValue,
+            Missing,
+            QuietWithProgress
+        }
+    );
+    for error in &usage_errors {
+        let id = format!("{error:?}");
+        let id = id.split(['(', ' ']).next().unwrap_or_default().to_string();
+        c.add(format!("cli_usage_error.{id}"), |s| {
+            s.cli_usage_error(error, None)
+        });
+    }
+    c.add("cli_usage_error.with_command", |s| {
+        s.cli_usage_error(&UsageError::Missing(option()), Some(CliCommand::Compare))
+    });
+    c.add("cli_snapshot_started", |s| {
+        s.cli_snapshot_started("{profile}")
+    });
+    c.add("cli_compare_started", |s| {
+        s.cli_compare_started("{profile}", 12, 15)
+    });
+    c.add("cli_waiting", |s| s.cli_waiting().into());
+    c.add("cli_busy_too_long", |s| s.cli_busy_too_long(30));
+    c.add("cli_busy_too_long.zero", |s| s.cli_busy_too_long(0));
+    c.add("cli_run_as_administrator", |s| {
+        s.cli_run_as_administrator("{count}")
+    });
+    c.add("cli_unknown_profile", |s| {
+        s.cli_unknown_profile("{name}", &["{profile}".into(), "{other profile}".into()])
+    });
+    c.add("cli_unknown_profile.none", |s| {
+        s.cli_unknown_profile("{name}", &[])
+    });
+    c.add("cli_profiles_not_read", |s| {
+        s.cli_profiles_not_read("{folder}", "{reason}")
+    });
+    c.add("cli_too_few_snapshots", |s| {
+        s.cli_too_few_snapshots("{profile}")
+    });
+    c.add("cli_unknown_snapshot", |s| {
+        s.cli_unknown_snapshot("{profile}", 7)
+    });
+    c.add("cli_with_latest", |s| s.cli_with_latest(15));
     c.add("settings_export", |s| s.settings_export().into());
     c.add("report_title", |s| s.report_title("{version}"));
     c.add("report_filter.types", |s| {

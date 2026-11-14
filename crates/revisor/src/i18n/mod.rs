@@ -20,6 +20,7 @@ use revisor_core::settings::{
 };
 use revisor_core::typical::TypicalFolder;
 
+use crate::cli::args::{Command as CliCommand, UsageError};
 use crate::commands::{CommandId, MenuId, Pane, Reason, SubmenuId};
 use crate::details::{Attribute, Inaccessibility, Property};
 use crate::difference::{
@@ -536,6 +537,36 @@ pub trait Strings {
     fn report_replaced(&self) -> &'static str;
     /// In which snapshot an entry is inaccessible and why, in its line of the report.
     fn report_inaccessible(&self, inaccessible: &Inaccessibility) -> String;
+
+    // The command line, revisor-cli (TASK-47). The names of the program, its commands, its
+    // options and their values are the same in both languages.
+    /// The help of revisor-cli (`topic` none) or of one of its commands, with `version`, the
+    /// version of revisor-cli: lines without columns aligned with spaces (#11).
+    fn cli_help(&self, topic: Option<CliCommand>, version: &str) -> String;
+    /// A wrong call (#7): «revisor-cli: <why>», then where its help is: of `command`, the
+    /// command named, or of the program.
+    fn cli_usage_error(&self, error: &UsageError, command: Option<CliCommand>) -> String;
+    /// The line that starts a snapshot of `profile`.
+    fn cli_snapshot_started(&self, profile: &str) -> String;
+    /// The line that starts a comparison: the numbers of both snapshots, the earlier first.
+    fn cli_compare_started(&self, profile: &str, earlier: i64, later: i64) -> String;
+    /// Said once, when another action of revisor holds the profile (#10).
+    fn cli_waiting(&self) -> &'static str;
+    /// Why the work failed when the profile stayed busy past `--timeout <seconds>`.
+    fn cli_busy_too_long(&self, seconds: u64) -> String;
+    /// The advice after a snapshot with entries closed by rights, when revisor-cli does not
+    /// run as administrator (#9).
+    fn cli_run_as_administrator(&self, denied_text: &str) -> String;
+    /// No profile has the name `name`: `profiles` are the names there are.
+    fn cli_unknown_profile(&self, name: &str, profiles: &[String]) -> String;
+    /// The folder of profiles could not be read.
+    fn cli_profiles_not_read(&self, folder: &str, reason: &str) -> String;
+    /// The profile has fewer than two snapshots to compare.
+    fn cli_too_few_snapshots(&self, profile: &str) -> String;
+    /// `--with` names no snapshot of the profile.
+    fn cli_unknown_snapshot(&self, profile: &str, id: i64) -> String;
+    /// `--with` names the latest snapshot, which it is to be compared with.
+    fn cli_with_latest(&self, id: i64) -> String;
 
     // Key names that are not printed on most keyboards.
     fn key_space(&self) -> &'static str;

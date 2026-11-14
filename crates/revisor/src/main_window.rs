@@ -26,9 +26,7 @@ use revisor_core::settings::{
     FocusAfterSnapshot, Language, Settings, Theme,
 };
 use revisor_core::snapshot::{Phase, Report, SnapshotError};
-use revisor_core::store::{
-    Compacted, FolderState, ProfileSettings, SnapshotInfo, Store, StoreError, Unavailable,
-};
+use revisor_core::store::{Compacted, ProfileSettings, SnapshotInfo, Store, StoreError};
 use wxdragon::prelude::*;
 
 use crate::access::{Dispatcher, Name, Target, compose, field_label, plain};
@@ -53,6 +51,7 @@ use crate::message_box::{ask_text, choose, confirm, tell};
 use crate::profile_window::{self, Purpose};
 use crate::settings_window::{self, Values};
 use crate::snapshot_list::{Native, SnapshotList};
+use crate::snapshot_text;
 use crate::snapshots::{Arrival, arrival, arrival_after_comparison};
 use crate::sound::{self, SoundSetting};
 use crate::state::{AppState, ChangeType, ShownTypes, SortColumn, Sources};
@@ -3045,36 +3044,12 @@ impl MainWindow {
     /// What a saved snapshot says (TASK-8): how many entries it holds, how many of them
     /// are inaccessible, and which folders it did not find.
     fn snapshot_report(&self, report: &Report) -> String {
-        let entries = win32::format::format_count(Locale::USER, report.entries);
-        self.snapshot_report_after(self.s.snapshot_saved(report.entries, &entries), report)
+        snapshot_text::report(self.s, report)
     }
 
-    /// `first`, then what a saved snapshot says after how many entries it holds: how many
-    /// of them are inaccessible, and which folders it did not find.
+    /// `first`, then what a saved snapshot says after how many entries it holds.
     fn snapshot_report_after(&self, first: String, report: &Report) -> String {
-        let s = self.s;
-        let mut text = first;
-        if report.inaccessible > 0 {
-            text.push(' ');
-            text.push_str(&s.entries_inaccessible(&win32::format::format_count(
-                Locale::USER,
-                report.inaccessible,
-            )));
-        }
-        let not_found: Vec<(String, String)> = report
-            .not_found()
-            .map(|f| {
-                (
-                    f.path.to_string_lossy().into_owned(),
-                    self.folder_state_reason(&f.state),
-                )
-            })
-            .collect();
-        if !not_found.is_empty() {
-            text.push(' ');
-            text.push_str(&s.folders_not_found(&not_found));
-        }
-        text
+        snapshot_text::report_after(self.s, first, report)
     }
 
     /// Offers a restart as administrator after the snapshot of `report` when rights
@@ -3093,21 +3068,6 @@ impl MainWindow {
                     self.restart_now(Some(profile));
                 });
             }
-        }
-    }
-
-    /// Why the snapshot did not scan a folder, in the interface's words: the reason of an
-    /// unavailable folder is the comparison's (TASK-25), and a Windows error says the folder
-    /// could not be read before it.
-    fn folder_state_reason(&self, state: &FolderState) -> String {
-        let s = self.s;
-        match state {
-            FolderState::Scanned { .. } => String::new(),
-            FolderState::Missing => s.folder_missing().into(),
-            FolderState::Unavailable(reason @ Unavailable::Error(_)) => {
-                s.folder_unreachable(&difference::unavailable_reason(s, reason))
-            }
-            FolderState::Unavailable(reason) => difference::unavailable_reason(s, reason),
         }
     }
 

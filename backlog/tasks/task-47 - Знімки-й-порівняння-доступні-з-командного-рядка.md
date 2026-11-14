@@ -1,10 +1,11 @@
 ---
 id: TASK-47
 title: Знімки й порівняння доступні з командного рядка
-status: To Do
-assignee: []
+status: In Progress
+assignee:
+  - '@claude'
 created_date: 2026-10-30 15:57
-updated_date: '2026-11-14T19:45:00Z'
+updated_date: '2026-11-14T20:34:00Z'
 labels: []
 milestone: m-6
 dependencies:
@@ -102,3 +103,24 @@ ordinal: 35000
 - [ ] #5 Бриф і ADR чи README оновлено (якщо задача змінила поведінку чи рішення)
 - [ ] #6 Нові вікна й контроли мають клавіші доступу за документом «Клавіші доступу» (якщо задача їх додає)
 <!-- DOD:END -->
+
+## Implementation Plan
+
+<!-- SECTION:PLAN:BEGIN -->
+Рішення плану (2026-11-14, з автором). Спершу revisor-cli було зібрано другим [[bin]] крейта застосунку, але так wxWidgets потрапляє в revisor-cli.exe (5,3 МБ) через #[no_mangle]-функції wxdragon, які rustc лишає в кожному exe з бібліотекою застосунку. Автор вирішив розплутати зараз. Остаточна будова — три бібліотечні шари й два exe:
+- revisor-core — як був, плюс snapshot::take_when_free: чекання зайнятої бази за правилом ADR-0012;
+- revisor-ui (новий, без wx; назву обрав автор) — усе спільне для вікна й командного рядка: i18n (рядки обома мовами, каталог вичитки), commands (лише ідентифікатори CommandId, MenuId, SubmenuId, Pane, Reason — рядки їх називають), difference (модель різниці, звіт, CSV, дерево), details, export (запис через тимчасовий файл), failure, format (колишній win32/format), snapshot_text, data (тека data, файл налаштувань, тека профілів), cli (типи Command і UsageError, які називають рядки);
+- revisor (застосунок) — вікна на wxDragon; таблиця команд, меню й клавіші лишаються тут; Arrival/arrival/arrival_after_snapshot з difference.rs переїжджають у застосунок (вони про фокус вікна); каталог застосунку додає до каталогу revisor-ui пункти меню з клавішами;
+- revisor-cli (новий крейт, консольний exe) — main.rs, args.rs (lexopt), interrupt.rs (Ctrl+C), власні build.rs і resources/cli.rc (іконка з crates/revisor/resources), тести модуля й тест зібраного exe.
+Довідку, помилки й коди виходу пишемо самі; типово англійською, --language uk — українською. Самого релізу 0.5.0 задача не робить.
+
+1. [зроблено] Ядро: snapshot::take_when_free і SnapshotWork::when_free, Progress::is_waiting, тести на чекання й скасування.
+2. [зроблено, проміжний стан, зафіксовано комітом] revisor-cli як другий exe крейта застосунку: модуль cli (виконання, args, interrupt), рядки в i18n обома мовами й у каталозі, тести розбору, вибору знімків, кодів виходу, запису звітів і зайнятого профілю; cli.rc і build.rs на два exe; тест versioninfo для обох .rc; тест зібраного exe (консольна підсистема, коди виходу через cmd і PowerShell).
+3. Крейт revisor-ui: перенести i18n, difference (без Arrival), details, export (без open), failure, win32/format → format, snapshot_text; додати commands (ідентифікатори), cli (типи), data; plain з access → i18n. Каталог: entries() для всіх методів Strings, перелік CommandId через all!; тест «каталог викликає кожен метод» лишається з каталогом.
+4. Застосунок: lib.rs бере модулі з revisor_ui через use, щоб шляхи crate::difference тощо не змінилися; commands.rs і access.rs реекспортують ідентифікатори й plain, win32/mod.rs — format; Arrival з тестами — в окремий модуль застосунку; export::open → win32::shell::open_file; каталог застосунку = каталог revisor-ui + пункти меню з клавішами; приклад strings без змін.
+5. Крейт revisor-cli: cli.rs → main.rs, args.rs, interrupt.rs, тести; build.rs (маніфест + cli.rc); Cargo.toml (revisor-core, revisor-ui, lexopt, windows-sys Console; dev rusqlite). Прибрати [[bin]] і cli.rc з крейта застосунку, build.rs застосунку повернути до одного .rc. Перевірити розмір revisor-cli.exe у release і що wx у нього не потрапляє.
+6. Ліцензії: THIRD-PARTY-LICENSES.txt генерувати для всього workspace (-m Cargo.toml), щоб lexopt був у файлі, який показує «Про revisor»; CI й release.yml беруть ту саму команду.
+7. Воркфлоу релізу й пакування (критерій #14, без самого релізу): release.yml збирає й перевіряє обидва exe (розмір ≤ 10 МіБ, без DLL C runtime, VERSIONINFO), публікує чотири файли, обидва PDB — в артефакт; packaging/scoop/revisor.json: масиви url і hash, bin з обома exe, autoupdate для обох.
+8. Документи: ADR-0015 переписати (окремий крейт над revisor-ui), доповнення ADR-0005 (три шари) і ADR-0010 (два exe); бриф (розділ 5, структура коду), «Випуск релізу», README.md і README.uk.md (розділ про командний рядок), CHANGELOG (Unreleased).
+9. cargo fmt, cargo test --workspace, cargo clippy -D warnings; підсумок; Done; злиття в develop через git flow (--no-ff), без push.
+<!-- SECTION:PLAN:END -->
