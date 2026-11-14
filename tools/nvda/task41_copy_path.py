@@ -1,6 +1,9 @@
 """Live NVDA check of TASK-41: the path of the entry in focus can be copied.
 
-    python -X utf8 tools\\nvda\\task41_copy_path.py uk|en
+    python -X utf8 tools\\nvda\\task41_copy_path.py uk|en [copy,busy]
+
+The parts go second, comma-separated: ``copy`` (the default) runs steps 1–7 below, ``busy``
+step 8 alone.
 
 The language goes into the settings file of the scratch folder; the Ukrainian layout is on.
 The profile «Програми» watches a small folder of the scratch, which the script changes
@@ -23,6 +26,12 @@ watches the clipboard's sequence number and reads the text only once it changed.
 6. A new folder of 1,050 files, Ctrl+F5: on its node «Ще…» Ctrl+Shift+C says why it cannot
    copy, and the clipboard stays as it was (#4).
 7. revisor closes: the path copied last is still on the clipboard, as it was flushed.
+8. Part ``busy``: the script itself holds the clipboard open, longer than the 0.2 s
+   wxWidgets tries for. Ctrl+Shift+C then leaves the clipboard as it was, the status bar says
+   «Шлях не скопійовано.», and wxWidgets says why in an English window of its own, «Revisor
+   Error», which wxDragon cannot turn off. That window takes the focus at once, so NVDA says
+   it instead of the status message; Enter closes it, the focus is back on its row, and
+   NVDA+End says the status message (#9).
 
 The last line is ``all heard`` or what NVDA did not say or did not happen.
 """
@@ -39,11 +48,13 @@ from revisor_nvda import (  # noqa: E402
     SCRATCH, VK_APPS, VK_CONTROL, VK_DOWN, VK_END, VK_ESCAPE, VK_F5, VK_F6, VK_HOME, VK_MENU,
     VK_RETURN, VK_RIGHT, VK_SHIFT, VK_TAB, App, children, class_name, control_text,
     focused_class, focused_window, foreground_title, item_count, key, make_settings, prepare,
-    snapshot_list, u32, ukrainian_layout, vk, wait_for,
+    snapshot_list, u32, ukrainian_layout, vk, wait_for, window_text,
 )
 
 LANG = sys.argv[1] if len(sys.argv) > 1 else "uk"
 assert LANG in ("uk", "en"), "the first argument is uk or en"
+PARTS = set(sys.argv[2].split(",")) if len(sys.argv) > 2 else {"copy"}
+assert PARTS <= {"copy", "busy"}, "the parts are copy and busy"
 WATCHED = os.path.join(SCRATCH, "watched")
 BIG_FILES = 1050
 
@@ -76,6 +87,7 @@ WORDS = {
         "no_difference": "Копіювати шлях: різниці ще немає.",
         "copied": "Шлях скопійовано.",
         "copied_path": "Шлях скопійовано: ",
+        "not_copied": "Шлях не скопійовано.",
         "more": "Копіювати шлях: вузол «Ще…» — не файл і не тека.",
         "next": "клавіша Enter покаже наступні 1000",
         "settings": "Налаштування",
@@ -88,6 +100,7 @@ WORDS = {
         "no_difference": "Copy path: there is no difference yet.",
         "copied": "Path copied.",
         "copied_path": "Path copied: ",
+        "not_copied": "The path was not copied.",
         "more": "Copy path: a “more” node is not a file or a folder.",
         "next": "press Enter to show the next 1,000",
         "settings": "Settings",
@@ -419,6 +432,42 @@ def the_more_node(app):
     check(text is None, "the clipboard stays as it was")
 
 
+def busy_clipboard(app):
+    if focused_window() == snapshot_list(app.main):
+        press(VK_F6)
+        app.step("F6: the difference", 1.5)
+    press(VK_HOME)
+    app.step("Home", 1.5)
+    name = focused_name()
+    before = sequence()
+    assert u32.OpenClipboard(None), "the script could not open the clipboard"
+    try:
+        press(VK_CONTROL, VK_SHIFT, vk("C"))
+        lines = app.step(f"Ctrl+Shift+C on «{name}», the clipboard held by the script", 2.5)
+    finally:
+        u32.CloseClipboard()
+    said = " ".join(lines)
+    # The window of wxWidgets takes the focus at once, and NVDA drops the status message
+    # for it: the message is checked in the status bar, and heard again with NVDA+End.
+    print(f"   NVDA said the message at once: {WORDS['not_copied'] in said}")
+    check(WORDS["copied"] not in said, "nothing says the path was copied")
+    check(sequence() == before, "the clipboard stays as it was")
+    status = status_text(app.main)
+    print(f"   the status bar: {status!r}")
+    check(status == WORDS["not_copied"], "the status bar says the path was not copied")
+    box = u32.GetForegroundWindow()
+    title = window_text(box)
+    print(f"   foreground: {title!r} ({class_name(box)})")
+    check(box != app.main, "wxWidgets says why in a window of its own")
+    check(title in said, "NVDA says the window of wxWidgets")
+    if box != app.main:
+        key(VK_RETURN)
+        app.step("Enter: the window of wxWidgets closed", 2)
+    check(u32.GetForegroundWindow() == app.main and focused_name() == name,
+          "the focus is back on its row")
+    heard(app.repeat_last_message("NVDA+End: the status bar again"), WORDS["not_copied"])
+
+
 def main():
     paths = prepare({"Програми": ([WATCHED], [])})
     write("a.txt", "a")
@@ -438,7 +487,8 @@ def main():
         ukrainian_layout(app.main)
         time.sleep(0.5)
         app.step("start", 2)
-        before_any_difference(app)
+        if "copy" in PARTS:
+            before_any_difference(app)
 
         press(VK_F5)
         snapshots(app, 1)
@@ -452,20 +502,24 @@ def main():
         snapshots(app, 2)
         app.step("Ctrl+F5: the difference", 3)
 
-        the_list(app, expected)
-        menu_and_context_menu(app, expected)
-        the_setting(app, expected)
-        the_tree(app)
-        the_more_node(app)
+        if "copy" in PARTS:
+            the_list(app, expected)
+            menu_and_context_menu(app, expected)
+            the_setting(app, expected)
+            the_tree(app)
+            the_more_node(app)
+        if "busy" in PARTS:
+            busy_clipboard(app)
         u32.SetForegroundWindow(app.main)
         time.sleep(0.5)
         app.speech.new()
-    # The copy was flushed: it outlives revisor.
-    time.sleep(1)
-    last = last_copied[-1] if last_copied else None
-    print(f"\n   copied last: {last!r}")
-    check(last is not None and clipboard_text() == last,
-          "the path copied last stays on the clipboard after revisor closed")
+    if "copy" in PARTS:
+        # The copy was flushed: it outlives revisor.
+        time.sleep(1)
+        last = last_copied[-1] if last_copied else None
+        print(f"\n   copied last: {last!r}")
+        check(last is not None and clipboard_text() == last,
+              "the path copied last stays on the clipboard after revisor closed")
 
 
 main()
