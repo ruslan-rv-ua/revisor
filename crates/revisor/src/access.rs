@@ -18,6 +18,9 @@ use std::rc::Rc;
 use wxdragon::prelude::*;
 
 use crate::i18n::{En, Lang, Strings};
+// The catalog of the strings uses `plain` too, so it lives beside them in revisor-ui
+// (TASK-47).
+pub use crate::i18n::plain;
 use crate::keys::Shortcut;
 use crate::win32;
 
@@ -47,22 +50,6 @@ fn marks(name: &str) -> impl Iterator<Item = char> + '_ {
         }
         None
     })
-}
-
-/// `name` as text, say in a window title or a message: without its access key mark.
-pub fn plain(name: &str) -> String {
-    let mut text = String::with_capacity(name.len());
-    let mut chars = name.chars();
-    while let Some(c) = chars.next() {
-        if c == '&' {
-            if let Some(next) = chars.next() {
-                text.push(next);
-            }
-        } else {
-            text.push(c);
-        }
-    }
-    text
 }
 
 /// The label of a name whose English is `english` and whose words in the language of `s`

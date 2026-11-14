@@ -29,15 +29,13 @@ use revisor_core::path::{eq_ignore_case_os, upcase};
 use revisor_core::profiles::ProfileFile;
 use revisor_core::scan::{Entry, EntryKind, VersionInfo};
 use revisor_core::settings::{
-    AttributeFormat, ChangeType, DifferenceSort, DifferenceView, FocusAfterComparison, ShownTypes,
-    SizeFormat, SortColumn, TreeNodeText,
+    AttributeFormat, ChangeType, DifferenceSort, DifferenceView, ShownTypes, SizeFormat,
+    SortColumn, TreeNodeText,
 };
 use revisor_core::store::{SnapshotInfo, Unavailable};
 
-use crate::commands::Pane;
 use crate::details::{self, Formats, Inaccessibility, Property, Unreadable};
 use crate::i18n::Strings;
-use crate::keyboard::Focus;
 
 mod csv;
 mod report;
@@ -1161,6 +1159,11 @@ impl List {
         self.shown.as_ref().map_or(0, |shown| shown.visible.len())
     }
 
+    /// Whether the list shows no row.
+    pub fn is_empty(&self) -> bool {
+        self.len() == 0
+    }
+
     /// How many rows the difference has, shown or not.
     pub fn total(&self) -> usize {
         self.shown.as_ref().map_or(0, |shown| shown.rows.len())
@@ -2078,53 +2081,6 @@ fn count<'a>(rows: impl IntoIterator<Item = &'a Row>, difference: &Difference) -
         }
     }
     counts
-}
-
-/// What the window does with a difference that has just arrived.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub enum Arrival {
-    /// The difference takes the place of the one shown; the focus stays where it is, and
-    /// the end is said without it.
-    Replace,
-    /// The difference takes the place of the one shown, and the keyboard focus moves to
-    /// its first row: into a new list, which is announced as on coming to it from
-    /// elsewhere, also when the focus was in the old one (#21).
-    Focus,
-    /// The profile of the snapshot of «Знімок + порівняння» is opened in place of another
-    /// one, and the difference arrives as with `Focus` (TASK-12 #7).
-    OpenProfileAndFocus,
-}
-
-/// What happens when a comparison ends under the setting «Фокус після порівняння», with
-/// the focus at `focus` (TASK-11 #12, #13, #21).
-/// The focus still where it was when the comparison started, or on its progress row,
-/// which goes away with it, counts as not moved.
-pub fn arrival(setting: FocusAfterComparison, focus: Focus) -> Arrival {
-    match setting {
-        _ if focus.in_list(Pane::Difference) => Arrival::Focus,
-        FocusAfterComparison::Always => Arrival::Focus,
-        FocusAfterComparison::Never => Arrival::Replace,
-        FocusAfterComparison::IfNotMoved if focus.unmoved || focus.progress => Arrival::Focus,
-        FocusAfterComparison::IfNotMoved => Arrival::Replace,
-    }
-}
-
-/// What happens when the comparison of «Знімок + порівняння» ends (TASK-12 #5, #7): as
-/// after any comparison while the snapshot's profile is open, `of_open_profile`, with the
-/// focus counted from the command's start. Another profile opened meanwhile has moved the
-/// focus, so it goes to the difference only with «Завжди», which opens the snapshot's
-/// profile again, or when it is in the difference list already (TASK-11 #21).
-pub fn arrival_after_snapshot(
-    setting: FocusAfterComparison,
-    focus: Focus,
-    of_open_profile: bool,
-) -> Arrival {
-    match setting {
-        _ if of_open_profile => arrival(setting, focus),
-        FocusAfterComparison::Always => Arrival::OpenProfileAndFocus,
-        _ if focus.in_list(Pane::Difference) => Arrival::Focus,
-        _ => Arrival::Replace,
-    }
 }
 
 #[cfg(test)]

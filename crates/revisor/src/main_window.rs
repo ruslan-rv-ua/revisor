@@ -27,12 +27,14 @@ use revisor_core::settings::{
 };
 use revisor_core::snapshot::{Phase, Report, SnapshotError};
 use revisor_core::store::{Compacted, ProfileSettings, SnapshotInfo, Store, StoreError};
+use revisor_ui::data::{PROFILES_DIR, SETTINGS_FILE};
 use wxdragon::prelude::*;
 
 use crate::access::{Dispatcher, Name, Target, compose, field_label, plain};
 use crate::commands::{COMMANDS, CommandId, CommandKind, MenuId, Pane, Reason, command};
 use crate::compare_window;
-use crate::difference::{self, Column, List, Location, View};
+use crate::difference::{Column, List, Location, View};
+use crate::difference_arrival;
 use crate::difference_tree::{self, Entry, More, Open, TreeView};
 use crate::explorer::{self, Reveal};
 use crate::export::{self, Exported};
@@ -86,9 +88,6 @@ const COMPARISON_BAR_AFTER: Duration = Duration::from_secs(5);
 /// How long the window waits between its looks at a comparison that still reads the
 /// database it is about to write or delete (TASK-11 #17).
 const HOLD_RETRY: Duration = Duration::from_millis(50);
-
-/// The file of the application's settings in the data folder (ADR-0007).
-pub const SETTINGS_FILE: &str = "settings.db";
 
 /// The widths of the difference list's columns, in the order of [`Column::ALL`]: the
 /// folder, the longest, comes last (TASK-13 #12).
@@ -548,7 +547,7 @@ impl MainWindow {
             access_keys: Dispatcher::default(),
             said_waiting: Cell::new(None),
             comparison_focus: Cell::new(ptr::null_mut()),
-            profiles_dir: data_dir.join("profiles"),
+            profiles_dir: data_dir.join(PROFILES_DIR),
             settings,
             profiles: RefCell::new(Vec::new()),
             open_index: Cell::new(None),
@@ -1885,8 +1884,8 @@ impl MainWindow {
         let Ended { profile, outcome } = ended;
         match outcome {
             Ok(Outcome::Done(difference)) => {
-                let arrival = difference::arrival(self.focus_after_comparison(), focus);
-                let to_difference = arrival == difference::Arrival::Focus;
+                let arrival = difference_arrival::arrival(self.focus_after_comparison(), focus);
+                let to_difference = arrival == difference_arrival::Arrival::Focus;
                 self.show_difference(difference, profile, to_difference);
                 if to_difference {
                     // The focus says it: the status bar only stops showing the
@@ -2594,7 +2593,7 @@ impl MainWindow {
             Ok(Outcome::Done(written)) => {
                 self.say(&s.exported(&name));
                 if self.open_after_export()
-                    && let Err(e) = export::open(&written)
+                    && let Err(e) = win32::shell::open_file(&written)
                 {
                     self.fail(&s.open_failed(&reason(s, &e)));
                 }
@@ -2748,15 +2747,15 @@ impl MainWindow {
         let done = matches!(ended.outcome, Ok(Outcome::Done(_)));
         let (to_difference, text) = match ended.outcome {
             Ok(Outcome::Done(difference)) => {
-                let arrival = difference::arrival_after_snapshot(
+                let arrival = difference_arrival::arrival_after_snapshot(
                     self.focus_after_comparison(),
                     focus,
                     self.is_open(&profile),
                 );
-                if arrival == difference::Arrival::OpenProfileAndFocus {
+                if arrival == difference_arrival::Arrival::OpenProfileAndFocus {
                     self.open_profile_at(&profile.path);
                 }
-                let to_difference = arrival != difference::Arrival::Replace;
+                let to_difference = arrival != difference_arrival::Arrival::Replace;
                 self.show_difference(difference, profile.clone(), to_difference);
                 let mut text = self.snapshot_report(&report);
                 // The focus on the difference says the comparison is over.

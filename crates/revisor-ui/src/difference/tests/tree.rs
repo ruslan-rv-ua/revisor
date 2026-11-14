@@ -430,8 +430,8 @@ fn the_tree_keeps_up_with_a_million_rows() {
 
 #[test]
 fn a_node_more_says_how_many_nodes_it_stands_for_and_what_enter_shows() {
-    // TASK-37 #5, #6. The texts name the page's size themselves.
-    assert_eq!(crate::difference_tree::PAGE, 1000);
+    // TASK-37 #5, #6. The texts name the page's size themselves; the page of the tree view,
+    // `difference_tree::PAGE` of the application, is held to 1,000 by its own test.
     let list = tree_showing(difference(vec![sample()], Vec::new()));
     assert_eq!(
         list.tree_more_label(59000, false),

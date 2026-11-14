@@ -6,8 +6,8 @@ use revisor_core::snapshot::Report;
 use revisor_core::store::{FolderState, Unavailable};
 
 use crate::difference;
+use crate::format::{self, Locale};
 use crate::i18n::Strings;
-use crate::win32::format::{self, Locale};
 
 /// What the snapshot of `report` says.
 pub fn report(s: &dyn Strings, report: &Report) -> String {

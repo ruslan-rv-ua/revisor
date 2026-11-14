@@ -20,25 +20,16 @@ fn main() {
     println!("cargo:rerun-if-changed=build.rs");
 }
 
-/// Compiles each exe's resources (its icon and VERSIONINFO) to a `.res` and hands it to the
-/// linker of that exe alone: `resources/app.rc` for the window, `resources/cli.rc` for the
-/// command line (TASK-47). The manifest stays with embed-manifest above, which passes it to
-/// the linker of both with `/MANIFEST:EMBED`, so a `.res` carries no RT_MANIFEST of its own.
+/// Compiles `resources/app.rc` (the icon and VERSIONINFO) to a `.res` and hands it to the
+/// linker. The manifest stays with embed-manifest above, which passes it to the linker with
+/// `/MANIFEST:EMBED`, so the `.res` carries no RT_MANIFEST of its own.
 fn embed_resources() {
+    println!("cargo:rerun-if-changed=resources/app.rc");
     println!("cargo:rerun-if-changed=resources/app.ico");
-    for (bin, rc) in [("revisor", "app"), ("revisor-cli", "cli")] {
-        let res = compile_resources(rc);
-        println!("cargo:rustc-link-arg-bin={bin}={}", res.display());
-    }
-}
-
-/// Compiles `resources/<name>.rc` to `<name>.res` in the build's output folder.
-fn compile_resources(name: &str) -> PathBuf {
-    println!("cargo:rerun-if-changed=resources/{name}.rc");
 
     let resources = Path::new(env!("CARGO_MANIFEST_DIR")).join("resources");
     let out_dir = PathBuf::from(std::env::var_os("OUT_DIR").expect("OUT_DIR is set by cargo"));
-    let res = out_dir.join(format!("{name}.res"));
+    let res = out_dir.join("app.res");
     let compiler = resource_compiler();
     let status = Command::new(&compiler)
         // The .rc names its icon relatively; the include path makes it findable from
@@ -47,7 +38,7 @@ fn compile_resources(name: &str) -> PathBuf {
         .arg(&resources)
         .arg("/FO")
         .arg(&res)
-        .arg(resources.join(format!("{name}.rc")))
+        .arg(resources.join("app.rc"))
         .status()
         .unwrap_or_else(|e| {
             panic!(
@@ -56,7 +47,8 @@ fn compile_resources(name: &str) -> PathBuf {
             )
         });
     assert!(status.success(), "{} failed: {status}", compiler.display());
-    res
+
+    println!("cargo:rustc-link-arg-bins={}", res.display());
 }
 
 /// `llvm-rc` from the LLVM installation `LIBCLANG_PATH` points at. The build already needs

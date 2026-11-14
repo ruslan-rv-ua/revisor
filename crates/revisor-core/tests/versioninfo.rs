@@ -1,14 +1,14 @@
 //! The VERSIONINFO of both exes, checked against the version Cargo carries.
 //!
 //! A version bump is a `Cargo.toml` edit, and `crates/revisor/resources/app.rc` and
-//! `cli.rc` (revisor-cli.exe, TASK-47) are the files that are easy to forget. The check is pure text over two files read at compile time, so it
+//! `crates/revisor-cli/resources/cli.rc` (TASK-47) are the files that are easy to forget. The check is pure text over two files read at compile time, so it
 //! lives here, in the crate that links no wxWidgets (ADR-0005), rather than in the binary.
 //!
 //! The version compared against is this crate's, which is the binary's because both take
 //! `version.workspace = true`; that inheritance is asserted, not assumed.
 
 const APP_RC: &str = include_str!("../../revisor/resources/app.rc");
-const CLI_RC: &str = include_str!("../../revisor/resources/cli.rc");
+const CLI_RC: &str = include_str!("../../revisor-cli/resources/cli.rc");
 /// Each `.rc` with its name and the names of its exe.
 const RCS: [(&str, &str, &str); 2] = [
     ("app.rc", APP_RC, "revisor"),

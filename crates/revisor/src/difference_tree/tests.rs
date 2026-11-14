@@ -777,3 +777,10 @@ fn an_item_more_selected_is_not_the_node_of_the_model() {
     view.control().select(&more);
     assert!(!view.shows(Some(NodeId(1))));
 }
+
+#[test]
+fn the_page_is_the_thousand_the_texts_of_the_node_more_name() {
+    // TASK-37 #5, #6: `List::tree_more_label` of revisor-ui says "the next 1,000", so the page
+    // is a thousand nodes.
+    assert_eq!(PAGE, 1000);
+}

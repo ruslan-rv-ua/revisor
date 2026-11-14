@@ -1,7 +1,8 @@
-// revisor-cli.exe's resources (TASK-47): app.rc's icon and identity, with the console exe's
-// own description and names. build.rs compiles this file with llvm-rc for revisor-cli only.
-// Everything app.rc says about its statements holds here too, and the version fields must
-// match app.rc's, which crates/revisor-core/tests/versioninfo.rs checks for both files.
+// revisor-cli.exe's resources (TASK-47): the icon of revisor.exe, which build.rs makes
+// findable from crates/revisor/resources with an include path, and the console exe's own
+// identity. Everything crates/revisor/resources/app.rc says about its statements holds here
+// too, and the version fields must match app.rc's, which
+// crates/revisor-core/tests/versioninfo.rs checks for both files.
 //
 // No manifest here: embed-manifest in build.rs supplies the one RT_MANIFEST, and a second
 // one would be a duplicate resource (CVT1100).

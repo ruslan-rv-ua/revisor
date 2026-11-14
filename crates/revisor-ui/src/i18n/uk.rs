@@ -12,7 +12,7 @@ use revisor_core::typical::TypicalFolder;
 
 use super::plural::{Category, category};
 use super::{Failure, Lang, Strings, error_code, in_sentence, lower_first};
-use crate::cli::args::{Command as CliCommand, UsageError};
+use crate::cli::{Command as CliCommand, UsageError};
 use crate::commands::{CommandId, MenuId, Pane, Reason, SubmenuId};
 use crate::details::{Attribute, Inaccessibility, Property, Unreadable};
 use crate::difference::{

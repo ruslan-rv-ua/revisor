@@ -1,13 +1,14 @@
 //! revisor-cli, the command line (TASK-47, ADR-0015): `snapshot` takes a snapshot of a
 //! profile, and `compare` writes the difference of two of its snapshots to a file, in the
-//! format of the export from the window. The console exe `revisor-cli.exe` only calls
-//! [`run`]; everything else is here, over the same core and the same report as the window.
+//! format of the export from the window. A console program, so cmd, .bat files and
+//! PowerShell wait for it and get its exit code; it stands on `revisor-ui` and
+//! `revisor-core`, the same report and the same core as the window, and knows no wxDragon.
 //!
 //! stdout carries data only: the number of a new snapshot. Messages go to stderr: a line
 //! when the work starts and a summary when it ends, as the window's status bar says them;
 //! errors always, everything else unless `--quiet` (#9).
 
-pub mod args;
+mod args;
 mod interrupt;
 #[cfg(test)]
 mod tests;
@@ -29,13 +30,14 @@ use revisor_core::settings::{AttributeFormat, CsvDelimiter, Settings, SizeFormat
 use revisor_core::snapshot::{self, SnapshotError, SnapshotWork};
 use revisor_core::store::{self, Store, StoreError};
 
-use crate::difference::{List, View};
-use crate::export::{self, ExportWork, Exported, Format};
-use crate::failure::reason;
-use crate::i18n::{En, Lang, Strings, Uk};
-use crate::snapshot_text;
-use crate::win32::format::{self as regional, Locale, RegionalFormat};
 use args::{Action, Common, CompareArgs, ReportFormat, SnapshotArgs};
+use revisor_ui::data::{self, PROFILES_DIR, SETTINGS_FILE};
+use revisor_ui::difference::{List, View};
+use revisor_ui::export::{self, ExportWork, Exported, Format};
+use revisor_ui::failure::{self, reason};
+use revisor_ui::format::{self as regional, Locale, RegionalFormat};
+use revisor_ui::i18n::{En, Lang, Strings, Uk};
+use revisor_ui::snapshot_text;
 
 /// The exit codes (#8). Anything but 0 is a failure, so `$?` in PowerShell holds.
 pub const DONE: u8 = 0;
@@ -50,11 +52,11 @@ const TICK: Duration = Duration::from_millis(100);
 const PROGRESS_EVERY: Duration = Duration::from_secs(10);
 
 /// Runs revisor-cli with the arguments of this process and returns its exit code.
-pub fn run() -> ExitCode {
+fn main() -> ExitCode {
     // An administrator reads with the backup privilege, as the window does (TASK-8).
     let _ = elevation::enable_backup_privilege();
     let env = Env {
-        data_dir: crate::data_dir(),
+        data_dir: data::dir(),
         elevated: elevation::is_elevated(),
         interrupt: interrupt::install(),
         progress_every: PROGRESS_EVERY,
@@ -217,7 +219,7 @@ fn compare(console: &mut Console, env: &Env, args: &CompareArgs) -> Result<(), F
     let Some(profile) = find_profile(console, env, &mut watch, &args.common.profile)? else {
         return cancelled_comparison(console, &watch);
     };
-    let failed = |e: &dyn crate::failure::Cause| s.comparison_failed(&reason(s, e));
+    let failed = |e: &dyn failure::Cause| s.comparison_failed(&reason(s, e));
 
     // The snapshots there are, read as the comparison reads them: waiting while busy.
     let listing = Job::start(ListWork(profile.path.clone()));
@@ -363,7 +365,7 @@ fn find_profile(
     name: &str,
 ) -> Result<Option<ProfileFile>, Failed> {
     let s = console.s;
-    let dir = env.data_dir.join("profiles");
+    let dir = env.data_dir.join(PROFILES_DIR);
     let job = Job::start(ProfilesWork(dir.clone()));
     let waiting = |w: &AtomicBool| w.load(Ordering::Relaxed);
     let progress = |_: &AtomicBool| s.waiting_for_database().to_string();
@@ -434,7 +436,7 @@ struct Preferences {
 /// The settings of the window, or their defaults when there are none yet; a settings file
 /// that cannot be read is told, and its defaults are taken, as the window does.
 fn preferences(console: &mut Console, data_dir: &Path) -> Preferences {
-    let path = data_dir.join(crate::main_window::SETTINGS_FILE);
+    let path = data_dir.join(SETTINGS_FILE);
     let defaults = Preferences {
         size: SizeFormat::default(),
         attributes: AttributeFormat::default(),

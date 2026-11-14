@@ -20,7 +20,7 @@ use revisor_core::settings::{
 };
 use revisor_core::typical::TypicalFolder;
 
-use crate::cli::args::{Command as CliCommand, UsageError};
+use crate::cli::{Command as CliCommand, UsageError};
 use crate::commands::{CommandId, MenuId, Pane, Reason, SubmenuId};
 use crate::details::{Attribute, Inaccessibility, Property};
 use crate::difference::{
@@ -86,6 +86,22 @@ fn lower_first(text: &str) -> String {
         Some(first) => first.to_lowercase().chain(chars).collect(),
         None => String::new(),
     }
+}
+
+/// `name` as text, say in a window title or a message: without its access key mark.
+pub fn plain(name: &str) -> String {
+    let mut text = String::with_capacity(name.len());
+    let mut chars = name.chars();
+    while let Some(c) = chars.next() {
+        if c == '&' {
+            if let Some(next) = chars.next() {
+                text.push(next);
+            }
+        } else {
+            text.push(c);
+        }
+    }
+    text
 }
 
 /// A code of Windows or SQLite as help is searched for by it (TASK-26). A 32-bit code with

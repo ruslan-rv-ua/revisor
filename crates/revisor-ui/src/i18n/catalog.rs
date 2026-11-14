@@ -1,5 +1,7 @@
 //! Every interface string in both languages as plain text, for proofreading with a screen
-//! reader (TASK-17, ADR-0009): `cargo run -p revisor --example strings` writes it to a file.
+//! reader (TASK-17, ADR-0009): `cargo run -p revisor --example strings` writes it to a file,
+//! adding the labels only the window makes — the menu items with their keys — through the
+//! window's own `catalog` module (TASK-47).
 //!
 //! Each string has an id — the method of [`Strings`] and, for a string chosen by a value,
 //! that value — then its English and Ukrainian text. Parameters show as `{name}`, and a
@@ -24,16 +26,14 @@ use revisor_core::settings::{
 use revisor_core::store::Unavailable;
 use revisor_core::typical::TypicalFolder;
 
-use super::{En, Failure, Strings, Uk};
-use crate::access::plain;
-use crate::cli::args::{Command as CliCommand, UsageError};
-use crate::commands::{COMMANDS, CommandId, MenuId, Pane, Reason, SubmenuId};
+use super::{En, Failure, Strings, Uk, plain};
+use crate::cli::{Command as CliCommand, UsageError};
+use crate::commands::{CommandId, MenuId, Pane, Reason, SubmenuId};
 use crate::details::{Attribute, Inaccessibility, Property, Unreadable};
 use crate::difference::{
     Column, Counted, Field, InaccessibleIn, NodeText, PairText, RowChange, SizeChange,
     SnapshotText, SummaryText,
 };
-use crate::menus;
 
 /// Counts that pick every plural form of both languages.
 const COUNTS: [u64; 3] = [1, 3, 5];
@@ -70,6 +70,16 @@ pub struct Entry {
     pub id: String,
     pub en: String,
     pub uk: String,
+}
+
+/// A string of the window's own, for the catalog the window writes (TASK-47): `text` in
+/// each language.
+pub fn entry(id: impl Into<String>, text: impl Fn(&dyn Strings) -> String) -> Entry {
+    Entry {
+        id: id.into(),
+        en: text(&En),
+        uk: text(&Uk),
+    }
 }
 
 /// The strings gathered so far, each as the two languages give it.
@@ -121,60 +131,51 @@ fn entries_in(en: &dyn Strings, uk: &dyn Strings) -> Vec<Entry> {
         Difference
     });
 
-    let commands: Vec<CommandId> = COMMANDS.iter().map(|command| command.id).collect();
-    each_variant_in!(
-        commands,
-        CommandId {
-            NewProfile,
-            EditProfile,
-            DeleteProfile,
-            Settings,
-            RestartAsAdmin,
-            Exit,
-            TakeSnapshot,
-            SnapshotAndCompare,
-            Comment,
-            DeleteSnapshots,
-            CancelSnapshot,
-            CancelCompaction,
-            CancelComment,
-            CompareWithPrevious,
-            CompareWith,
-            CancelComparison,
-            Details,
-            ShowInExplorer,
-            CopyPath,
-            FilterByText,
-            ShowAdded,
-            ShowDeleted,
-            ShowModified,
-            ShowMoved,
-            ShowInaccessible,
-            SortByPath,
-            SortByName,
-            SortByChange,
-            SortByWhatChanged,
-            SortBySize,
-            SortByDateModified,
-            SortByFolder,
-            SortAscending,
-            SortDescending,
-            ViewAsList,
-            ViewAsTree,
-            Export,
-            CancelExport,
-            KeyboardShortcuts,
-            About,
-        }
-    );
-    for command in COMMANDS {
-        c.add(format!("command.{:?}", command.id), |s| {
-            plain(s.command(command.id))
-        });
-    }
-    for command in COMMANDS {
-        c.add(format!("command.{:?} (menu item)", command.id), |s| {
-            menus::menu_label(s, command).replace('\t', "  [Tab]  ")
+    let commands = all!(CommandId {
+        NewProfile,
+        EditProfile,
+        DeleteProfile,
+        Settings,
+        RestartAsAdmin,
+        Exit,
+        TakeSnapshot,
+        SnapshotAndCompare,
+        Comment,
+        DeleteSnapshots,
+        CancelSnapshot,
+        CancelCompaction,
+        CancelComment,
+        CompareWithPrevious,
+        CompareWith,
+        CancelComparison,
+        Details,
+        ShowInExplorer,
+        CopyPath,
+        FilterByText,
+        ShowAdded,
+        ShowDeleted,
+        ShowModified,
+        ShowMoved,
+        ShowInaccessible,
+        SortByPath,
+        SortByName,
+        SortByChange,
+        SortByWhatChanged,
+        SortBySize,
+        SortByDateModified,
+        SortByFolder,
+        SortAscending,
+        SortDescending,
+        ViewAsList,
+        ViewAsTree,
+        Export,
+        CancelExport,
+        KeyboardShortcuts,
+        About,
+    });
+    for command in commands {
+        c.add(format!("command.{command:?}"), |s| {
+            plain(s.command(command))
         });
     }
     let menu_ids = all!(MenuId {
@@ -186,16 +187,10 @@ fn entries_in(en: &dyn Strings, uk: &dyn Strings) -> Vec<Entry> {
     });
     for menu in menu_ids {
         c.add(format!("menu.{menu:?}"), |s| plain(s.menu(menu)));
-        c.add(format!("menu.{menu:?} (menu bar)"), |s| {
-            menus::top_menu_label(s, menu)
-        });
     }
     for submenu in all!(SubmenuId { SortBy }) {
         c.add(format!("submenu.{submenu:?}"), |s| {
             plain(s.submenu(submenu))
-        });
-        c.add(format!("submenu.{submenu:?} (menu item)"), |s| {
-            menus::submenu_label(s, submenu)
         });
     }
     let reasons = all!(Reason {
@@ -236,9 +231,6 @@ fn entries_in(en: &dyn Strings, uk: &dyn Strings) -> Vec<Entry> {
     c.add("navigation", |s| s.navigation().into());
     c.add("switch_panes", |s| s.switch_panes().into());
     c.add("context_menu", |s| s.context_menu().into());
-    c.add("shortcuts_text (the window «Keyboard shortcuts»)", |s| {
-        menus::shortcuts_text(s)
-    });
 
     for pane in panes {
         c.add(format!("pane.{pane:?}"), |s| s.pane(pane).into());
@@ -1185,14 +1177,19 @@ fn warning_name(warning: &Warning) -> &'static str {
     }
 }
 
-/// The catalog as text: per string a line with its id, then "en:" and "uk:" lines; the
-/// lines of a text with several lines follow, indented.
+/// The strings of revisor-ui as text, as [`text`] writes them.
 pub fn catalog() -> String {
+    text(&entries())
+}
+
+/// `entries` as text: per string a line with its id, then "en:" and "uk:" lines; the lines
+/// of a text with several lines follow, indented. The window adds its own entries to those
+/// of [`entries`] before it writes them (TASK-47).
+pub fn text(entries: &[Entry]) -> String {
     let mut text = String::from(
         "revisor: interface strings in English (en) and Ukrainian (uk).\n\
          {name} is a parameter; a count in parentheses after an id picks the plural form.\n",
     );
-    let entries = entries();
     text.push_str(&format!("Strings: {}.\n", entries.len()));
     for entry in entries {
         text.push('\n');
