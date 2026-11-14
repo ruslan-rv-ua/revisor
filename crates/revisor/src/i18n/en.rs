@@ -1212,6 +1212,22 @@ impl Strings for En {
         "S&how the copied path in the status bar"
     }
 
+    fn sound_after_snapshot(&self) -> &'static str {
+        "Play a &sound after a snapshot"
+    }
+
+    fn sound_after_snapshot_and_compare(&self) -> &'static str {
+        "Play a sound after Snapshot and &compare"
+    }
+
+    fn sound_only_after_long(&self) -> &'static str {
+        "&Only after operations longer than 10 seconds"
+    }
+
+    fn speak_status(&self) -> &'static str {
+        "Pass status bar messages to the screen &reader"
+    }
+
     fn other_users_folders(&self) -> &'static str {
         "Show &other users' folders in the typical folders list"
     }

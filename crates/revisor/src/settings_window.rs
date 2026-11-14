@@ -40,6 +40,10 @@ pub struct Values {
     pub other_users_folders: bool,
     pub open_after_export: bool,
     pub csv_delimiter: CsvDelimiter,
+    pub sound_after_snapshot: bool,
+    pub sound_after_snapshot_and_compare: bool,
+    pub sound_only_after_long: bool,
+    pub speak_status: bool,
 }
 
 /// The tabs of the window (TASK-44), in their order. Settings added later go into the tab
@@ -77,6 +81,10 @@ impl Page {
 pub(crate) enum Control {
     Language,
     Theme,
+    SoundAfterSnapshot,
+    SoundAfterSnapshotAndCompare,
+    SoundOnlyAfterLong,
+    SpeakStatus,
     FocusAfterSnapshot,
     ConfirmDeletion,
     OtherUsersFolders,
@@ -92,9 +100,13 @@ pub(crate) enum Control {
 
 impl Control {
     /// In tab order: tab by tab, as each tab shows them.
-    const ALL: [Control; 13] = [
+    const ALL: [Control; 17] = [
         Self::Language,
         Self::Theme,
+        Self::SoundAfterSnapshot,
+        Self::SoundAfterSnapshotAndCompare,
+        Self::SoundOnlyAfterLong,
+        Self::SpeakStatus,
         Self::FocusAfterSnapshot,
         Self::ConfirmDeletion,
         Self::OtherUsersFolders,
@@ -111,7 +123,12 @@ impl Control {
     /// The tab the control is on.
     fn page(self) -> Page {
         match self {
-            Self::Language | Self::Theme => Page::General,
+            Self::Language
+            | Self::Theme
+            | Self::SoundAfterSnapshot
+            | Self::SoundAfterSnapshotAndCompare
+            | Self::SoundOnlyAfterLong
+            | Self::SpeakStatus => Page::General,
             Self::FocusAfterSnapshot | Self::ConfirmDeletion | Self::OtherUsersFolders => {
                 Page::Snapshots
             }
@@ -130,6 +147,10 @@ impl Control {
         match self {
             Self::Language => |s| s.language(),
             Self::Theme => |s| s.theme(),
+            Self::SoundAfterSnapshot => |s| s.sound_after_snapshot(),
+            Self::SoundAfterSnapshotAndCompare => |s| s.sound_after_snapshot_and_compare(),
+            Self::SoundOnlyAfterLong => |s| s.sound_only_after_long(),
+            Self::SpeakStatus => |s| s.speak_status(),
             Self::FocusAfterSnapshot => |s| s.focus_after_snapshot(),
             Self::FocusAfterComparison => |s| s.focus_after_comparison(),
             Self::SizeFormat => |s| s.size_format(),
@@ -149,7 +170,11 @@ impl Control {
     fn is_check_box(self) -> bool {
         matches!(
             self,
-            Self::ConfirmDeletion
+            Self::SoundAfterSnapshot
+                | Self::SoundAfterSnapshotAndCompare
+                | Self::SoundOnlyAfterLong
+                | Self::SpeakStatus
+                | Self::ConfirmDeletion
                 | Self::WarnMissingEntry
                 | Self::ShowCopiedPath
                 | Self::OtherUsersFolders
@@ -203,6 +228,10 @@ struct Window {
     show_copied_path: CheckBox,
     csv_delimiter: Choice,
     open_after_export: CheckBox,
+    sound_after_snapshot: CheckBox,
+    sound_after_snapshot_and_compare: CheckBox,
+    sound_only_after_long: CheckBox,
+    speak_status: CheckBox,
 }
 
 /// A tab under construction: its panel and the column of its controls.
@@ -295,6 +324,33 @@ pub fn show(parent: &Frame, s: &'static dyn Strings, initial: Values) -> Option<
         &options,
         position(&Theme::ALL, &initial.theme),
     );
+    let sound_after_snapshot =
+        general.check_box(s, Control::SoundAfterSnapshot, initial.sound_after_snapshot);
+    let sound_after_snapshot_and_compare = general.check_box(
+        s,
+        Control::SoundAfterSnapshotAndCompare,
+        initial.sound_after_snapshot_and_compare,
+    );
+    let sound_only_after_long = general.check_box(
+        s,
+        Control::SoundOnlyAfterLong,
+        initial.sound_only_after_long,
+    );
+    let speak_status = general.check_box(s, Control::SpeakStatus, initial.speak_status);
+    // The threshold is about the sounds, so it is unavailable while both are off
+    // (TASK-46 #2).
+    let threshold_follows = {
+        let (a, b, threshold) = (
+            sound_after_snapshot,
+            sound_after_snapshot_and_compare,
+            sound_only_after_long,
+        );
+        move || threshold.enable(a.get_value() || b.get_value())
+    };
+    // The closure holds only the check boxes, which are handles, so it is copied.
+    threshold_follows();
+    sound_after_snapshot.on_toggled(move |_| threshold_follows());
+    sound_after_snapshot_and_compare.on_toggled(move |_| threshold_follows());
     general.finish(&notebook, s, Page::General);
 
     let snapshots = Tab::new(&notebook);
@@ -416,6 +472,10 @@ pub fn show(parent: &Frame, s: &'static dyn Strings, initial: Values) -> Option<
         show_copied_path,
         csv_delimiter,
         open_after_export,
+        sound_after_snapshot,
+        sound_after_snapshot_and_compare,
+        sound_only_after_long,
+        speak_status,
     });
     // Access keys by the key's position, so they work in the Ukrainian layout too
     // (document «Клавіші доступу»), and only those of the tab shown.
@@ -461,6 +521,15 @@ impl Window {
             Control::ShowCopiedPath => press(&self.show_copied_path),
             Control::OtherUsersFolders => press(&self.other_users),
             Control::OpenAfterExport => press(&self.open_after_export),
+            Control::SoundAfterSnapshot => press(&self.sound_after_snapshot),
+            Control::SoundAfterSnapshotAndCompare => press(&self.sound_after_snapshot_and_compare),
+            Control::SoundOnlyAfterLong => {
+                // A check box that is unavailable takes no key, as Windows has it.
+                if self.sound_only_after_long.is_enabled() {
+                    press(&self.sound_only_after_long);
+                }
+            }
+            Control::SpeakStatus => press(&self.speak_status),
         }
     }
 
@@ -502,6 +571,10 @@ impl Window {
                 .get(delimiter)
                 .copied()
                 .unwrap_or_default(),
+            sound_after_snapshot: self.sound_after_snapshot.get_value(),
+            sound_after_snapshot_and_compare: self.sound_after_snapshot_and_compare.get_value(),
+            sound_only_after_long: self.sound_only_after_long.get_value(),
+            speak_status: self.speak_status.get_value(),
         }
     }
 }
@@ -515,7 +588,18 @@ mod tests {
     fn each_tab_holds_its_settings_in_tab_order() {
         // TASK-44 #1.
         let on = |page| -> Vec<Control> { targets_of(page).into_iter().map(|t| t.id).collect() };
-        assert_eq!(on(Page::General), [Control::Language, Control::Theme]);
+        // TASK-46 #1: the sounds and the screen reader after the theme.
+        assert_eq!(
+            on(Page::General),
+            [
+                Control::Language,
+                Control::Theme,
+                Control::SoundAfterSnapshot,
+                Control::SoundAfterSnapshotAndCompare,
+                Control::SoundOnlyAfterLong,
+                Control::SpeakStatus,
+            ]
+        );
         assert_eq!(
             on(Page::Snapshots),
             [
@@ -626,6 +710,33 @@ mod tests {
             Control::OpenAfterExport.label(&Uk),
             "Відкривати файл після експорту (&O)"
         );
+        // TASK-46 #1: L and H are the language's and the theme's.
+        let pairs = [
+            (
+                Control::SoundAfterSnapshot,
+                "Play a &sound after a snapshot",
+                "Відтворювати звук після знімка (&S)",
+            ),
+            (
+                Control::SoundAfterSnapshotAndCompare,
+                "Play a sound after Snapshot and &compare",
+                "Відтворювати звук після «Знімок + порівняння» (&C)",
+            ),
+            (
+                Control::SoundOnlyAfterLong,
+                "&Only after operations longer than 10 seconds",
+                "Лише після операцій, довших за 10 секунд (&O)",
+            ),
+            (
+                Control::SpeakStatus,
+                "Pass status bar messages to the screen &reader",
+                "Передавати скрінрідеру повідомлення рядка стану (&R)",
+            ),
+        ];
+        for (control, en, uk) in pairs {
+            assert_eq!(control.label(&En), en);
+            assert_eq!(control.label(&Uk), uk);
+        }
         // TASK-40 #5.
         assert_eq!(Control::CsvDelimiter.label(&En), "CSV &delimiter:");
         assert_eq!(Control::CsvDelimiter.label(&Uk), "Роздільник у CSV (&D):");

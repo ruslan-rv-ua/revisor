@@ -989,6 +989,14 @@ fn entries_in(en: &dyn Strings, uk: &dyn Strings) -> Vec<Entry> {
     }
     c.add("warn_missing_entry", |s| plain(s.warn_missing_entry()));
     c.add("show_copied_path", |s| plain(s.show_copied_path()));
+    c.add("sound_after_snapshot", |s| plain(s.sound_after_snapshot()));
+    c.add("sound_after_snapshot_and_compare", |s| {
+        plain(s.sound_after_snapshot_and_compare())
+    });
+    c.add("sound_only_after_long", |s| {
+        plain(s.sound_only_after_long())
+    });
+    c.add("speak_status", |s| plain(s.speak_status()));
     c.add("other_users_folders", |s| plain(s.other_users_folders()));
     c.add("settings_general", |s| s.settings_general().into());
     c.add("settings_snapshots", |s| s.settings_snapshots().into());

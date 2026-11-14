@@ -1208,6 +1208,22 @@ impl Strings for Uk {
         "Показувати скопійований шлях у рядку стану"
     }
 
+    fn sound_after_snapshot(&self) -> &'static str {
+        "Відтворювати звук після знімка"
+    }
+
+    fn sound_after_snapshot_and_compare(&self) -> &'static str {
+        "Відтворювати звук після «Знімок + порівняння»"
+    }
+
+    fn sound_only_after_long(&self) -> &'static str {
+        "Лише після операцій, довших за 10 секунд"
+    }
+
+    fn speak_status(&self) -> &'static str {
+        "Передавати скрінрідеру повідомлення рядка стану"
+    }
+
     fn other_users_folders(&self) -> &'static str {
         "Показувати теки інших користувачів у переліку типових тек"
     }

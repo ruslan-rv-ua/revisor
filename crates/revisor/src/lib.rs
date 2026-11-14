@@ -1,6 +1,6 @@
 //! revisor, the application: the windows on wxDragon over `revisor-core` (ADR-0005).
 //! `main.rs` only calls [`run`]; the library is there so that the development tools in
-//! `examples/` can reach the interface strings (TASK-17).
+//! `examples/` can reach the interface strings (TASK-17) and the sounds (TASK-46).
 mod access;
 mod commands;
 mod compare_window;
@@ -22,6 +22,7 @@ mod profile_window;
 mod settings_window;
 mod snapshot_list;
 mod snapshots;
+pub mod sound;
 mod state;
 mod status;
 mod text_window;

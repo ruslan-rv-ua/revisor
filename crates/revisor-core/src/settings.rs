@@ -6,7 +6,8 @@
 //! the details of a change write attributes, whether showing a change in File Explorer
 //! warns when it is no longer on disk (TASK-14), whether the difference shows as a list or
 //! as a tree, with how much its nodes say (TASK-33), the theme of the interface
-//! (TASK-34), and whether the list of typical folders offers other users' folders (TASK-43).
+//! (TASK-34), whether the list of typical folders offers other users' folders (TASK-43),
+//! and which operations end with a sound and whether the status bar speaks (TASK-46).
 //! Each setting is one row of a key–value table, read and written through typed methods,
 //! so a later setting needs no change of the schema.
 
@@ -57,6 +58,10 @@ const KEY_EXPORT_FOLDER: &str = "export_folder";
 const KEY_EXPORT_FORMAT: &str = "export_format";
 const KEY_CSV_DELIMITER: &str = "csv_delimiter";
 const KEY_SHOW_COPIED_PATH: &str = "show_copied_path";
+const KEY_SOUND_AFTER_SNAPSHOT: &str = "sound_after_snapshot";
+const KEY_SOUND_AFTER_SNAPSHOT_AND_COMPARE: &str = "sound_after_snapshot_and_compare";
+const KEY_SOUND_ONLY_AFTER_LONG: &str = "sound_only_after_long";
+const KEY_SPEAK_STATUS: &str = "speak_status";
 
 #[derive(Debug)]
 pub enum SettingsError {
@@ -725,6 +730,52 @@ impl Settings {
 
     pub fn set_show_copied_path(&self, show: bool) -> Result<(), SettingsError> {
         self.set(KEY_SHOW_COPIED_PATH, i64::from(show))
+    }
+
+    /// Whether a snapshot ends with a sound; on by default (TASK-46 #1).
+    pub fn sound_after_snapshot(&self) -> Result<bool, SettingsError> {
+        self.flag_on_by_default(KEY_SOUND_AFTER_SNAPSHOT)
+    }
+
+    pub fn set_sound_after_snapshot(&self, on: bool) -> Result<(), SettingsError> {
+        self.set(KEY_SOUND_AFTER_SNAPSHOT, i64::from(on))
+    }
+
+    /// Whether «Знімок + порівняння» ends with a sound; on by default (TASK-46 #1).
+    pub fn sound_after_snapshot_and_compare(&self) -> Result<bool, SettingsError> {
+        self.flag_on_by_default(KEY_SOUND_AFTER_SNAPSHOT_AND_COMPARE)
+    }
+
+    pub fn set_sound_after_snapshot_and_compare(&self, on: bool) -> Result<(), SettingsError> {
+        self.set(KEY_SOUND_AFTER_SNAPSHOT_AND_COMPARE, i64::from(on))
+    }
+
+    /// Whether those sounds come only after operations longer than 10 seconds; on by
+    /// default (TASK-46 #5).
+    pub fn sound_only_after_long(&self) -> Result<bool, SettingsError> {
+        self.flag_on_by_default(KEY_SOUND_ONLY_AFTER_LONG)
+    }
+
+    pub fn set_sound_only_after_long(&self, on: bool) -> Result<(), SettingsError> {
+        self.set(KEY_SOUND_ONLY_AFTER_LONG, i64::from(on))
+    }
+
+    /// Whether the messages of the status bar go to screen readers; on by default
+    /// (TASK-46 #10).
+    pub fn speak_status(&self) -> Result<bool, SettingsError> {
+        self.flag_on_by_default(KEY_SPEAK_STATUS)
+    }
+
+    pub fn set_speak_status(&self, on: bool) -> Result<(), SettingsError> {
+        self.set(KEY_SPEAK_STATUS, i64::from(on))
+    }
+
+    /// A flag that is on unless off is stored.
+    fn flag_on_by_default(&self, key: &str) -> Result<bool, SettingsError> {
+        Ok(match self.get(key)? {
+            Some(Value::Integer(n)) => n != 0,
+            _ => true,
+        })
     }
 
     /// Whether the list of typical folders offers the folders of the other users of this

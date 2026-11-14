@@ -16,7 +16,7 @@ use std::path::{Path, PathBuf};
 use std::ptr;
 use std::rc::Rc;
 use std::thread;
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
 use revisor_core::compare::{self, CompareError, Difference};
 use revisor_core::job::{Cancel, Lost, Outcome};
@@ -54,6 +54,7 @@ use crate::profile_window::{self, Purpose};
 use crate::settings_window::{self, Values};
 use crate::snapshot_list::{Native, SnapshotList};
 use crate::snapshots::{Arrival, arrival, arrival_after_comparison};
+use crate::sound::{self, SoundSetting};
 use crate::state::{AppState, ChangeType, ShownTypes, SortColumn, Sources};
 use crate::status::Announcer;
 use crate::text_window;
@@ -203,6 +204,15 @@ pub struct MainWindow {
     status: StatusBar,
     /// Joins the messages of one event into one (TASK-21).
     announcer: Announcer,
+    /// «Передавати скрінрідеру повідомлення рядка стану» (TASK-46 #10), kept here, as
+    /// every message asks it; renewed when the settings are saved.
+    speak_status: Cell<bool>,
+    /// When the snapshot being taken started, plain or of «Знімок + порівняння»: its end
+    /// sounds after how long it ran (TASK-46 #5).
+    snapshot_started: Cell<Option<Instant>>,
+    /// When the latest «Знімок + порівняння» started: its comparison's end sounds after how
+    /// long the whole command ran, from the start of its snapshot (TASK-46 #5).
+    snapshot_and_compare_started: Cell<Option<Instant>>,
     panel: Panel,
     profile: Choice,
     /// The progress of the job the progress row shows — a snapshot being taken, a
@@ -506,6 +516,15 @@ impl MainWindow {
             menu_bar,
             status,
             announcer: Announcer::default(),
+            speak_status: Cell::new(
+                settings
+                    .as_ref()
+                    .ok()
+                    .and_then(|settings| settings.speak_status().ok())
+                    .unwrap_or(true),
+            ),
+            snapshot_started: Cell::new(None),
+            snapshot_and_compare_started: Cell::new(None),
             panel,
             profile,
             progress_label,
@@ -1040,7 +1059,11 @@ impl MainWindow {
 
     fn show(&self, text: &str) {
         self.status.set_status_text(text, 0);
-        win32::accessibility::announce_status(self.status.get_handle());
+        // Turned off, the text is still there for NVDA+End, but no screen reader is told
+        // of it (TASK-46 #10).
+        if self.speak_status.get() {
+            win32::accessibility::announce_status(self.status.get_handle());
+        }
     }
 
     /// Runs a command, the source of its event (ADR-0013): a job that ended meanwhile,
@@ -1435,6 +1458,44 @@ impl MainWindow {
             .unwrap_or(false)
     }
 
+    /// The sound settings of a snapshot, or of «Знімок + порівняння» with
+    /// `snapshot_and_compare`; all on by default (TASK-46 #1).
+    fn sound_setting(&self, snapshot_and_compare: bool) -> SoundSetting {
+        let Ok(settings) = &self.settings else {
+            return SoundSetting {
+                on: true,
+                only_after_long: true,
+            };
+        };
+        let on = if snapshot_and_compare {
+            settings.sound_after_snapshot_and_compare()
+        } else {
+            settings.sound_after_snapshot()
+        };
+        SoundSetting {
+            on: on.unwrap_or(true),
+            only_after_long: settings.sound_only_after_long().unwrap_or(true),
+        }
+    }
+
+    /// Ends a snapshot or «Знімок + порівняння» with its sound, if the settings of its
+    /// operation want one (TASK-46 #3, #5–#7): `done` when it succeeded, timed from the
+    /// start of its snapshot, or of the whole command.
+    fn chime(&self, end: sound::End, done: bool) {
+        let Some(operation) = sound::operation(end) else {
+            return;
+        };
+        let (snapshot_and_compare, started) = match (operation, end) {
+            (sound::Operation::Snapshot, _) => (false, self.snapshot_started.get()),
+            (_, sound::End::Comparison) => (true, self.snapshot_and_compare_started.get()),
+            _ => (true, self.snapshot_started.get()),
+        };
+        let lasted = started.map_or(Duration::ZERO, |at| at.elapsed());
+        if let Some(chime) = sound::chime(self.sound_setting(snapshot_and_compare), lasted, done) {
+            win32::sound::play(chime);
+        }
+    }
+
     /// Whether the exported file opens in the program Windows assigns to it (TASK-39 #9);
     /// off by default.
     fn open_after_export(&self) -> bool {
@@ -1484,6 +1545,10 @@ impl MainWindow {
             other_users_folders: self.other_users_folders(),
             open_after_export: self.open_after_export(),
             csv_delimiter: self.csv_delimiter(),
+            sound_after_snapshot: self.sound_setting(false).on,
+            sound_after_snapshot_and_compare: self.sound_setting(true).on,
+            sound_only_after_long: self.sound_setting(false).only_after_long,
+            speak_status: self.speak_status.get(),
         };
         let Some(values) = settings_window::show(&self.frame, s, initial) else {
             return;
@@ -1505,11 +1570,23 @@ impl MainWindow {
                 .and_then(|()| settings.set_other_users_folders(values.other_users_folders))
                 .and_then(|()| settings.set_open_after_export(values.open_after_export))
                 .and_then(|()| settings.set_csv_delimiter(values.csv_delimiter))
+                .and_then(|()| settings.set_sound_after_snapshot(values.sound_after_snapshot))
+                .and_then(|()| {
+                    settings.set_sound_after_snapshot_and_compare(
+                        values.sound_after_snapshot_and_compare,
+                    )
+                })
+                .and_then(|()| settings.set_sound_only_after_long(values.sound_only_after_long))
+                .and_then(|()| settings.set_speak_status(values.speak_status))
                 .map_err(|e| reason(s, &e)),
             Err(message) => Err(message.clone()),
         };
         match saved {
-            Ok(()) => self.say(s.settings_saved()),
+            Ok(()) => {
+                // At once, so that even «Налаштування збережено.» keeps to it (TASK-46 #1).
+                self.speak_status.set(values.speak_status);
+                self.say(s.settings_saved());
+            }
             Err(reason) => {
                 self.fail(&s.settings_not_saved(&reason));
                 return;
@@ -2598,6 +2675,9 @@ impl MainWindow {
             .jobs
             .borrow_mut()
             .start_snapshot_and_compare(open, with);
+        let now = Some(Instant::now());
+        self.snapshot_started.set(now);
+        self.snapshot_and_compare_started.set(now);
         self.refresh_progress_row();
         if let Some(superseded) = superseded {
             self.report_superseded(superseded);
@@ -2634,6 +2714,8 @@ impl MainWindow {
                 s.nothing_to_compare()
             );
             self.say(&text);
+            // The snapshot is saved and nothing failed: «готово» (TASK-46 #6).
+            self.chime(sound::End::NothingToCompare, true);
             self.offer_restart(&profile, &report, CommandId::SnapshotAndCompare);
             return;
         };
@@ -2664,6 +2746,7 @@ impl MainWindow {
         let s = self.s;
         let focus = self.focus();
         let profile = ended.profile;
+        let done = matches!(ended.outcome, Ok(Outcome::Done(_)));
         let (to_difference, text) = match ended.outcome {
             Ok(Outcome::Done(difference)) => {
                 let arrival = difference::arrival_after_snapshot(
@@ -2704,6 +2787,9 @@ impl MainWindow {
         );
         self.refresh_progress_row();
         self.say(&text);
+        // After the whole command, from the start of its snapshot (TASK-46 #3, #5); before
+        // the restart offer, whose window would hold it up.
+        self.chime(sound::End::Comparison, done);
         self.offer_restart(&profile, &report, CommandId::SnapshotAndCompare);
     }
 
@@ -2723,6 +2809,8 @@ impl MainWindow {
     /// TASK-8 (#8). Its row is in the list already.
     fn report_superseded(&self, superseded: Superseded) {
         let Superseded { profile, report } = superseded;
+        // Silent: the user has just replaced the comparison (TASK-46 #7).
+        self.chime(sound::End::Superseded, true);
         self.say(&self.snapshot_report(&report));
         self.offer_restart(&profile, &report, CommandId::SnapshotAndCompare);
     }
@@ -2736,6 +2824,7 @@ impl MainWindow {
             return;
         };
         self.jobs.borrow_mut().start_snapshot(open);
+        self.snapshot_started.set(Some(Instant::now()));
         self.refresh_progress_row();
         self.say(s.snapshot_started());
     }
@@ -2836,6 +2925,15 @@ impl MainWindow {
             (outcome, _) => outcome,
         };
         self.refresh_progress_row();
+        // The sound first, before any window a failure or the restart offer brings; a
+        // snapshot stopped on closing or restarting ends silent. One that a comparison took
+        // from «Знімок + порівняння» comes with no `then` and sounds as a regular one
+        // (TASK-46 #3, #7).
+        let end = sound::End::Snapshot {
+            of_snapshot_and_compare: then.is_some(),
+            stopped,
+        };
+        self.chime(end, matches!(outcome, Ok(Outcome::Done(_))));
         match outcome {
             Ok(Outcome::Done(report)) => {
                 self.report_snapshot(&ended.profile, &report, !stopped, focus);

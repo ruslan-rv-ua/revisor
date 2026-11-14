@@ -97,7 +97,11 @@ The main scenario takes four steps, all from the keyboard:
 - **Accessibility first.** Native Windows controls throughout, tested with NVDA. Every command
   is in the menus with an access key, and the frequent ones have shortcuts. A command that
   cannot run now says why in the status bar, which screen readers read without moving the
-  focus.
+  focus; Settings › General › Pass status bar messages to the screen reader turns that off.
+- **A sound when a snapshot ends.** A snapshot and Snapshot and compare end with a sound of
+  revisor's own, two notes up when they succeed and two lower notes down when they fail or are
+  canceled, whether or not revisor's window is in front. By default only operations longer than
+  10 seconds sound; Settings › General turns each sound and that limit on or off.
 - **English and Ukrainian**, following Windows or chosen in Settings.
 - **Light or dark**, following Windows or chosen in Settings; a contrast theme of Windows
   always keeps its colors.
@@ -185,7 +189,8 @@ status bar; NVDA reads that without moving the focus, and `NVDA+End` repeats it.
 deleting a profile, Settings, Restart as administrator, sorting, Export and About revisor are
 in the menus only.
 
-Settings has four tabs: General (language and theme), Snapshots, Difference and Export.
+Settings has four tabs: General (language, theme, sounds and the status bar for screen
+readers), Snapshots, Difference and Export.
 `Ctrl+Tab` and `Ctrl+Shift+Tab`, or `Ctrl+PgDn` and `Ctrl+PgUp`, switch them, and so do the
 arrows on the tab names; an access key works on the tab shown. OK keeps the settings of every
 tab.
