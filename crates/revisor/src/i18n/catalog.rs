@@ -18,8 +18,8 @@ use revisor_core::compare::{Side, Warning};
 use revisor_core::exclude::PatternError;
 use revisor_core::scan::EntryKind;
 use revisor_core::settings::{
-    AttributeFormat, ChangeType, DifferenceView, FocusAfterComparison, FocusAfterSnapshot,
-    Language, SizeFormat, Theme, TreeNodeText,
+    AttributeFormat, ChangeType, CsvDelimiter, DifferenceView, FocusAfterComparison,
+    FocusAfterSnapshot, Language, SizeFormat, Theme, TreeNodeText,
 };
 use revisor_core::store::Unavailable;
 use revisor_core::typical::TypicalFolder;
@@ -142,10 +142,12 @@ fn entries_in(en: &dyn Strings, uk: &dyn Strings) -> Vec<Entry> {
             CancelComparison,
             Details,
             ShowInExplorer,
+            CopyPath,
             FilterByText,
             ShowAdded,
             ShowDeleted,
             ShowModified,
+            ShowMoved,
             ShowInaccessible,
             SortByPath,
             SortByName,
@@ -158,6 +160,8 @@ fn entries_in(en: &dyn Strings, uk: &dyn Strings) -> Vec<Entry> {
             SortDescending,
             ViewAsList,
             ViewAsTree,
+            Export,
+            CancelExport,
             KeyboardShortcuts,
             About,
         }
@@ -213,6 +217,8 @@ fn entries_in(en: &dyn Strings, uk: &dyn Strings) -> Vec<Entry> {
         NoChangeShown,
         TreeSortedByName,
         MoreNode,
+        ExportRunning,
+        ExportNotRunning,
     });
     for reason in reasons {
         c.add(format!("reason.{reason:?}"), |s| s.reason(reason).into());
@@ -251,19 +257,28 @@ fn entries_in(en: &dyn Strings, uk: &dyn Strings) -> Vec<Entry> {
         ProgramFiles,
         ProgramFilesX86,
         ProgramData,
-        AppData,
         Windows,
-        Desktop,
-        PublicDesktop
+        PublicDesktop,
+        Profile,
+        AppData,
+        Desktop
     });
     for folder in typical {
         c.add(format!("typical_folder.{folder:?}"), |s| {
             s.typical_folder(folder).into()
         });
     }
+    for folder in TypicalFolder::OF_A_USER {
+        c.add(format!("other_user_folder.{folder:?}"), |s| {
+            s.other_user_folder(folder, "{user}")
+        });
+    }
     c.add("add", |s| s.add().into());
     c.add("typical_folders_in_profile", |s| {
         s.typical_folders_in_profile().into()
+    });
+    c.add("other_users_need_admin", |s| {
+        s.other_users_need_admin().into()
     });
     c.add("profile_exclusions", |s| plain(s.profile_exclusions()));
     c.add("create", |s| s.create().into());
@@ -274,6 +289,7 @@ fn entries_in(en: &dyn Strings, uk: &dyn Strings) -> Vec<Entry> {
         Added,
         Deleted,
         Modified,
+        Moved,
         Inaccessible
     });
     for kind in types {
@@ -568,6 +584,9 @@ fn entries_in(en: &dyn Strings, uk: &dyn Strings) -> Vec<Entry> {
         Deleted,
         Modified,
         Replaced,
+        Renamed,
+        Moved,
+        MovedAndRenamed,
         Inaccessible,
     });
     let kinds = all!(EntryKind { File, Dir, Link });
@@ -601,6 +620,17 @@ fn entries_in(en: &dyn Strings, uk: &dyn Strings) -> Vec<Entry> {
             s.inaccessible_in(which).into()
         });
     }
+    // What the column «Що змінилося» says of a renamed or moved entry (TASK-42): where
+    // it was, and after it the fields that differ too.
+    c.add("moved_from", |s| s.moved_from("{name, folder or path}"));
+    c.add("moved_from (with fields)", |s| {
+        format!(
+            "{}; {}, {}",
+            s.moved_from("{name, folder or path}"),
+            s.field(Field::Size),
+            s.field(Field::DateModified)
+        )
+    });
     c.add_per_count("bytes", |s, n| s.bytes(n, &n.to_string()));
     for power in 1..=6 {
         c.add(format!("size_unit({power})"), |s| s.size_unit(power).into());
@@ -643,11 +673,12 @@ fn entries_in(en: &dyn Strings, uk: &dyn Strings) -> Vec<Entry> {
         c.add(*id, |s| s.pair(pair));
     }
     let summary = |n: u64, size: SizeChange| SummaryText {
-        changes: counted(n * 4),
+        changes: counted(n * 5),
         added: counted(n),
         deleted: counted(n),
         modified: counted(n * 2),
         replaced: counted(n),
+        moved: counted(n),
         inaccessible: counted(n),
         size,
         warnings: counted(n),
@@ -670,7 +701,7 @@ fn entries_in(en: &dyn Strings, uk: &dyn Strings) -> Vec<Entry> {
     );
     for size in &sizes {
         for n in [1, 5] {
-            c.add(format!("summary({}, {size:?})", n * 4), |s| {
+            c.add(format!("summary({}, {size:?})", n * 5), |s| {
                 s.summary(&summary(n, size.clone()))
             });
         }
@@ -683,6 +714,7 @@ fn entries_in(en: &dyn Strings, uk: &dyn Strings) -> Vec<Entry> {
             deleted: counted(0),
             modified: counted(0),
             replaced: counted(0),
+            moved: counted(0),
             inaccessible: counted(0),
             size: SizeChange::Increased("{size}".into()),
             warnings: counted(3),
@@ -789,6 +821,24 @@ fn entries_in(en: &dyn Strings, uk: &dyn Strings) -> Vec<Entry> {
     });
     c.add("tree_node (a file, short)", |s| {
         s.tree_node(&node("{name}", Some((&modified(s), "")), None))
+    });
+    // A renamed file and a moved folder (TASK-42): where they were stands in the place of
+    // what changed.
+    c.add("tree_node (a renamed file, long)", |s| {
+        let renamed = s.change(RowChange::Renamed, EntryKind::File);
+        s.tree_node(&node(
+            "{name}",
+            Some((renamed, &s.moved_from("{former name}"))),
+            None,
+        ))
+    });
+    c.add("tree_node (a moved folder, long)", |s| {
+        let moved = s.change(RowChange::Moved, EntryKind::Dir);
+        s.tree_node(&node(
+            "{name}",
+            Some((moved, &s.moved_from("{former folder}"))),
+            Some((5, 0)),
+        ))
     });
     for n in COUNTS {
         c.add(format!("tree_node (a folder added, long)({n})"), |s| {
@@ -938,10 +988,85 @@ fn entries_in(en: &dyn Strings, uk: &dyn Strings) -> Vec<Entry> {
         });
     }
     c.add("warn_missing_entry", |s| plain(s.warn_missing_entry()));
+    c.add("show_copied_path", |s| plain(s.show_copied_path()));
+    c.add("other_users_folders", |s| plain(s.other_users_folders()));
+    c.add("settings_general", |s| s.settings_general().into());
+    c.add("settings_snapshots", |s| s.settings_snapshots().into());
+    c.add("settings_difference", |s| s.settings_difference().into());
     c.add("entry_gone_question", |s| s.entry_gone_question().into());
     c.add("open", |s| plain(s.open()));
     c.add("no_folder_on_disk", |s| s.no_folder_on_disk("{path}"));
     c.add("explorer_failed", |s| s.explorer_failed("{reason}"));
+    c.add("path_copied", |s| s.path_copied(None));
+    c.add("path_copied.with_path", |s| s.path_copied(Some("{path}")));
+    c.add("path_not_copied", |s| s.path_not_copied().into());
+    c.add("export_text_type", |s| s.export_text_type().into());
+    c.add("export_csv_type", |s| s.export_csv_type().into());
+    c.add("exporting", |s| s.exporting().into());
+    c.add("exported", |s| s.exported("{file}"));
+    c.add("export_cancelled", |s| s.export_cancelled().into());
+    c.add("export_failed", |s| s.export_failed("{reason}"));
+    c.add("export_stopped", |s| s.export_stopped().into());
+    c.add("open_failed", |s| s.open_failed("{reason}"));
+    c.add("open_after_export", |s| plain(s.open_after_export()));
+    c.add("csv_delimiter", |s| plain(s.csv_delimiter()));
+    let delimiter_options = all!(CsvDelimiter {
+        Windows,
+        Comma,
+        Semicolon,
+        Tab
+    });
+    for value in delimiter_options {
+        c.add(format!("csv_delimiter_option.{value:?}"), |s| {
+            s.csv_delimiter_option(value).into()
+        });
+    }
+    c.add("settings_export", |s| s.settings_export().into());
+    c.add("report_title", |s| s.report_title("{version}"));
+    c.add("report_filter.types", |s| {
+        s.report_filter(Some(&types), None)
+    });
+    c.add("report_filter.no_type", |s| {
+        s.report_filter(Some(&[]), None)
+    });
+    c.add("report_filter.text", |s| {
+        s.report_filter(None, Some("{text}"))
+    });
+    c.add("report_filter.types_and_text", |s| {
+        s.report_filter(Some(&types[..2]), Some("{text}"))
+    });
+    c.add("report_folder", |s| s.report_folder("{path}"));
+    for kind in types {
+        c.add(format!("report_group.{kind:?}"), |s| {
+            s.report_group(kind, "{count}")
+        });
+    }
+    c.add("report_replaced", |s| s.report_replaced().into());
+    for why in all!(Unreadable {
+        Folder,
+        LinkTarget,
+        Unknown
+    }) {
+        for which in inaccessible_in {
+            let inaccessible = Inaccessibility {
+                which,
+                why,
+                absent_in: None,
+            };
+            c.add(format!("report_inaccessible.{why:?}.{which:?}"), |s| {
+                s.report_inaccessible(&inaccessible)
+            });
+        }
+    }
+    let absent = Inaccessibility {
+        which: InaccessibleIn::Later,
+        why: Unreadable::Folder,
+        absent_in: Some(Side::Earlier),
+    };
+    c.add(
+        "report_inaccessible.Folder.Later (absent in the earlier)",
+        |s| s.report_inaccessible(&absent),
+    );
 
     c.add("key_space", |s| s.key_space().into());
     c.add("key_up", |s| s.key_up().into());

@@ -89,6 +89,7 @@ fn row<'a>(
 ) -> Row<'a> {
     Row {
         path: path.into(),
+        former_path: None,
         change,
         what_changed: String::new(),
         old,

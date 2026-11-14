@@ -29,15 +29,21 @@ first.
 The main scenario takes four steps, all from the keyboard:
 
 1. Create a profile (`Ctrl+N`) with the folders to watch: Add typical folders puts in
-   `C:\Program Files`, `C:\ProgramData`, your `AppData`, `C:\Windows` and the desktops at once.
+   `C:\Program Files`, `C:\ProgramData`, your `AppData` and the desktops at once.
 2. Take a snapshot (`F5`) before you install or run the program.
 3. Install or run it.
 4. Press `Ctrl+F5`: revisor takes a second snapshot and shows the difference.
 
 - **Snapshots of what matters.** A profile names the folders to watch and the exclusions to
-  leave out. Add typical folders offers the folders installers and programs write to, all
-  checked: Program Files, Program Files (x86), ProgramData, your AppData (hidden, so hard to
-  reach in the folder picker), Windows, your desktop and the public desktop. A new profile
+  leave out. Add typical folders offers the folders installers and programs write to:
+  Program Files, Program Files (x86), ProgramData, Windows, the public desktop, your user
+  folder, your AppData (hidden, so hard to reach in the folder picker) and your desktop. All
+  are checked but Windows and your user folder, which are large and seldom written to; if you
+  check your user folder with AppData or the desktop, only the user folder is added. With
+  Settings › Snapshots › Show other users' folders in the typical folders list, the list also
+  offers, unchecked, the user folder, AppData and desktop of each other user of the computer,
+  say an installer you ran as an administrator account; revisor can open them only when it
+  runs as administrator. A new profile
   starts with 63 default exclusions for caches, logs and temporary files, which you can edit.
   A snapshot records every file, folder and link with its dates, attributes, size and NTFS
   file ID, and the version of `.exe` and `.dll` files, without reading file contents or
@@ -45,14 +51,45 @@ The main scenario takes four steps, all from the keyboard:
 - **Compare any two.** The current snapshot with the previous one (`F7`), with any other
   snapshot of the profile (`Ctrl+F7`), or a new snapshot with the one before it in a single
   command (`Ctrl+F5`). The difference always runs from the earlier snapshot to the later one.
-- **Read the difference.** A list of added, deleted, modified and inaccessible entries, with
-  what changed in each and a summary above it, or the same entries as a tree of their folders
-  (`Ctrl+T`), where a folder opens when you expand it, and a folder of more than a thousand
-  entries shows them a thousand at a time. Filter it by type and by text, sort the list by any
-  column, read the details of a change, before and after (`Alt+Enter`), or show it in File
-  Explorer (`Ctrl+Enter`). A difference of a million rows reads without delay.
-- **In the background.** Snapshots and comparisons show their progress and can be canceled,
-  and the window keeps responding.
+- **Read the difference.** A list of added, deleted, modified, renamed or moved, and
+  inaccessible entries, with what changed in each and a summary above it, or the same entries
+  as a tree of their folders (`Ctrl+T`), where a folder opens when you expand it, and a folder
+  of more than a thousand entries shows them a thousand at a time. Filter it by type and by
+  text, sort the list by any column, read the details of a change, before and after
+  (`Alt+Enter`), show it in File Explorer (`Ctrl+Enter`), or copy its full path
+  (`Ctrl+Shift+C`), which the status bar confirms; Settings › Difference › Show the copied path
+  in the status bar makes it name the path too. A difference of a million rows reads without
+  delay.
+- **Save the difference as a text report.** Difference › Export… (`Alt`, `D`, `X`) saves the
+  entries the difference shows, with its filter, as a text file to read in any editor or paste
+  into a message: a header with the pair of snapshots, the summary, the filter and the folders
+  compared, then the changes grouped by type, one line each, starting with the full path and
+  saying what changed, before and after. The report has no rules, arrows or columns lined up
+  with spaces, which a screen reader would read aloud or out of order. The file is offered
+  under the profile's name and the times of both snapshots, in Documents or the folder you
+  exported to last; Settings › Export › Open the file after export opens it once saved.
+- **Open the difference in Excel or read it with a script.** The same command saves CSV when
+  you choose CSV (*.csv) as the type of file; the dialog offers the type you chose last. The
+  file has a line of column names and a line per entry shown, in the order of paths, and is
+  the same in every language and region: English column names and codes (`added`,
+  `modified`, `renamed`, `folder`…), sizes in bytes, local times in ISO 8601 with the offset
+  from UTC (`2026-11-13 14:05:31.1234567+02:00`), versions as four numbers, and each field as
+  a pair of columns, `_before` and `_after`. Settings › Export › CSV delimiter separates the
+  values by the list separator of Windows (a semicolon in the Ukrainian region), so Excel on
+  the same computer opens the file in columns with a double click, or by a comma, a semicolon
+  or a tab. The file is UTF-8 with a byte order mark, so Excel keeps Cyrillic, with values
+  quoted as RFC 4180 says; a script names the delimiter, as in
+  `Import-Csv -Delimiter ';'`. From 1.0 a change that breaks this format is a new major
+  version.
+- **A rename or a move is one change.** A file, folder or link that was renamed or moved
+  within its volume, also from one folder of the profile to another, is one entry at its new
+  path that says where it was, not one deleted and one added: revisor knows it by its NTFS
+  file ID, its kind and its creation time. A folder renamed with a thousand files in it is one
+  entry, followed only by what changed inside it. Where a program put a new file in the place
+  of one it moved away, as when saving with a backup, the old place shows as replaced and the
+  file that left as renamed or moved.
+- **In the background.** Snapshots, comparisons and exports show their progress and can be
+  canceled, and the window keeps responding. A canceled export leaves no part of a file behind.
 - **Nothing hidden by permissions.** An entry revisor cannot read is kept, marked inaccessible,
   with the reason. When permissions are the reason, revisor offers to restart as administrator
   with the same profile open, and as administrator it also reads folders closed even to
@@ -133,8 +170,9 @@ lists them in the application too.
 | `Ctrl+F7` | Compare the current snapshot with another one you choose |
 | `Alt+Enter` | Show the details of the change in focus, before and after; `Enter` in the difference list or tree does the same |
 | `Ctrl+Enter` | Show the change in File Explorer |
+| `Ctrl+Shift+C` | Copy the full path of the change in focus, or of the folder in focus in the tree |
 | `Ctrl+F` | Move to the Filter field; `Esc` there clears it |
-| `Ctrl+1` to `Ctrl+4` | Show or hide added, deleted, modified and inaccessible entries |
+| `Ctrl+1` to `Ctrl+5` | Show or hide added, deleted, modified, renamed or moved, and inaccessible entries |
 | `Ctrl+T` | Show the difference as a tree, or as a list again |
 | `F6`, `Shift+F6` | Move between the snapshot list and the difference list or tree |
 | `Shift+F5`, `Shift+F7`, `Shift+F2` | Cancel the snapshot, the comparison, or a comment waiting for the profile database |
@@ -144,8 +182,13 @@ lists them in the application too.
 
 A command that cannot run now is unavailable in its menu, and its shortcut says why in the
 status bar; NVDA reads that without moving the focus, and `NVDA+End` repeats it. Editing and
-deleting a profile, Settings, Restart as administrator, sorting and About revisor are in the
-menus only.
+deleting a profile, Settings, Restart as administrator, sorting, Export and About revisor are
+in the menus only.
+
+Settings has four tabs: General (language and theme), Snapshots, Difference and Export.
+`Ctrl+Tab` and `Ctrl+Shift+Tab`, or `Ctrl+PgDn` and `Ctrl+PgUp`, switch them, and so do the
+arrows on the tab names; an access key works on the tab shown. OK keeps the settings of every
+tab.
 
 ## Where the data lives
 
@@ -181,6 +224,11 @@ snapshots there; `scoop uninstall revisor --purge` deletes them.
   instantaneous: take it once the program you are watching has finished.
 - **It does not go inside links.** Junctions, symbolic links and mounted volumes are recorded
   with their targets, not followed.
+- **It does not guess at renames.** An entry is renamed or moved only when its NTFS file ID,
+  its kind and its creation time say that it is the same one on the same volume. A move to
+  another volume is a copy and a deletion, so it shows as one entry added and one deleted;
+  and so do the names of a hard-linked file when several of them come or go at once, as it
+  cannot be told which became which.
 - **It does not download cloud files.** A file that is only in OneDrive or another cloud is
   recorded without its version rather than downloaded to read it.
 - **It never deletes snapshots on its own.** Only you delete them.
@@ -188,8 +236,7 @@ snapshots there; `scoop uninstall revisor --purge` deletes them.
   scheduled snapshot: its shortcuts work only in its own window.
 - **It is not signed**, by decision; see [Direct download](#direct-download).
 
-Planned for later 0.x versions: export to a text report and CSV, content hashes, detection of
-renames and moves, and a command line.
+Planned for later 0.x versions: content hashes and a command line.
 
 ## Building from source
 

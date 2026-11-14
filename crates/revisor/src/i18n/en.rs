@@ -4,8 +4,8 @@ use revisor_core::compare::{Side, Warning};
 use revisor_core::exclude::PatternError;
 use revisor_core::scan::EntryKind;
 use revisor_core::settings::{
-    AttributeFormat, ChangeType, DifferenceView, FocusAfterComparison, FocusAfterSnapshot,
-    Language, SizeFormat, Theme, TreeNodeText,
+    AttributeFormat, ChangeType, CsvDelimiter, DifferenceView, FocusAfterComparison,
+    FocusAfterSnapshot, Language, SizeFormat, Theme, TreeNodeText,
 };
 use revisor_core::typical::TypicalFolder;
 
@@ -79,10 +79,14 @@ impl Strings for En {
             CommandId::CancelComment => "Cancel co&mment",
             CommandId::Details => "&Details",
             CommandId::ShowInExplorer => "Show in File &Explorer",
+            CommandId::CopyPath => "C&opy path",
+            CommandId::Export => "E&xport",
+            CommandId::CancelExport => "&Cancel export",
             CommandId::FilterByText => "&Filter by text",
             CommandId::ShowAdded => "&Added",
             CommandId::ShowDeleted => "Dele&ted",
             CommandId::ShowModified => "&Modified",
+            CommandId::ShowMoved => "Renamed or mo&ved",
             CommandId::ShowInaccessible => "I&naccessible",
             CommandId::SortByPath => "Pa&th",
             CommandId::SortByName => "&Name",
@@ -139,6 +143,8 @@ impl Strings for En {
             Reason::NoChangeShown => "the difference list shows no changes",
             Reason::TreeSortedByName => "the tree is always sorted by name",
             Reason::MoreNode => "a “more” node is not a file or a folder",
+            Reason::ExportRunning => "an export is running, and only one goes at a time",
+            Reason::ExportNotRunning => "no export is running",
         }
     }
 
@@ -239,10 +245,19 @@ impl Strings for En {
             TypicalFolder::ProgramFiles => "Program Files",
             TypicalFolder::ProgramFilesX86 => "Program Files (x86)",
             TypicalFolder::ProgramData => "ProgramData",
-            TypicalFolder::AppData => "User AppData",
             TypicalFolder::Windows => "Windows",
-            TypicalFolder::Desktop => "User desktop",
             TypicalFolder::PublicDesktop => "Public desktop",
+            TypicalFolder::Profile => "User folder",
+            TypicalFolder::AppData => "User AppData",
+            TypicalFolder::Desktop => "User desktop",
+        }
+    }
+
+    fn other_user_folder(&self, folder: TypicalFolder, user: &str) -> String {
+        match folder {
+            TypicalFolder::AppData => format!("AppData of {user}"),
+            TypicalFolder::Desktop => format!("Desktop of {user}"),
+            _ => format!("User folder of {user}"),
         }
     }
 
@@ -252,6 +267,10 @@ impl Strings for En {
 
     fn typical_folders_in_profile(&self) -> &'static str {
         "All typical folders are in the profile already."
+    }
+
+    fn other_users_need_admin(&self) -> &'static str {
+        "Other users' folders are shown only when revisor runs as administrator."
     }
 
     fn profile_exclusions(&self) -> &'static str {
@@ -279,6 +298,7 @@ impl Strings for En {
             ChangeType::Added => "&Added",
             ChangeType::Deleted => "Dele&ted",
             ChangeType::Modified => "Modifi&ed",
+            ChangeType::Moved => "Renamed or mo&ved",
             ChangeType::Inaccessible => "Inaccessi&ble",
         }
     }
@@ -762,16 +782,25 @@ impl Strings for En {
             (EntryKind::File, RowChange::Deleted) => "Deleted",
             (EntryKind::File, RowChange::Modified) => "Modified",
             (EntryKind::File, RowChange::Replaced) => "Replaced",
+            (EntryKind::File, RowChange::Renamed) => "Renamed",
+            (EntryKind::File, RowChange::Moved) => "Moved",
+            (EntryKind::File, RowChange::MovedAndRenamed) => "Moved and renamed",
             (EntryKind::File, RowChange::Inaccessible) => "Inaccessible",
             (EntryKind::Dir, RowChange::Added) => "Folder added",
             (EntryKind::Dir, RowChange::Deleted) => "Folder deleted",
             (EntryKind::Dir, RowChange::Modified) => "Folder modified",
             (EntryKind::Dir, RowChange::Replaced) => "Folder replaced",
+            (EntryKind::Dir, RowChange::Renamed) => "Folder renamed",
+            (EntryKind::Dir, RowChange::Moved) => "Folder moved",
+            (EntryKind::Dir, RowChange::MovedAndRenamed) => "Folder moved and renamed",
             (EntryKind::Dir, RowChange::Inaccessible) => "Inaccessible folder",
             (EntryKind::Link, RowChange::Added) => "Link added",
             (EntryKind::Link, RowChange::Deleted) => "Link deleted",
             (EntryKind::Link, RowChange::Modified) => "Link modified",
             (EntryKind::Link, RowChange::Replaced) => "Link replaced",
+            (EntryKind::Link, RowChange::Renamed) => "Link renamed",
+            (EntryKind::Link, RowChange::Moved) => "Link moved",
+            (EntryKind::Link, RowChange::MovedAndRenamed) => "Link moved and renamed",
             (EntryKind::Link, RowChange::Inaccessible) => "Inaccessible link",
         }
     }
@@ -795,6 +824,10 @@ impl Strings for En {
             InaccessibleIn::Later => "in the later snapshot",
             InaccessibleIn::Both => "in both snapshots",
         }
+    }
+
+    fn moved_from(&self, former: &str) -> String {
+        format!("from {former}")
     }
 
     fn bytes(&self, bytes: u64, text: &str) -> String {
@@ -858,6 +891,9 @@ impl Strings for En {
                     modified.push_str(&format!(", {} of them replaced", t.replaced.text));
                 }
                 parts.push(modified);
+            }
+            if t.moved.n > 0 {
+                parts.push(format!("{} renamed or moved", t.moved.text));
             }
             format!(
                 "{}: {}.",
@@ -1078,6 +1114,9 @@ impl Strings for En {
             RowChange::Deleted => "deleted",
             RowChange::Modified => "modified",
             RowChange::Replaced => "replaced",
+            RowChange::Renamed => "renamed",
+            RowChange::Moved => "moved",
+            RowChange::MovedAndRenamed => "moved and renamed",
             RowChange::Inaccessible => "inaccessible",
         }
     }
@@ -1169,6 +1208,26 @@ impl Strings for En {
         "&Warn when the entry is no longer on disk"
     }
 
+    fn show_copied_path(&self) -> &'static str {
+        "S&how the copied path in the status bar"
+    }
+
+    fn other_users_folders(&self) -> &'static str {
+        "Show &other users' folders in the typical folders list"
+    }
+
+    fn settings_general(&self) -> &'static str {
+        "General"
+    }
+
+    fn settings_snapshots(&self) -> &'static str {
+        "Snapshots"
+    }
+
+    fn settings_difference(&self) -> &'static str {
+        "Difference"
+    }
+
     fn entry_gone_question(&self) -> &'static str {
         "This entry is no longer on disk. Open the folder where it was?"
     }
@@ -1181,8 +1240,142 @@ impl Strings for En {
         format!("no folder of the path “{path}” is on disk")
     }
 
+    fn export_text_type(&self) -> &'static str {
+        "Text report (*.txt)"
+    }
+
+    fn export_csv_type(&self) -> &'static str {
+        "CSV (*.csv)"
+    }
+
+    fn exporting(&self) -> &'static str {
+        "Exporting the difference…"
+    }
+
+    fn exported(&self, file: &str) -> String {
+        format!("Difference exported: {file}.")
+    }
+
+    fn export_cancelled(&self) -> &'static str {
+        "Export canceled."
+    }
+
+    fn export_failed(&self, reason: &str) -> String {
+        format!("The difference was not exported: {reason}.")
+    }
+
+    fn export_stopped(&self) -> &'static str {
+        "the export stopped unexpectedly"
+    }
+
+    fn open_failed(&self, reason: &str) -> String {
+        format!("The file did not open: {reason}.")
+    }
+
+    fn open_after_export(&self) -> &'static str {
+        "&Open the file after export"
+    }
+
+    fn settings_export(&self) -> &'static str {
+        "Export"
+    }
+
+    fn csv_delimiter(&self) -> &'static str {
+        "CSV &delimiter"
+    }
+
+    fn csv_delimiter_option(&self, value: CsvDelimiter) -> &'static str {
+        match value {
+            CsvDelimiter::Windows => "Same as Windows",
+            CsvDelimiter::Comma => "Comma",
+            CsvDelimiter::Semicolon => "Semicolon",
+            CsvDelimiter::Tab => "Tab",
+        }
+    }
+
+    fn report_title(&self, version: &str) -> String {
+        format!("Difference report, revisor {version}")
+    }
+
+    fn report_filter(&self, types: Option<&[ChangeType]>, text: Option<&str>) -> String {
+        let mut parts = Vec::new();
+        if let Some(types) = types {
+            parts.push(if types.is_empty() {
+                "no type".to_string()
+            } else {
+                let names: Vec<&str> = types
+                    .iter()
+                    .map(|kind| match kind {
+                        ChangeType::Added => "added",
+                        ChangeType::Deleted => "deleted",
+                        ChangeType::Modified => "modified",
+                        ChangeType::Moved => "renamed or moved",
+                        ChangeType::Inaccessible => "inaccessible",
+                    })
+                    .collect();
+                names.join(", ")
+            });
+        }
+        if let Some(text) = text {
+            parts.push(format!("text \u{201c}{text}\u{201d}"));
+        }
+        format!("Filter: {}.", parts.join("; "))
+    }
+
+    fn report_folder(&self, path: &str) -> String {
+        format!("Folder: {path}")
+    }
+
+    fn report_group(&self, kind: ChangeType, count: &str) -> String {
+        let name = match kind {
+            ChangeType::Added => "Added",
+            ChangeType::Deleted => "Deleted",
+            ChangeType::Modified => "Modified",
+            ChangeType::Moved => "Renamed or moved",
+            ChangeType::Inaccessible => "Inaccessible",
+        };
+        format!("{name}: {count}")
+    }
+
+    fn report_replaced(&self) -> &'static str {
+        "replaced"
+    }
+
+    fn report_inaccessible(&self, inaccessible: &Inaccessibility) -> String {
+        let why = match inaccessible.why {
+            Unreadable::Folder => "the contents of the folder could not be read",
+            Unreadable::LinkTarget => "the target of the link could not be read",
+            Unreadable::Unknown => {
+                "whether it was there is unknown: a folder on the way to it could not be read \
+                 or is a link"
+            }
+        };
+        let mut text = format!(
+            "inaccessible {}—{why}",
+            self.inaccessible_in(inaccessible.which)
+        );
+        if let Some(side) = inaccessible.absent_in {
+            text.push_str(&format!(
+                "; the {} snapshot does not have it",
+                self.side(side)
+            ));
+        }
+        text
+    }
+
     fn explorer_failed(&self, reason: &str) -> String {
         format!("File Explorer did not open: {reason}.")
+    }
+
+    fn path_copied(&self, path: Option<&str>) -> String {
+        match path {
+            Some(path) => format!("Path copied: {path}."),
+            None => "Path copied.".into(),
+        }
+    }
+
+    fn path_not_copied(&self) -> &'static str {
+        "The path was not copied."
     }
 
     fn key_space(&self) -> &'static str {

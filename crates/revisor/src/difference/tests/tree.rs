@@ -3,7 +3,7 @@
 use super::*;
 
 /// A list in English with plain numbers, showing `difference` as a tree.
-fn tree_showing(difference: Difference) -> List {
+pub(super) fn tree_showing(difference: Difference) -> List {
     let mut list = showing(difference);
     list.set_layout(DifferenceView::Tree);
     list
@@ -11,7 +11,7 @@ fn tree_showing(difference: Difference) -> List {
 
 /// The tree as an outline of the texts of its nodes, two spaces per level, every node
 /// shown whether expanded or not; `*` marks the node with the focus.
-fn outline(list: &List) -> Vec<String> {
+pub(super) fn outline(list: &List) -> Vec<String> {
     let mut lines = Vec::new();
     let mut stack: Vec<(NodeId, usize)> = list
         .tree_roots()
@@ -178,7 +178,7 @@ fn the_filter_shows_the_same_rows_in_the_tree_and_keeps_the_focus_where_it_can()
     let mut list = tree_showing(difference(vec![sample()], Vec::new()));
     list.tree_focus(node(&list, "new.txt"));
     // The added rows go; the focus goes to the next node shown (#4).
-    list.set_types([false, true, true, true]);
+    list.set_types([false, true, true, true, true]);
     assert_eq!(
         outline(&list),
         [
@@ -192,7 +192,7 @@ fn the_filter_shows_the_same_rows_in_the_tree_and_keeps_the_focus_where_it_can()
     );
     assert_eq!(list.len(), 4, "the list shows the same rows");
     // The text filter too, and a focus that stays.
-    list.set_types([true; 4]);
+    list.set_types([true; 5]);
     assert_eq!(list.tree_current(), Some(node(&list, "old.txt")));
     list.set_text("txt");
     assert_eq!(
@@ -260,7 +260,7 @@ fn a_folder_that_is_no_change_has_its_path_and_the_summary_of_its_contents() {
         Some(Location::Folder(PathBuf::from(r"C:\Data\app")))
     );
     // The filter hides some: said how many of them the tree shows.
-    list.set_types([false, true, true, true]);
+    list.set_types([false, true, true, true, true]);
     list.tree_focus(node(&list, "app —"));
     assert!(
         list.current_details()
@@ -271,6 +271,22 @@ fn a_folder_that_is_no_change_has_its_path_and_the_summary_of_its_contents() {
     // The top level by its whole path.
     list.tree_focus(node(&list, r"C:\Data"));
     assert_eq!(list.current_details().unwrap().name, r"C:\Data");
+}
+
+#[test]
+fn the_path_to_copy_in_the_tree_is_that_of_the_node_in_focus() {
+    // TASK-41 #2, #5: a node that is a change, its row's; a folder that is no change
+    // itself, the folder's; the top level, its whole path.
+    let mut list = tree_showing(difference(vec![sample()], Vec::new()));
+    list.tree_focus(node(&list, "old.txt"));
+    assert_eq!(
+        list.current_path(),
+        Some(PathBuf::from(r"C:\Data\app\old.txt"))
+    );
+    list.tree_focus(node(&list, "app —"));
+    assert_eq!(list.current_path(), Some(PathBuf::from(r"C:\Data\app")));
+    list.tree_focus(node(&list, r"C:\Data"));
+    assert_eq!(list.current_path(), Some(PathBuf::from(r"C:\Data")));
 }
 
 #[test]
@@ -392,7 +408,7 @@ fn the_tree_keeps_up_with_a_million_rows() {
             }
         }
     }));
-    for types in [[false, true, true, true], [true; 4]] {
+    for types in [[false, true, true, true, true], [true; 5]] {
         note(time(&format!("types {types:?}"), &mut || {
             list.set_types(types);
         }));

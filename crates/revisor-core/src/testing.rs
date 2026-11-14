@@ -140,13 +140,78 @@ impl Tree {
         let gone = self.index(rel);
         let mut removed = vec![false; self.0.len()];
         removed[gone as usize] = true;
-        for i in 0..self.0.len() {
-            if let Some(p) = self.0[i].parent {
-                removed[i] |= removed[p as usize];
+        // An entry moved by `rename` may stand before its folder: until nothing changes.
+        let mut changed = true;
+        while changed {
+            changed = false;
+            for i in 0..self.0.len() {
+                if let Some(p) = self.0[i].parent
+                    && removed[p as usize]
+                    && !removed[i]
+                {
+                    removed[i] = true;
+                    changed = true;
+                }
             }
         }
         self.0 = renumber(std::mem::take(&mut self.0), &removed);
     }
+
+    /// Gives every entry a file ID of its own, as a volume does: its place in the tree,
+    /// from 1.
+    pub fn with_ids(self) -> Self {
+        self.with_ids_from(1)
+    }
+
+    /// [`Tree::with_ids`] from `first`, for several trees of one volume.
+    pub fn with_ids_from(mut self, first: u64) -> Self {
+        for (i, entry) in self.0.iter_mut().enumerate() {
+            entry.file_id = file_id(first + i as u64);
+        }
+        self
+    }
+
+    /// Moves the entry at `rel`, with its subtree, to the path `to_rel` of the tree `to`,
+    /// as a volume does between two folders on it.
+    pub fn move_to(&mut self, rel: &str, to: &mut Tree, to_rel: &str) {
+        let at = self.index(rel) as usize;
+        let (folder, name) = to_rel.rsplit_once('\\').unwrap_or(("", to_rel));
+        let folder = to.index(folder);
+        // Where each entry of the subtree stands in `to`; parents come before children.
+        let mut moved = vec![u32::MAX; self.0.len()];
+        for i in at..self.0.len() {
+            let mut entry = self.0[i].clone();
+            if i == at {
+                entry.parent = Some(folder);
+                entry.name = OsStr::new(name).into();
+            } else {
+                match entry.parent.map(|p| moved[p as usize]) {
+                    Some(parent) if parent != u32::MAX => entry.parent = Some(parent),
+                    _ => continue,
+                }
+            }
+            moved[i] = to.0.len() as u32;
+            to.0.push(entry);
+        }
+        self.remove(rel);
+    }
+
+    /// Renames or moves the entry at `rel`, with its subtree, to the path `to`, as a
+    /// volume does: the entry keeps everything but its name and its folder.
+    pub fn rename(&mut self, rel: &str, to: &str) {
+        let at = self.index(rel);
+        let (folder, name) = to.rsplit_once('\\').unwrap_or(("", to));
+        let folder = self.index(folder);
+        self.0[at as usize].parent = Some(folder);
+        self.0[at as usize].name = OsStr::new(name).into();
+    }
+}
+
+/// A file ID that names a file: `n` in its first bytes.
+pub fn file_id(n: u64) -> FileId {
+    let mut id = [0; 16];
+    id[..8].copy_from_slice(&n.to_le_bytes());
+    FileId(id)
 }
 
 /// Drops the entries marked in `removed` and fixes the parents of the rest. Parents must
@@ -208,6 +273,7 @@ pub fn field_names(fields: Fields) -> String {
         (Fields::VERSION, "version"),
         (Fields::LINK_TARGET, "target"),
         (Fields::FILE_ID, "file_id"),
+        (Fields::FOLDER, "folder"),
     ];
     let present: Vec<&str> = names
         .iter()

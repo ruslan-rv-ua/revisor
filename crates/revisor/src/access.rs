@@ -1,4 +1,4 @@
-//! Access keys (document «Клавіатура й меню», ADR-0008, ADR-0009, TASK-30): where the
+//! Access keys (document «Клавіші доступу», ADR-0008, ADR-0009, TASK-30): where the
 //! letter of a label lives, how a label is written in each language, and the one
 //! dispatcher of Alt with a letter for every window.
 //!
@@ -137,6 +137,20 @@ pub fn find<T: Copy>(key: Shortcut, targets: &[Target<T>]) -> Option<(Act, T)> {
         .map(|t| (t.act, t.id))
 }
 
+/// The target of `key` among those `shown` lets act now: another one with the same letter,
+/// on a tab not shown, does not hide it (TASK-39: «O» on «Знімки» and on «Експорт»).
+fn find_shown<T: Copy>(
+    key: Shortcut,
+    targets: &[Target<T>],
+    shown: impl Fn(T) -> bool,
+) -> Option<(Act, T)> {
+    let pressed = key.access_letter()?;
+    targets
+        .iter()
+        .find(|t| t.letter() == Some(pressed) && shown(t.id))
+        .map(|t| (t.act, t.id))
+}
+
 /// Keeps a press until Alt is up.
 pub struct Dispatcher<T> {
     pending: Cell<Option<T>>,
@@ -177,12 +191,23 @@ pub fn bind<T: Copy + 'static>(
     targets: Vec<Target<T>>,
     act: impl Fn(T) + 'static,
 ) {
+    bind_where(dialog, targets, |_| true, act);
+}
+
+/// As [`bind`], but only the targets `shown` lets in have their keys at the moment: the
+/// controls of the tab shown (TASK-44). Another key goes on as if it were none.
+pub fn bind_where<T: Copy + 'static>(
+    dialog: &Dialog,
+    targets: Vec<Target<T>>,
+    shown: impl Fn(T) -> bool + 'static,
+    act: impl Fn(T) + 'static,
+) {
     let dispatcher = Rc::new(Dispatcher::default());
     let act = Rc::new(act);
     let (waiting, on_key) = (Rc::clone(&dispatcher), Rc::clone(&act));
     dialog.on_char_hook(move |data| {
         if let WindowEventData::Keyboard(key) = data {
-            let hit = find(Shortcut::from_event(&key), &targets);
+            let hit = find_shown(Shortcut::from_event(&key), &targets, &shown);
             key.event.skip(hit.is_none());
             if let Some(id) = hit.and_then(|(how, id)| waiting.dispatch(how, id)) {
                 on_key(id);
@@ -246,6 +271,26 @@ mod tests {
         assert_eq!(find(alt(b'F').ctrl(), &targets), None);
         assert_eq!(find(alt(b'F').shift(), &targets), None);
         assert_eq!(find(Shortcut::new(Key::Letter(b'F')), &targets), None);
+    }
+
+    #[test]
+    fn a_letter_of_a_tab_not_shown_does_not_hide_the_same_letter_of_the_tab_shown() {
+        // TASK-39: «O» is a check box on «Знімки» and on «Експорт».
+        let targets = [
+            Target::new("&Other", Act::Press, Id::Field),
+            Target::new("&Open", Act::Press, Id::Button),
+        ];
+        let alt_o = Shortcut::new(Key::Letter(b'O')).alt();
+        let on_second = |id| id == Id::Button;
+        assert_eq!(
+            find_shown(alt_o, &targets, on_second),
+            Some((Act::Press, Id::Button))
+        );
+        assert_eq!(
+            find_shown(alt_o, &targets, |id| id == Id::Field),
+            Some((Act::Press, Id::Field))
+        );
+        assert_eq!(find_shown(alt_o, &targets, |_| false), None);
     }
 
     #[test]
@@ -331,8 +376,11 @@ mod tests {
         // The dialogs.
         let profile = english(crate::profile_window::targets());
         found.extend(problems("profile window", &profile, &[]));
-        let settings = english(crate::settings_window::targets());
-        found.extend(problems("settings window", &settings, &[]));
+        // The settings window: within each tab (TASK-44 #3).
+        for page in crate::settings_window::Page::ALL {
+            let settings = english(crate::settings_window::targets_of(page));
+            found.extend(problems(&format!("settings, {page:?}"), &settings, &[]));
+        }
         let snapshot = "07.11.2026 10:00";
         found.extend(problems(
             "«Порівняти з…»",

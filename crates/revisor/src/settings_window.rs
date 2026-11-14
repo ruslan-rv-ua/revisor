@@ -2,22 +2,27 @@
 //! control of their own — the interface language (TASK-16), its theme (TASK-34), what the
 //! focus does when a snapshot ends, what it does when a comparison ends (TASK-11), how sizes
 //! are written (TASK-13), how the details of a change write attributes (TASK-14), what the
-//! nodes of the difference tree say (TASK-33), whether deleting snapshots asks first, and
-//! whether showing a change no longer on disk in File Explorer asks first (TASK-14). The
+//! nodes of the difference tree say (TASK-33), whether deleting snapshots asks first,
+//! whether showing a change no longer on disk in File Explorer asks first (TASK-14),
+//! whether the status bar names the path copied (TASK-41), and whether the list of typical
+//! folders offers other users' folders (TASK-43). The
 //! profile opened last and the view of the difference — its types, order, list or tree — are
-//! kept without a control.
+//! kept without a control. The settings lie on tabs (TASK-44): «Загальні», «Знімки»,
+//! «Різниця» and «Експорт», which holds whether the exported file opens (TASK-39) and what
+//! separates the values of CSV (TASK-40).
 
 use std::rc::Rc;
 
 use revisor_core::settings::{
-    AttributeFormat, FocusAfterComparison, FocusAfterSnapshot, Language, SizeFormat, Theme,
-    TreeNodeText,
+    AttributeFormat, CsvDelimiter, FocusAfterComparison, FocusAfterSnapshot, Language, SizeFormat,
+    Theme, TreeNodeText,
 };
 use wxdragon::prelude::*;
 
 use crate::access::{self, Act, Name, Target, field_label, plain};
 use crate::commands::CommandId;
 use crate::i18n::Strings;
+use crate::win32;
 
 /// The settings the window edits.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -31,6 +36,39 @@ pub struct Values {
     pub tree_node_text: TreeNodeText,
     pub confirm_snapshot_deletion: bool,
     pub warn_missing_entry: bool,
+    pub show_copied_path: bool,
+    pub other_users_folders: bool,
+    pub open_after_export: bool,
+    pub csv_delimiter: CsvDelimiter,
+}
+
+/// The tabs of the window (TASK-44), in their order. Settings added later go into the tab
+/// they belong to; «Експорт» came with its first setting (TASK-39).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) enum Page {
+    General,
+    Snapshots,
+    Difference,
+    Export,
+}
+
+impl Page {
+    pub(crate) const ALL: [Page; 4] = [
+        Self::General,
+        Self::Snapshots,
+        Self::Difference,
+        Self::Export,
+    ];
+
+    /// The name of the tab. Tabs have no access keys: Ctrl+Tab and Ctrl+PgDn switch them.
+    fn name(self, s: &dyn Strings) -> &'static str {
+        match self {
+            Self::General => s.settings_general(),
+            Self::Snapshots => s.settings_snapshots(),
+            Self::Difference => s.settings_difference(),
+            Self::Export => s.settings_export(),
+        }
+    }
 }
 
 /// The labelled controls of the window. OK and Cancel are not among them: they have no
@@ -40,26 +78,52 @@ pub(crate) enum Control {
     Language,
     Theme,
     FocusAfterSnapshot,
+    ConfirmDeletion,
+    OtherUsersFolders,
     FocusAfterComparison,
     SizeFormat,
     AttributeFormat,
     TreeNodes,
-    ConfirmDeletion,
     WarnMissingEntry,
+    ShowCopiedPath,
+    CsvDelimiter,
+    OpenAfterExport,
 }
 
 impl Control {
-    const ALL: [Control; 9] = [
+    /// In tab order: tab by tab, as each tab shows them.
+    const ALL: [Control; 13] = [
         Self::Language,
         Self::Theme,
         Self::FocusAfterSnapshot,
+        Self::ConfirmDeletion,
+        Self::OtherUsersFolders,
         Self::FocusAfterComparison,
         Self::SizeFormat,
         Self::AttributeFormat,
         Self::TreeNodes,
-        Self::ConfirmDeletion,
         Self::WarnMissingEntry,
+        Self::ShowCopiedPath,
+        Self::CsvDelimiter,
+        Self::OpenAfterExport,
     ];
+
+    /// The tab the control is on.
+    fn page(self) -> Page {
+        match self {
+            Self::Language | Self::Theme => Page::General,
+            Self::FocusAfterSnapshot | Self::ConfirmDeletion | Self::OtherUsersFolders => {
+                Page::Snapshots
+            }
+            Self::FocusAfterComparison
+            | Self::SizeFormat
+            | Self::AttributeFormat
+            | Self::TreeNodes
+            | Self::WarnMissingEntry
+            | Self::ShowCopiedPath => Page::Difference,
+            Self::CsvDelimiter | Self::OpenAfterExport => Page::Export,
+        }
+    }
 
     /// The name of the control's label or check box, whose English marks its access key.
     fn name(self) -> Name {
@@ -73,13 +137,24 @@ impl Control {
             Self::TreeNodes => |s| s.tree_nodes(),
             Self::ConfirmDeletion => |s| s.confirm_snapshot_deletion(),
             Self::WarnMissingEntry => |s| s.warn_missing_entry(),
+            Self::ShowCopiedPath => |s| s.show_copied_path(),
+            Self::OtherUsersFolders => |s| s.other_users_folders(),
+            Self::CsvDelimiter => |s| s.csv_delimiter(),
+            Self::OpenAfterExport => |s| s.open_after_export(),
         }
     }
 
     /// Whether the control is a check box, which its access key toggles, as an access key
     /// on a check box does in Windows; the others are lists that take the focus.
     fn is_check_box(self) -> bool {
-        matches!(self, Self::ConfirmDeletion | Self::WarnMissingEntry)
+        matches!(
+            self,
+            Self::ConfirmDeletion
+                | Self::WarnMissingEntry
+                | Self::ShowCopiedPath
+                | Self::OtherUsersFolders
+                | Self::OpenAfterExport
+        )
     }
 
     /// The text of the control's label or check box: "&Focus after a snapshot:",
@@ -91,24 +166,30 @@ impl Control {
             field_label(s, self.name())
         }
     }
+
+    /// The access key: a check box is pressed, a list takes the focus.
+    fn target(self) -> Target<Control> {
+        let act = if self.is_check_box() {
+            Act::Press
+        } else {
+            Act::Focus
+        };
+        Target::of(self.name(), act, self)
+    }
 }
 
-/// The access keys of the window: a check box is pressed, a list takes the focus.
-pub(crate) fn targets() -> Vec<Target<Control>> {
+/// The access keys of the tab `page`, the only ones that act while it is shown
+/// (TASK-44 #3).
+pub(crate) fn targets_of(page: Page) -> Vec<Target<Control>> {
     Control::ALL
         .into_iter()
-        .map(|c| {
-            let act = if c.is_check_box() {
-                Act::Press
-            } else {
-                Act::Focus
-            };
-            Target::of(c.name(), act, c)
-        })
+        .filter(|c| c.page() == page)
+        .map(Control::target)
         .collect()
 }
 
 struct Window {
+    notebook: Notebook,
     language: Choice,
     theme: Choice,
     focus: Choice,
@@ -117,107 +198,184 @@ struct Window {
     attribute_format: Choice,
     tree_nodes: Choice,
     confirm: CheckBox,
+    other_users: CheckBox,
     warn_missing: CheckBox,
+    show_copied_path: CheckBox,
+    csv_delimiter: Choice,
+    open_after_export: CheckBox,
+}
+
+/// A tab under construction: its panel and the column of its controls.
+struct Tab {
+    panel: Panel,
+    sizer: BoxSizer,
+}
+
+impl Tab {
+    fn new(notebook: &Notebook) -> Self {
+        Self {
+            panel: Panel::builder(notebook).build(),
+            sizer: BoxSizer::builder(Orientation::Vertical).build(),
+        }
+    }
+
+    /// Adds the list of `control` with `chosen` of its `options` selected. Its label comes
+    /// right before it, so screen readers name the list after it.
+    fn choice(&self, s: &dyn Strings, control: Control, options: &[&str], chosen: usize) -> Choice {
+        let label = StaticText::builder(&self.panel)
+            .with_label(&control.label(s))
+            .build();
+        let choice = Choice::builder(&self.panel).build();
+        for option in options {
+            choice.append(option);
+        }
+        choice.set_selection(chosen as u32);
+        let side = SizerFlag::Left | SizerFlag::Right;
+        self.sizer.add(&label, 0, side | SizerFlag::Top, 12);
+        self.sizer.add_spacer(4);
+        self.sizer.add(&choice, 0, SizerFlag::Expand | side, 12);
+        choice
+    }
+
+    /// Adds the check box of `control`, ticked as `value` says.
+    fn check_box(&self, s: &dyn Strings, control: Control, value: bool) -> CheckBox {
+        let check_box = CheckBox::builder(&self.panel)
+            .with_label(&control.label(s))
+            .build();
+        check_box.set_value(value);
+        let side = SizerFlag::Left | SizerFlag::Right;
+        self.sizer.add(&check_box, 0, side | SizerFlag::Top, 12);
+        check_box
+    }
+
+    /// Puts the tab into `notebook`, with room below its last control.
+    fn finish(self, notebook: &Notebook, s: &dyn Strings, page: Page) {
+        self.sizer.add_spacer(12);
+        self.panel.set_sizer(self.sizer, true);
+        // NVDA says the tab when Ctrl+Tab brings the focus onto its page (TASK-44 #7).
+        win32::accessibility::make_property_page(self.panel.get_handle(), page.name(s));
+        notebook.add_page(&self.panel, page.name(s), page == Page::General, None);
+    }
+}
+
+/// Presses the check box as a click does: it toggles and takes the focus, and screen
+/// readers say its new state also when it had the focus already (TASK-39).
+fn press(check_box: &CheckBox) {
+    win32::focus::click(check_box.get_handle());
+}
+
+/// The position of `value` among `all`, or the first.
+fn position<V: PartialEq>(all: &[V], value: &V) -> usize {
+    all.iter().position(|v| v == value).unwrap_or(0)
 }
 
 /// Shows the window with the `initial` values and returns the new ones once the user
-/// confirms, or `None` when they cancel.
+/// confirms, or `None` when they cancel. It opens on «Загальні» with the focus on its first
+/// list; OK keeps the settings of every tab, Cancel none (TASK-44 #1, #4).
 pub fn show(parent: &Frame, s: &'static dyn Strings, initial: Values) -> Option<Values> {
     let dialog = Dialog::builder(parent, &plain(s.command(CommandId::Settings))).build();
-    // Made in tab order. The label comes right before its control, so screen readers name
-    // the control after it.
-    let language_label = StaticText::builder(&dialog)
-        .with_label(&Control::Language.label(s))
-        .build();
-    let language = Choice::builder(&dialog).build();
-    for value in Language::ALL {
-        language.append(s.language_option(value));
-    }
-    let chosen = Language::ALL
+    // Made in tab order: the tabs, then OK and Cancel below them.
+    let notebook = Notebook::builder(&dialog).build();
+
+    let general = Tab::new(&notebook);
+    let options: Vec<&str> = Language::ALL
         .iter()
-        .position(|&v| v == initial.language)
-        .unwrap_or(0);
-    language.set_selection(chosen as u32);
-    let theme_label = StaticText::builder(&dialog)
-        .with_label(&Control::Theme.label(s))
-        .build();
-    let theme = Choice::builder(&dialog).build();
-    for value in Theme::ALL {
-        theme.append(s.theme_option(value));
-    }
-    let chosen = Theme::ALL
+        .map(|&v| s.language_option(v))
+        .collect();
+    let language = general.choice(
+        s,
+        Control::Language,
+        &options,
+        position(&Language::ALL, &initial.language),
+    );
+    let options: Vec<&str> = Theme::ALL.iter().map(|&v| s.theme_option(v)).collect();
+    let theme = general.choice(
+        s,
+        Control::Theme,
+        &options,
+        position(&Theme::ALL, &initial.theme),
+    );
+    general.finish(&notebook, s, Page::General);
+
+    let snapshots = Tab::new(&notebook);
+    let options: Vec<&str> = FocusAfterSnapshot::ALL
         .iter()
-        .position(|&v| v == initial.theme)
-        .unwrap_or(0);
-    theme.set_selection(chosen as u32);
-    let focus_label = StaticText::builder(&dialog)
-        .with_label(&Control::FocusAfterSnapshot.label(s))
-        .build();
-    let focus = Choice::builder(&dialog).build();
-    for value in FocusAfterSnapshot::ALL {
-        focus.append(s.focus_option(value));
-    }
-    let chosen = FocusAfterSnapshot::ALL
+        .map(|&v| s.focus_option(v))
+        .collect();
+    let focus = snapshots.choice(
+        s,
+        Control::FocusAfterSnapshot,
+        &options,
+        position(&FocusAfterSnapshot::ALL, &initial.focus_after_snapshot),
+    );
+    let confirm = snapshots.check_box(
+        s,
+        Control::ConfirmDeletion,
+        initial.confirm_snapshot_deletion,
+    );
+    let other_users =
+        snapshots.check_box(s, Control::OtherUsersFolders, initial.other_users_folders);
+    snapshots.finish(&notebook, s, Page::Snapshots);
+
+    let difference = Tab::new(&notebook);
+    let options: Vec<&str> = FocusAfterComparison::ALL
         .iter()
-        .position(|&v| v == initial.focus_after_snapshot)
-        .unwrap_or(0);
-    focus.set_selection(chosen as u32);
-    let comparison_focus_label = StaticText::builder(&dialog)
-        .with_label(&Control::FocusAfterComparison.label(s))
-        .build();
-    let comparison_focus = Choice::builder(&dialog).build();
-    for value in FocusAfterComparison::ALL {
-        comparison_focus.append(s.comparison_focus_option(value));
-    }
-    let chosen = FocusAfterComparison::ALL
+        .map(|&v| s.comparison_focus_option(v))
+        .collect();
+    let comparison_focus = difference.choice(
+        s,
+        Control::FocusAfterComparison,
+        &options,
+        position(&FocusAfterComparison::ALL, &initial.focus_after_comparison),
+    );
+    let options: Vec<&str> = SizeFormat::ALL.iter().map(|&v| s.size_option(v)).collect();
+    let size_format = difference.choice(
+        s,
+        Control::SizeFormat,
+        &options,
+        position(&SizeFormat::ALL, &initial.size_format),
+    );
+    let options: Vec<&str> = AttributeFormat::ALL
         .iter()
-        .position(|&v| v == initial.focus_after_comparison)
-        .unwrap_or(0);
-    comparison_focus.set_selection(chosen as u32);
-    let size_label = StaticText::builder(&dialog)
-        .with_label(&Control::SizeFormat.label(s))
-        .build();
-    let size_format = Choice::builder(&dialog).build();
-    for value in SizeFormat::ALL {
-        size_format.append(s.size_option(value));
-    }
-    let chosen = SizeFormat::ALL
+        .map(|&v| s.attribute_option(v))
+        .collect();
+    let attribute_format = difference.choice(
+        s,
+        Control::AttributeFormat,
+        &options,
+        position(&AttributeFormat::ALL, &initial.attribute_format),
+    );
+    let options: Vec<&str> = TreeNodeText::ALL
         .iter()
-        .position(|&v| v == initial.size_format)
-        .unwrap_or(0);
-    size_format.set_selection(chosen as u32);
-    let attribute_label = StaticText::builder(&dialog)
-        .with_label(&Control::AttributeFormat.label(s))
-        .build();
-    let attribute_format = Choice::builder(&dialog).build();
-    for value in AttributeFormat::ALL {
-        attribute_format.append(s.attribute_option(value));
-    }
-    let chosen = AttributeFormat::ALL
+        .map(|&v| s.tree_node_option(v))
+        .collect();
+    let tree_nodes = difference.choice(
+        s,
+        Control::TreeNodes,
+        &options,
+        position(&TreeNodeText::ALL, &initial.tree_node_text),
+    );
+    let warn_missing =
+        difference.check_box(s, Control::WarnMissingEntry, initial.warn_missing_entry);
+    let show_copied_path =
+        difference.check_box(s, Control::ShowCopiedPath, initial.show_copied_path);
+    difference.finish(&notebook, s, Page::Difference);
+
+    let export = Tab::new(&notebook);
+    let options: Vec<&str> = CsvDelimiter::ALL
         .iter()
-        .position(|&v| v == initial.attribute_format)
-        .unwrap_or(0);
-    attribute_format.set_selection(chosen as u32);
-    let tree_nodes_label = StaticText::builder(&dialog)
-        .with_label(&Control::TreeNodes.label(s))
-        .build();
-    let tree_nodes = Choice::builder(&dialog).build();
-    for value in TreeNodeText::ALL {
-        tree_nodes.append(s.tree_node_option(value));
-    }
-    let chosen = TreeNodeText::ALL
-        .iter()
-        .position(|&v| v == initial.tree_node_text)
-        .unwrap_or(0);
-    tree_nodes.set_selection(chosen as u32);
-    let confirm = CheckBox::builder(&dialog)
-        .with_label(&Control::ConfirmDeletion.label(s))
-        .build();
-    confirm.set_value(initial.confirm_snapshot_deletion);
-    let warn_missing = CheckBox::builder(&dialog)
-        .with_label(&Control::WarnMissingEntry.label(s))
-        .build();
-    warn_missing.set_value(initial.warn_missing_entry);
+        .map(|&v| s.csv_delimiter_option(v))
+        .collect();
+    let csv_delimiter = export.choice(
+        s,
+        Control::CsvDelimiter,
+        &options,
+        position(&CsvDelimiter::ALL, &initial.csv_delimiter),
+    );
+    let open_after_export =
+        export.check_box(s, Control::OpenAfterExport, initial.open_after_export);
+    export.finish(&notebook, s, Page::Export);
+
     let ok = Button::builder(&dialog)
         .with_id(ID_OK)
         .with_label(s.ok())
@@ -229,36 +387,22 @@ pub fn show(parent: &Frame, s: &'static dyn Strings, initial: Values) -> Option<
     ok.set_default();
     dialog.set_escape_id(ID_CANCEL);
 
+    // The notebook takes the size of its largest tab (TASK-44 #6).
     let sizer = BoxSizer::builder(Orientation::Vertical).build();
-    let side = SizerFlag::Left | SizerFlag::Right;
-    sizer.add(&language_label, 0, side | SizerFlag::Top, 12);
-    sizer.add(&language, 0, SizerFlag::Expand | SizerFlag::All, 12);
-    sizer.add(&theme_label, 0, side, 12);
-    sizer.add(&theme, 0, SizerFlag::Expand | SizerFlag::All, 12);
-    sizer.add(&focus_label, 0, side, 12);
-    sizer.add(&focus, 0, SizerFlag::Expand | SizerFlag::All, 12);
-    sizer.add(&comparison_focus_label, 0, side, 12);
-    sizer.add(&comparison_focus, 0, SizerFlag::Expand | SizerFlag::All, 12);
-    sizer.add(&size_label, 0, side, 12);
-    sizer.add(&size_format, 0, SizerFlag::Expand | SizerFlag::All, 12);
-    sizer.add(&attribute_label, 0, side, 12);
-    sizer.add(&attribute_format, 0, SizerFlag::Expand | SizerFlag::All, 12);
-    sizer.add(&tree_nodes_label, 0, side, 12);
-    sizer.add(&tree_nodes, 0, SizerFlag::Expand | SizerFlag::All, 12);
-    sizer.add(&confirm, 0, side | SizerFlag::Bottom, 12);
-    sizer.add(&warn_missing, 0, side | SizerFlag::Bottom, 12);
+    sizer.add(&notebook, 1, SizerFlag::Expand | SizerFlag::All, 12);
     let commit_row = BoxSizer::builder(Orientation::Horizontal).build();
     commit_row.add(&ok, 0, SizerFlag::AlignLeft, 8);
     commit_row.add(&cancel, 0, SizerFlag::Left, 8);
     sizer.add_sizer(
         &commit_row,
         0,
-        SizerFlag::AlignRight | side | SizerFlag::Bottom,
+        SizerFlag::AlignRight | SizerFlag::Left | SizerFlag::Right | SizerFlag::Bottom,
         12,
     );
     dialog.set_sizer_and_fit(sizer, true);
 
     let window = Rc::new(Window {
+        notebook,
         language,
         theme,
         focus,
@@ -267,12 +411,22 @@ pub fn show(parent: &Frame, s: &'static dyn Strings, initial: Values) -> Option<
         attribute_format,
         tree_nodes,
         confirm,
+        other_users,
         warn_missing,
+        show_copied_path,
+        csv_delimiter,
+        open_after_export,
     });
     // Access keys by the key's position, so they work in the Ukrainian layout too
-    // (document «Клавіатура й меню»).
-    let w = Rc::clone(&window);
-    access::bind(&dialog, targets(), move |control| w.access_key(control));
+    // (document «Клавіші доступу»), and only those of the tab shown.
+    let (shown, w) = (Rc::clone(&window), Rc::clone(&window));
+    let targets = Page::ALL.into_iter().flat_map(targets_of).collect();
+    access::bind_where(
+        &dialog,
+        targets,
+        move |control| shown.page() == Some(control.page()),
+        move |control| w.access_key(control),
+    );
 
     dialog.centre();
     window.language.set_focus();
@@ -285,6 +439,12 @@ pub fn show(parent: &Frame, s: &'static dyn Strings, initial: Values) -> Option<
 }
 
 impl Window {
+    /// The tab shown.
+    fn page(&self) -> Option<Page> {
+        let shown = usize::try_from(self.notebook.selection()).ok()?;
+        Page::ALL.get(shown).copied()
+    }
+
     /// Acts on the access key of `control`. The check box's key toggles it.
     fn access_key(&self, control: Control) {
         match control {
@@ -295,14 +455,12 @@ impl Window {
             Control::SizeFormat => self.size_format.set_focus(),
             Control::AttributeFormat => self.attribute_format.set_focus(),
             Control::TreeNodes => self.tree_nodes.set_focus(),
-            Control::ConfirmDeletion => {
-                self.confirm.set_value(!self.confirm.get_value());
-                self.confirm.set_focus();
-            }
-            Control::WarnMissingEntry => {
-                self.warn_missing.set_value(!self.warn_missing.get_value());
-                self.warn_missing.set_focus();
-            }
+            Control::CsvDelimiter => self.csv_delimiter.set_focus(),
+            Control::ConfirmDeletion => press(&self.confirm),
+            Control::WarnMissingEntry => press(&self.warn_missing),
+            Control::ShowCopiedPath => press(&self.show_copied_path),
+            Control::OtherUsersFolders => press(&self.other_users),
+            Control::OpenAfterExport => press(&self.open_after_export),
         }
     }
 
@@ -314,6 +472,7 @@ impl Window {
         let size = self.size_format.get_selection().unwrap_or(0) as usize;
         let attributes = self.attribute_format.get_selection().unwrap_or(0) as usize;
         let tree_nodes = self.tree_nodes.get_selection().unwrap_or(0) as usize;
+        let delimiter = self.csv_delimiter.get_selection().unwrap_or(0) as usize;
         Values {
             language: Language::ALL.get(language).copied().unwrap_or_default(),
             theme: Theme::ALL.get(theme).copied().unwrap_or_default(),
@@ -336,6 +495,13 @@ impl Window {
                 .unwrap_or_default(),
             confirm_snapshot_deletion: self.confirm.get_value(),
             warn_missing_entry: self.warn_missing.get_value(),
+            show_copied_path: self.show_copied_path.get_value(),
+            other_users_folders: self.other_users.get_value(),
+            open_after_export: self.open_after_export.get_value(),
+            csv_delimiter: CsvDelimiter::ALL
+                .get(delimiter)
+                .copied()
+                .unwrap_or_default(),
         }
     }
 }
@@ -344,6 +510,47 @@ impl Window {
 mod tests {
     use super::*;
     use crate::i18n::{En, Uk};
+
+    #[test]
+    fn each_tab_holds_its_settings_in_tab_order() {
+        // TASK-44 #1.
+        let on = |page| -> Vec<Control> { targets_of(page).into_iter().map(|t| t.id).collect() };
+        assert_eq!(on(Page::General), [Control::Language, Control::Theme]);
+        assert_eq!(
+            on(Page::Snapshots),
+            [
+                Control::FocusAfterSnapshot,
+                Control::ConfirmDeletion,
+                Control::OtherUsersFolders,
+            ]
+        );
+        assert_eq!(
+            on(Page::Difference),
+            [
+                Control::FocusAfterComparison,
+                Control::SizeFormat,
+                Control::AttributeFormat,
+                Control::TreeNodes,
+                Control::WarnMissingEntry,
+                // TASK-41 #8.
+                Control::ShowCopiedPath,
+            ]
+        );
+        // TASK-39 #9.
+        assert_eq!(
+            on(Page::Export),
+            [Control::CsvDelimiter, Control::OpenAfterExport]
+        );
+        assert_eq!(Page::ALL[0], Page::General);
+    }
+
+    #[test]
+    fn the_tabs_are_named_in_both_languages() {
+        let uk: Vec<&str> = Page::ALL.iter().map(|&p| p.name(&Uk)).collect();
+        assert_eq!(uk, ["Загальні", "Знімки", "Різниця", "Експорт"]);
+        let en: Vec<&str> = Page::ALL.iter().map(|&p| p.name(&En)).collect();
+        assert_eq!(en, ["General", "Snapshots", "Difference", "Export"]);
+    }
 
     #[test]
     fn the_labels_mark_their_letters_in_both_languages() {
@@ -392,6 +599,63 @@ mod tests {
             Control::WarnMissingEntry.label(&Uk),
             "Попереджати, коли запису вже немає на диску (&W)"
         );
+        // TASK-41 #8: H, as S is the size's.
+        assert_eq!(
+            Control::ShowCopiedPath.label(&En),
+            "S&how the copied path in the status bar"
+        );
+        assert_eq!(
+            Control::ShowCopiedPath.label(&Uk),
+            "Показувати скопійований шлях у рядку стану (&H)"
+        );
+        // TASK-43 #5.
+        assert_eq!(
+            Control::OtherUsersFolders.label(&En),
+            "Show &other users' folders in the typical folders list"
+        );
+        assert_eq!(
+            Control::OtherUsersFolders.label(&Uk),
+            "Показувати теки інших користувачів у переліку типових тек (&O)"
+        );
+        // TASK-39 #9: O again, on another tab.
+        assert_eq!(
+            Control::OpenAfterExport.label(&En),
+            "&Open the file after export"
+        );
+        assert_eq!(
+            Control::OpenAfterExport.label(&Uk),
+            "Відкривати файл після експорту (&O)"
+        );
+        // TASK-40 #5.
+        assert_eq!(Control::CsvDelimiter.label(&En), "CSV &delimiter:");
+        assert_eq!(Control::CsvDelimiter.label(&Uk), "Роздільник у CSV (&D):");
+    }
+
+    #[test]
+    fn the_csv_delimiter_options_are_named_in_both_languages_in_setting_order() {
+        // TASK-40 #5; the first, as Windows has it, is the default.
+        let uk: Vec<&str> = CsvDelimiter::ALL
+            .iter()
+            .map(|&v| Uk.csv_delimiter_option(v))
+            .collect();
+        assert_eq!(uk, ["Як у Windows", "Кома", "Крапка з комою", "Табуляція"]);
+        let en: Vec<&str> = CsvDelimiter::ALL
+            .iter()
+            .map(|&v| En.csv_delimiter_option(v))
+            .collect();
+        assert_eq!(en, ["Same as Windows", "Comma", "Semicolon", "Tab"]);
+        assert_eq!(CsvDelimiter::ALL[0], CsvDelimiter::default());
+    }
+
+    #[test]
+    fn no_letter_repeats_on_one_tab() {
+        for page in Page::ALL {
+            let mut letters: Vec<u8> = targets_of(page).iter().filter_map(|t| t.letter()).collect();
+            let all = letters.len();
+            letters.sort_unstable();
+            letters.dedup();
+            assert_eq!(letters.len(), all, "{page:?}");
+        }
     }
 
     #[test]

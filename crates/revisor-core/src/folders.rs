@@ -26,7 +26,7 @@ use crate::store::Unavailable;
 #[derive(Clone, Debug)]
 pub struct Location {
     /// The parts of the real path ([`path::parts`]).
-    parts: Vec<Folded>,
+    pub(crate) parts: Vec<Folded>,
     /// The path as it was given and as it really is with a drive letter, in the same form:
     /// a profile folder no longer on the disk is compared with these.
     written: Vec<Vec<Folded>>,

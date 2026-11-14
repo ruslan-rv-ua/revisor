@@ -9,11 +9,13 @@ use std::ptr;
 use windows_sys::Win32::Foundation::{FILETIME, PROPERTYKEY, SYSTEMTIME};
 use windows_sys::Win32::Globalization::{
     DATE_SHORTDATE, GetDateFormatEx, GetLocaleInfoEx, GetNumberFormatEx, GetTimeFormatEx,
-    LOCALE_NOUSEROVERRIDE, LOCALE_SDECIMAL, LOCALE_SGROUPING, LOCALE_STHOUSAND, LOCALE_STIMEFORMAT,
-    NUMBERFMTW,
+    LOCALE_NOUSEROVERRIDE, LOCALE_SDECIMAL, LOCALE_SGROUPING, LOCALE_SLIST, LOCALE_STHOUSAND,
+    LOCALE_STIMEFORMAT, NUMBERFMTW,
 };
 use windows_sys::Win32::System::Com::StructuredStorage::PROPVARIANT;
-use windows_sys::Win32::System::Time::{FileTimeToSystemTime, SystemTimeToTzSpecificLocalTime};
+use windows_sys::Win32::System::Time::{
+    FileTimeToSystemTime, SystemTimeToFileTime, SystemTimeToTzSpecificLocalTime,
+};
 use windows_sys::Win32::System::Variant::VT_UI4;
 use windows_sys::Win32::UI::Shell::PropertiesSystem::{PDFF_DEFAULT, PSFormatForDisplay};
 use windows_sys::Win32::UI::Shell::StrFormatByteSizeW;
@@ -124,6 +126,23 @@ pub fn format_date_time(locale: Locale, unix_millis: i64) -> String {
     }
 }
 
+/// A moment given as Unix time in milliseconds, in this computer's time zone, as a name
+/// of a file can hold it, with no colons: "2026-11-13 14-05-33" (TASK-39 #2). A moment
+/// Windows cannot convert is in UTC.
+pub fn file_name_time(unix_millis: i64) -> String {
+    let local = unix_millis
+        .checked_mul(10_000)
+        .and_then(|i| i.checked_add(EPOCH_DIFFERENCE))
+        .and_then(local_time);
+    match local {
+        Some(t) => format!(
+            "{:04}-{:02}-{:02} {:02}-{:02}-{:02}",
+            t.wYear, t.wMonth, t.wDay, t.wHour, t.wMinute, t.wSecond
+        ),
+        None => iso_utc(unix_millis).replace(':', "-").replace(" UTC", ""),
+    }
+}
+
 /// 100-ns intervals between 1601-01-01 and 1970-01-01.
 const EPOCH_DIFFERENCE: i64 = 116_444_736_000_000_000;
 
@@ -201,6 +220,35 @@ fn after_seconds(picture: &str, literal: &str) -> String {
     }
     let at = end.unwrap_or(picture.len());
     format!("{}{quoted}{}", &picture[..at], &picture[at..])
+}
+
+/// The list separator and the decimal separator of `locale` (TASK-40 #5), which choose
+/// the delimiter of CSV «as in Windows»; `None` for one that cannot be read.
+pub fn list_and_decimal_separators(locale: Locale) -> (Option<String>, Option<String>) {
+    (
+        locale_text(locale, LOCALE_SLIST),
+        locale_text(locale, LOCALE_SDECIMAL),
+    )
+}
+
+/// The offset from UTC, in minutes, of this computer's time zone at the moment given as a
+/// FILETIME, as revisor writes the moments of CSV (TASK-40 #3); `None` when Windows cannot
+/// convert it.
+pub fn utc_offset_minutes(intervals: i64) -> Option<i32> {
+    let local = local_time(intervals)?;
+    let mut back = FILETIME {
+        dwLowDateTime: 0,
+        dwHighDateTime: 0,
+    };
+    // SAFETY: valid pointers to a SYSTEMTIME and a FILETIME.
+    if unsafe { SystemTimeToFileTime(&local, &mut back) } == 0 {
+        return None;
+    }
+    let local = (i64::from(back.dwHighDateTime) << 32) | i64::from(back.dwLowDateTime);
+    // A SYSTEMTIME holds milliseconds, so the offset is what is left after them.
+    let utc_millis = intervals.div_euclid(10_000);
+    let minutes = (local.div_euclid(10_000) - utc_millis).div_euclid(60_000);
+    i32::try_from(minutes).ok()
 }
 
 /// A moment given as a FILETIME in this computer's time zone; `None` when Windows cannot

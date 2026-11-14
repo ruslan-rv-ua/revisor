@@ -1,5 +1,6 @@
 //! The «Додати типові теки» window (TASK-36): the typical folders a profile can take in,
-//! each with a check box, all checked when the window opens. A native list with check
+//! each with a check box. When the window opens, all are checked but the user folder,
+//! Windows and the folders of other users (TASK-43). A native list with check
 //! boxes, which NVDA reads with the state of each (checked 2026-11-09). Space checks or
 //! unchecks a folder; Enter or «Додати» adds the checked ones, Esc or «Скасувати» closes
 //! the window.
@@ -11,22 +12,35 @@ use crate::access::{self, Act, Name, Target, field_label, plain};
 use crate::i18n::Strings;
 use crate::win32;
 
-/// The text of a folder's row: its name, then its path on this computer.
+/// The text of a folder's row: its name, with the user it belongs to when it is another
+/// user's, then its path on this computer.
 pub fn row_text(s: &dyn Strings, folder: &Offered) -> String {
-    format!(
-        "{} ({})",
-        s.typical_folder(folder.folder),
-        folder.path.display()
-    )
+    let name = match &folder.user {
+        Some(user) => s.other_user_folder(folder.folder, user),
+        None => s.typical_folder(folder.folder).to_owned(),
+    };
+    format!("{name} ({})", folder.path.display())
 }
 
 /// Shows the window with the `offered` folders and returns the checked ones, or nothing
-/// when the user cancels.
-pub fn show(parent: &Dialog, s: &'static dyn Strings, offered: &[Offered]) -> Vec<Offered> {
+/// when the user cancels. When other users' folders are left out for want of rights
+/// (`out_of_reach`), a line above the list says so (TASK-43).
+pub fn show(
+    parent: &Dialog,
+    s: &'static dyn Strings,
+    offered: &[Offered],
+    out_of_reach: bool,
+) -> Vec<Offered> {
     let dialog = Dialog::builder(parent, &plain(s.add_typical_folders()))
         .with_style(DialogStyle::DefaultDialogStyle | DialogStyle::ResizeBorder)
         .with_size(600, 360)
         .build();
+    // Before the list's label, so that the label still names the list.
+    let note = out_of_reach.then(|| {
+        StaticText::builder(&dialog)
+            .with_label(s.other_users_need_admin())
+            .build()
+    });
     // The label comes right before the list, so screen readers name the list after it.
     let name: Name = |s| s.profile_folders();
     let label = StaticText::builder(&dialog)
@@ -40,7 +54,7 @@ pub fn show(parent: &Dialog, s: &'static dyn Strings, offered: &[Offered]) -> Ve
     list.insert_column(0, "", ListColumnFormat::Left, 540);
     for (i, folder) in offered.iter().enumerate() {
         list.insert_item(i as i64, &row_text(s, folder), None);
-        win32::lists::set_checked(hwnd, i, true);
+        win32::lists::set_checked(hwnd, i, folder.checked_at_first());
     }
     // At least as wide as the longest row, so no path is cut off.
     list.set_column_width(0, -1);
@@ -70,6 +84,9 @@ pub fn show(parent: &Dialog, s: &'static dyn Strings, offered: &[Offered]) -> Ve
 
     let sizer = BoxSizer::builder(Orientation::Vertical).build();
     let side = SizerFlag::Left | SizerFlag::Right;
+    if let Some(note) = &note {
+        sizer.add(note, 0, side | SizerFlag::Top, 12);
+    }
     sizer.add(&label, 0, side | SizerFlag::Top, 12);
     sizer.add(&list, 1, SizerFlag::Expand | SizerFlag::All, 12);
     let row = BoxSizer::builder(Orientation::Horizontal).build();

@@ -188,10 +188,15 @@ mod tests {
                 default: Some(CommandId::CompareWithPrevious),
             }
         );
+        // «Копіювати шлях» right after File Explorer, in the same group (TASK-41 #1).
         assert_eq!(
             context_menu(Pane::Difference, &ready),
             ContextMenu {
-                groups: vec![vec![CommandId::Details, CommandId::ShowInExplorer]],
+                groups: vec![vec![
+                    CommandId::Details,
+                    CommandId::ShowInExplorer,
+                    CommandId::CopyPath,
+                ]],
                 default: Some(CommandId::Details),
             }
         );
@@ -233,7 +238,11 @@ mod tests {
             "Видалити знімки — Delete (лише в переліку знімків)",
             "Порівняти з попереднім — F7, Enter у переліку знімків",
             "Подробиці — Alt+Enter, Enter у списку чи дереві різниці",
+            "Копіювати шлях — Ctrl+Shift+C",
             "Додані — Ctrl+1",
+            // The types in the order of the check boxes (TASK-42 #11).
+            "Перейменовані чи переміщені — Ctrl+4",
+            "Недоступні — Ctrl+5",
             // Two items, one key, one line (TASK-33).
             "Списком чи деревом — Ctrl+T",
             "Гарячі клавіші — F1",
@@ -264,6 +273,20 @@ mod tests {
     }
 
     #[test]
+    fn copy_path_shows_ctrl_shift_c_and_its_letter() {
+        // TASK-41 #1.
+        let c = command(CommandId::CopyPath);
+        assert_eq!(menu_label(&En, c), "C&opy path\tCtrl+Shift+C");
+        assert_eq!(menu_label(&Uk, c), "Копіювати шлях (&O)\tCtrl+Shift+C");
+        assert_eq!(context_label(&Uk, c), "Копіювати шлях (&O)");
+        assert!(
+            shortcuts_text(&En)
+                .lines()
+                .any(|l| l == "Copy path — Ctrl+Shift+C")
+        );
+    }
+
+    #[test]
     fn the_view_items_show_ctrl_t_and_their_letters() {
         // TASK-33 #7, #10: both items have the key that switches between them.
         assert_eq!(
@@ -273,6 +296,38 @@ mod tests {
         assert_eq!(
             menu_label(&Uk, command(CommandId::ViewAsTree)),
             "Деревом (&R)\tCtrl+T"
+        );
+    }
+
+    #[test]
+    fn the_item_of_the_renamed_or_moved_is_fourth_among_the_types_with_ctrl_4() {
+        // TASK-42 #11: the menu «Різниця» lists the types as the check boxes stand.
+        let types: Vec<CommandId> = COMMANDS
+            .iter()
+            .filter(|c| c.kind == crate::commands::CommandKind::Check)
+            .map(|c| c.id)
+            .collect();
+        assert_eq!(
+            types,
+            [
+                CommandId::ShowAdded,
+                CommandId::ShowDeleted,
+                CommandId::ShowModified,
+                CommandId::ShowMoved,
+                CommandId::ShowInaccessible,
+            ]
+        );
+        assert_eq!(
+            menu_label(&En, command(CommandId::ShowMoved)),
+            "Renamed or mo&ved\tCtrl+4"
+        );
+        assert_eq!(
+            menu_label(&Uk, command(CommandId::ShowMoved)),
+            "Перейменовані чи переміщені (&V)\tCtrl+4"
+        );
+        assert_eq!(
+            menu_label(&Uk, command(CommandId::ShowInaccessible)),
+            "Недоступні (&N)\tCtrl+5"
         );
     }
 

@@ -328,6 +328,45 @@ mod tests {
     }
 
     #[test]
+    fn ctrl_shift_c_copies_the_path_of_the_change_from_anywhere() {
+        // TASK-41 #1, #4: a shortcut of the whole window, as Ctrl+Enter; the text fields
+        // have no use for it.
+        let ctrl_shift_c = key(Key::Letter(b'C')).ctrl().shift();
+        let state = ready();
+        for focus in [
+            DIFFERENCE_LIST,
+            FILTER_FIELD,
+            SNAPSHOT_LIST,
+            COMPARISON_FIELD,
+            PROFILE_BOX,
+        ] {
+            assert_eq!(
+                route(ctrl_shift_c, focus, &state, &[]),
+                Route::Run(CommandId::CopyPath),
+                "{focus:?}"
+            );
+        }
+        assert_eq!(
+            route(ctrl_shift_c, SNAPSHOT_LIST, &AppState::new(), &[]),
+            Route::Refuse(CommandId::CopyPath, Reason::NoDifference)
+        );
+        let more = AppState {
+            layout: crate::state::DifferenceView::Tree,
+            more_node: true,
+            ..ready()
+        };
+        assert_eq!(
+            route(ctrl_shift_c, DIFFERENCE_LIST, &more, &[]),
+            Route::Refuse(CommandId::CopyPath, Reason::MoreNode)
+        );
+        // Ctrl+C stays the controls'.
+        assert_eq!(
+            route(key(Key::Letter(b'C')).ctrl(), DIFFERENCE_LIST, &state, &[]),
+            Route::Pass
+        );
+    }
+
+    #[test]
     fn ctrl_t_switches_to_the_view_not_shown_from_anywhere() {
         // TASK-33 #7: the two items share the key, which runs the one not marked.
         use crate::state::DifferenceView;
@@ -451,14 +490,15 @@ mod tests {
         for focus in [COMPARISON_FIELD, DIFFERENCE_LIST, SNAPSHOT_LIST] {
             assert_eq!(route(esc, focus, &state, &[]), Route::Pass);
         }
-        // Ctrl+1…Ctrl+4 and Ctrl+F work from the field too (TASK-13 #30).
+        // Ctrl+1…Ctrl+5 and Ctrl+F work from the field too (TASK-13 #30, TASK-42 #11).
         let types = [
             CommandId::ShowAdded,
             CommandId::ShowDeleted,
             CommandId::ShowModified,
+            CommandId::ShowMoved,
             CommandId::ShowInaccessible,
         ];
-        for (digit, id) in (1..=4).zip(types) {
+        for (digit, id) in (1..=5).zip(types) {
             assert_eq!(
                 route(key(Key::Digit(digit)).ctrl(), FILTER_FIELD, &state, &[]),
                 Route::Run(id)

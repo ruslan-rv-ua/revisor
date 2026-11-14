@@ -5,8 +5,8 @@ use revisor_core::compare::{Side, Warning};
 use revisor_core::exclude::PatternError;
 use revisor_core::scan::EntryKind;
 use revisor_core::settings::{
-    AttributeFormat, ChangeType, DifferenceView, FocusAfterComparison, FocusAfterSnapshot,
-    Language, SizeFormat, Theme, TreeNodeText,
+    AttributeFormat, ChangeType, CsvDelimiter, DifferenceView, FocusAfterComparison,
+    FocusAfterSnapshot, Language, SizeFormat, Theme, TreeNodeText,
 };
 use revisor_core::typical::TypicalFolder;
 
@@ -85,10 +85,14 @@ impl Strings for Uk {
             CommandId::CancelComment => "Скасувати коментар",
             CommandId::Details => "Подробиці",
             CommandId::ShowInExplorer => "Показати в Провіднику",
+            CommandId::CopyPath => "Копіювати шлях",
+            CommandId::Export => "Експортувати",
+            CommandId::CancelExport => "Скасувати експорт",
             CommandId::FilterByText => "Фільтрувати за текстом",
             CommandId::ShowAdded => "Додані",
             CommandId::ShowDeleted => "Видалені",
             CommandId::ShowModified => "Змінені",
+            CommandId::ShowMoved => "Перейменовані чи переміщені",
             CommandId::ShowInaccessible => "Недоступні",
             CommandId::SortByPath => "Шлях",
             CommandId::SortByName => "Ім'я",
@@ -143,6 +147,8 @@ impl Strings for Uk {
             Reason::NoChangeShown => "у списку різниці немає змін",
             Reason::TreeSortedByName => "у дереві вузли завжди впорядковано за ім'ям",
             Reason::MoreNode => "вузол «Ще…» — не файл і не тека",
+            Reason::ExportRunning => "триває експорт, а водночас іде лише один",
+            Reason::ExportNotRunning => "експорт зараз не триває",
         }
     }
 
@@ -243,11 +249,16 @@ impl Strings for Uk {
             TypicalFolder::ProgramFiles => "Program Files",
             TypicalFolder::ProgramFilesX86 => "Program Files (x86)",
             TypicalFolder::ProgramData => "ProgramData",
-            TypicalFolder::AppData => "AppData користувача",
             TypicalFolder::Windows => "Windows",
-            TypicalFolder::Desktop => "Робочий стіл користувача",
             TypicalFolder::PublicDesktop => "Загальний робочий стіл",
+            TypicalFolder::Profile => "Тека користувача",
+            TypicalFolder::AppData => "AppData користувача",
+            TypicalFolder::Desktop => "Робочий стіл користувача",
         }
+    }
+
+    fn other_user_folder(&self, folder: TypicalFolder, user: &str) -> String {
+        format!("{} {user}", self.typical_folder(folder))
     }
 
     fn add(&self) -> &'static str {
@@ -256,6 +267,10 @@ impl Strings for Uk {
 
     fn typical_folders_in_profile(&self) -> &'static str {
         "Усі типові теки вже є в профілі."
+    }
+
+    fn other_users_need_admin(&self) -> &'static str {
+        "Теки інших користувачів видно лише від імені адміністратора."
     }
 
     fn profile_exclusions(&self) -> &'static str {
@@ -283,6 +298,7 @@ impl Strings for Uk {
             ChangeType::Added => "Додані",
             ChangeType::Deleted => "Видалені",
             ChangeType::Modified => "Змінені",
+            ChangeType::Moved => "Перейменовані чи переміщені",
             ChangeType::Inaccessible => "Недоступні",
         }
     }
@@ -761,16 +777,25 @@ impl Strings for Uk {
             (EntryKind::File, RowChange::Deleted) => "Видалено",
             (EntryKind::File, RowChange::Modified) => "Змінено",
             (EntryKind::File, RowChange::Replaced) => "Замінено",
+            (EntryKind::File, RowChange::Renamed) => "Перейменовано",
+            (EntryKind::File, RowChange::Moved) => "Переміщено",
+            (EntryKind::File, RowChange::MovedAndRenamed) => "Переміщено й перейменовано",
             (EntryKind::File, RowChange::Inaccessible) => "Недоступно",
             (EntryKind::Dir, RowChange::Added) => "Додано теку",
             (EntryKind::Dir, RowChange::Deleted) => "Видалено теку",
             (EntryKind::Dir, RowChange::Modified) => "Змінено теку",
             (EntryKind::Dir, RowChange::Replaced) => "Замінено теку",
+            (EntryKind::Dir, RowChange::Renamed) => "Перейменовано теку",
+            (EntryKind::Dir, RowChange::Moved) => "Переміщено теку",
+            (EntryKind::Dir, RowChange::MovedAndRenamed) => "Переміщено й перейменовано теку",
             (EntryKind::Dir, RowChange::Inaccessible) => "Недоступна тека",
             (EntryKind::Link, RowChange::Added) => "Додано посилання",
             (EntryKind::Link, RowChange::Deleted) => "Видалено посилання",
             (EntryKind::Link, RowChange::Modified) => "Змінено посилання",
             (EntryKind::Link, RowChange::Replaced) => "Замінено посилання",
+            (EntryKind::Link, RowChange::Renamed) => "Перейменовано посилання",
+            (EntryKind::Link, RowChange::Moved) => "Переміщено посилання",
+            (EntryKind::Link, RowChange::MovedAndRenamed) => "Переміщено й перейменовано посилання",
             (EntryKind::Link, RowChange::Inaccessible) => "Недоступне посилання",
         }
     }
@@ -794,6 +819,10 @@ impl Strings for Uk {
             InaccessibleIn::Later => "у пізнішому знімку",
             InaccessibleIn::Both => "в обох знімках",
         }
+    }
+
+    fn moved_from(&self, former: &str) -> String {
+        format!("з {former}")
     }
 
     fn bytes(&self, bytes: u64, text: &str) -> String {
@@ -858,6 +887,9 @@ impl Strings for Uk {
                     modified.push_str(&format!(", з них замінено {}", t.replaced.text));
                 }
                 parts.push(modified);
+            }
+            if t.moved.n > 0 {
+                parts.push(format!("перейменовано чи переміщено {}", t.moved.text));
             }
             format!(
                 "{}: {}.",
@@ -1081,6 +1113,9 @@ impl Strings for Uk {
             RowChange::Deleted => "видалено",
             RowChange::Modified => "змінено",
             RowChange::Replaced => "замінено",
+            RowChange::Renamed => "перейменовано",
+            RowChange::Moved => "переміщено",
+            RowChange::MovedAndRenamed => "переміщено й перейменовано",
             RowChange::Inaccessible => "недоступно",
         }
     }
@@ -1169,6 +1204,26 @@ impl Strings for Uk {
         "Попереджати, коли запису вже немає на диску"
     }
 
+    fn show_copied_path(&self) -> &'static str {
+        "Показувати скопійований шлях у рядку стану"
+    }
+
+    fn other_users_folders(&self) -> &'static str {
+        "Показувати теки інших користувачів у переліку типових тек"
+    }
+
+    fn settings_general(&self) -> &'static str {
+        "Загальні"
+    }
+
+    fn settings_snapshots(&self) -> &'static str {
+        "Знімки"
+    }
+
+    fn settings_difference(&self) -> &'static str {
+        "Різниця"
+    }
+
     fn entry_gone_question(&self) -> &'static str {
         "Цього запису вже немає на диску. Відкрити теку, де він був?"
     }
@@ -1181,8 +1236,141 @@ impl Strings for Uk {
         format!("на диску немає жодної теки шляху «{path}»")
     }
 
+    fn export_text_type(&self) -> &'static str {
+        "Текстовий звіт (*.txt)"
+    }
+
+    fn export_csv_type(&self) -> &'static str {
+        "CSV (*.csv)"
+    }
+
+    fn exporting(&self) -> &'static str {
+        "Експорт різниці…"
+    }
+
+    fn exported(&self, file: &str) -> String {
+        format!("Різницю експортовано: {file}.")
+    }
+
+    fn export_cancelled(&self) -> &'static str {
+        "Експорт скасовано."
+    }
+
+    fn export_failed(&self, reason: &str) -> String {
+        format!("Різницю не експортовано: {reason}.")
+    }
+
+    fn export_stopped(&self) -> &'static str {
+        "експорт несподівано зупинився"
+    }
+
+    fn open_failed(&self, reason: &str) -> String {
+        format!("Файл не відкрито: {reason}.")
+    }
+
+    fn open_after_export(&self) -> &'static str {
+        "Відкривати файл після експорту"
+    }
+
+    fn settings_export(&self) -> &'static str {
+        "Експорт"
+    }
+
+    fn csv_delimiter(&self) -> &'static str {
+        "Роздільник у CSV"
+    }
+
+    fn csv_delimiter_option(&self, value: CsvDelimiter) -> &'static str {
+        match value {
+            CsvDelimiter::Windows => "Як у Windows",
+            CsvDelimiter::Comma => "Кома",
+            CsvDelimiter::Semicolon => "Крапка з комою",
+            CsvDelimiter::Tab => "Табуляція",
+        }
+    }
+
+    fn report_title(&self, version: &str) -> String {
+        format!("Звіт про різницю, revisor {version}")
+    }
+
+    fn report_filter(&self, types: Option<&[ChangeType]>, text: Option<&str>) -> String {
+        let mut parts = Vec::new();
+        if let Some(types) = types {
+            parts.push(if types.is_empty() {
+                "жодного типу".to_string()
+            } else {
+                let names: Vec<&str> = types
+                    .iter()
+                    .map(|kind| match kind {
+                        ChangeType::Added => "додані",
+                        ChangeType::Deleted => "видалені",
+                        ChangeType::Modified => "змінені",
+                        ChangeType::Moved => "перейменовані чи переміщені",
+                        ChangeType::Inaccessible => "недоступні",
+                    })
+                    .collect();
+                names.join(", ")
+            });
+        }
+        if let Some(text) = text {
+            parts.push(format!("текст «{text}»"));
+        }
+        format!("Фільтр: {}.", parts.join("; "))
+    }
+
+    fn report_folder(&self, path: &str) -> String {
+        format!("Тека: {path}")
+    }
+
+    fn report_group(&self, kind: ChangeType, count: &str) -> String {
+        let name = match kind {
+            ChangeType::Added => "Додано",
+            ChangeType::Deleted => "Видалено",
+            ChangeType::Modified => "Змінено",
+            ChangeType::Moved => "Перейменовано чи переміщено",
+            ChangeType::Inaccessible => "Недоступно",
+        };
+        format!("{name}: {count}")
+    }
+
+    fn report_replaced(&self) -> &'static str {
+        "замінено"
+    }
+
+    fn report_inaccessible(&self, inaccessible: &Inaccessibility) -> String {
+        let which = match inaccessible.which {
+            InaccessibleIn::Earlier => "в ранішому знімку",
+            InaccessibleIn::Later => "в пізнішому знімку",
+            InaccessibleIn::Both => "в обох знімках",
+        };
+        let why = match inaccessible.why {
+            Unreadable::Folder => "вміст теки не вдалося прочитати",
+            Unreadable::LinkTarget => "ціль посилання не вдалося прочитати",
+            Unreadable::Unknown => {
+                "невідомо, чи він там був: теку на шляху до нього не вдалося прочитати або \
+                 вона є посиланням"
+            }
+        };
+        let mut text = format!("недоступно {which} — {why}");
+        if let Some(side) = inaccessible.absent_in {
+            text.push_str(&format!("; у {} знімку його немає", self.side(side)));
+        }
+        text
+    }
+
     fn explorer_failed(&self, reason: &str) -> String {
         format!("Провідник не відкрито: {reason}.")
+    }
+
+    fn path_copied(&self, path: Option<&str>) -> String {
+        match path {
+            Some(path) => format!("Шлях скопійовано: {path}."),
+            None => "Шлях скопійовано.".into(),
+        }
+    }
+
+    fn path_not_copied(&self) -> &'static str {
+        "Шлях не скопійовано."
     }
 
     fn key_space(&self) -> &'static str {

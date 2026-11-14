@@ -18,8 +18,8 @@
 1 ICON "app.ico"
 
 1 VERSIONINFO
-FILEVERSION 0, 3, 0, 0
-PRODUCTVERSION 0, 3, 0, 0
+FILEVERSION 0, 4, 0, 0
+PRODUCTVERSION 0, 4, 0, 0
 FILEOS 0x40004L      // VOS_NT_WINDOWS32
 FILETYPE 0x1L        // VFT_APP
 FILESUBTYPE 0x0L
@@ -31,12 +31,12 @@ BEGIN
         BEGIN
             VALUE "CompanyName",      "Ruslan Iskov"
             VALUE "FileDescription",  "revisor - file system snapshots and their differences"
-            VALUE "FileVersion",      "0.3.0"
+            VALUE "FileVersion",      "0.4.0"
             VALUE "InternalName",     "revisor"
             VALUE "LegalCopyright",   "Copyright (C) 2026 Ruslan Iskov. MIT License."
             VALUE "OriginalFilename", "revisor.exe"
             VALUE "ProductName",      "revisor"
-            VALUE "ProductVersion",   "0.3.0"
+            VALUE "ProductVersion",   "0.4.0"
         END
     END
     BLOCK "VarFileInfo"

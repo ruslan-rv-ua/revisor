@@ -90,6 +90,8 @@ struct Mock {
     order: RefCell<HashMap<usize, Vec<usize>>>,
     selected: Cell<Option<usize>>,
     calls: RefCell<Vec<String>>,
+    /// The texts of the items expanded, in order, open already or not.
+    expansions: RefCell<Vec<String>>,
 }
 
 impl Mock {
@@ -99,6 +101,10 @@ impl Mock {
 
     fn take_calls(&self) -> Vec<String> {
         std::mem::take(&mut *self.calls.borrow_mut())
+    }
+
+    fn take_expansions(&self) -> Vec<String> {
+        std::mem::take(&mut *self.expansions.borrow_mut())
     }
 
     /// The texts of the items as an outline: two spaces per level, `+` for a collapsed
@@ -252,7 +258,10 @@ impl Control for Mock {
     }
 
     fn expand(&self, item: &usize) {
-        self.items.borrow_mut()[*item].as_mut().unwrap().expanded = true;
+        let mut items = self.items.borrow_mut();
+        let item = items[*item].as_mut().unwrap();
+        self.expansions.borrow_mut().push(item.text.clone());
+        item.expanded = true;
     }
 
     fn is_expanded(&self, item: &usize) -> bool {
@@ -332,6 +341,44 @@ fn the_view_ignores_the_expanding_it_makes_itself() {
     let view = TreeView::new(Mock::default());
     view.while_busy(|| view.expanding(NodeId(0), &model));
     assert!(view.control().take_calls().is_empty());
+}
+
+#[test]
+fn a_refresh_leaves_the_open_folders_on_the_way_as_they_are() {
+    // TASK-45: wx sets the state of a folder it expands even when the folder is open, and
+    // a screen reader then says "expanded" after the node in focus, as after OK in the
+    // settings, whose new texts come through a refresh.
+    let mut model = example();
+    let view = TreeView::new(Mock::default());
+    view.fill(&model, Some(NodeId(4)));
+    assert_eq!(
+        view.control().take_expansions(),
+        ["docs — 3 зміни", "img — 2 зміни"]
+    );
+    view.control().take_calls();
+    model.texts.insert(4, "c.png — змінено: 1 КБ".into());
+    view.refresh(&model, Some(NodeId(4)));
+    assert_eq!(view.control().take_calls(), ["text c.png — змінено: 1 КБ"]);
+    assert!(view.control().take_expansions().is_empty());
+    // A folder on the way that was closed meanwhile opens again, alone.
+    let docs = view.control().item_of(0).expect("an item");
+    view.control().items.borrow_mut()[docs]
+        .as_mut()
+        .unwrap()
+        .expanded = false;
+    view.refresh(&model, Some(NodeId(4)));
+    assert_eq!(view.control().take_expansions(), ["docs — 3 зміни"]);
+    assert_eq!(
+        view.control().outline(),
+        [
+            "-docs — 3 зміни",
+            "   a.txt — додано",
+            "  -img — 2 зміни",
+            "     b.png — видалено",
+            "     c.png — змінено: 1 КБ *",
+            " x.txt — додано"
+        ]
+    );
 }
 
 #[test]

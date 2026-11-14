@@ -24,7 +24,7 @@ fn a_new_settings_file_is_made_with_the_defaults() {
     assert_eq!(settings.language().unwrap(), Language::SameAsWindows);
     // The difference list (TASK-13 #17, #28): sizes as in Explorer, every type, by path.
     assert_eq!(settings.size_format().unwrap(), SizeFormat::Explorer);
-    assert_eq!(settings.difference_types().unwrap(), [true; 4]);
+    assert_eq!(settings.difference_types().unwrap(), [true; 5]);
     assert_eq!(
         settings.difference_sort().unwrap(),
         DifferenceSort {
@@ -35,6 +35,15 @@ fn a_new_settings_file_is_made_with_the_defaults() {
     // The details of a change (TASK-14 #7, #13): attributes in words, and no warning.
     assert_eq!(settings.attribute_format().unwrap(), AttributeFormat::Words);
     assert!(!settings.warn_missing_entry().unwrap());
+    // «Шлях скопійовано.» without the path (TASK-41 #8).
+    assert!(!settings.show_copied_path().unwrap());
+    // Typical folders of the current user only (TASK-43 #5).
+    assert!(!settings.other_users_folders().unwrap());
+    assert!(!settings.open_after_export().unwrap());
+    assert_eq!(settings.export_folder().unwrap(), None);
+    // The text report first, and the list separator of Windows in CSV (TASK-40 #1, #5).
+    assert_eq!(settings.export_format().unwrap(), ExportFormat::Text);
+    assert_eq!(settings.csv_delimiter().unwrap(), CsvDelimiter::Windows);
     // The difference as a list, and the long text of a tree's nodes (TASK-33).
     assert_eq!(settings.difference_view().unwrap(), DifferenceView::List);
     assert_eq!(settings.tree_node_text().unwrap(), TreeNodeText::Long);
@@ -95,7 +104,7 @@ fn the_view_of_the_difference_list_survives_a_restart() {
         let settings = Settings::open(&db(&tmp)).unwrap();
         settings.set_size_format(SizeFormat::Bytes).unwrap();
         settings
-            .set_difference_types([false, true, false, true])
+            .set_difference_types([false, true, false, true, false])
             .unwrap();
         settings.set_difference_sort(sort).unwrap();
     }
@@ -103,12 +112,15 @@ fn the_view_of_the_difference_list_survives_a_restart() {
     assert_eq!(settings.size_format().unwrap(), SizeFormat::Bytes);
     assert_eq!(
         settings.difference_types().unwrap(),
-        [false, true, false, true]
+        [false, true, false, true, false]
     );
     assert_eq!(settings.difference_sort().unwrap(), sort);
-    // Every type hidden is kept as such, not taken for nothing stored.
-    settings.set_difference_types([false; 4]).unwrap();
-    assert_eq!(settings.difference_types().unwrap(), [false; 4]);
+    // Every type hidden is kept as such, not taken for nothing stored; and so is every
+    // type shown again.
+    settings.set_difference_types([false; 5]).unwrap();
+    assert_eq!(settings.difference_types().unwrap(), [false; 5]);
+    settings.set_difference_types([true; 5]).unwrap();
+    assert_eq!(settings.difference_types().unwrap(), [true; 5]);
     settings.set_size_format(SizeFormat::Decimal).unwrap();
     assert_eq!(settings.size_format().unwrap(), SizeFormat::Decimal);
     for column in SortColumn::ALL {
@@ -119,6 +131,46 @@ fn the_view_of_the_difference_list_survives_a_restart() {
         settings.set_difference_sort(sort).unwrap();
         assert_eq!(settings.difference_sort().unwrap(), sort);
     }
+}
+
+#[test]
+fn a_type_added_since_the_filter_was_stored_is_shown() {
+    // TASK-42 #11. Until 0.3 the setting named the four types shown: a user who hid the
+    // deleted and the inaccessible rows then has renamed and moved entries shown in 0.4.
+    let tmp = TempDir::new("settings");
+    let settings = Settings::open(&db(&tmp)).unwrap();
+    let shown = |added, deleted, modified, moved, inaccessible| {
+        [added, deleted, modified, moved, inaccessible]
+    };
+    settings
+        .set(KEY_DIFFERENCE_TYPES, "added,modified")
+        .unwrap();
+    assert_eq!(
+        settings.difference_types().unwrap(),
+        shown(true, false, true, true, false)
+    );
+    // Every type hidden then, as an empty text.
+    settings.set(KEY_DIFFERENCE_TYPES, "").unwrap();
+    assert_eq!(
+        settings.difference_types().unwrap(),
+        shown(false, false, false, true, false)
+    );
+    // What 0.4 stores wins from then on: the types hidden, the new one among them.
+    settings
+        .set_difference_types(shown(true, true, true, false, true))
+        .unwrap();
+    assert_eq!(
+        settings.difference_types().unwrap(),
+        shown(true, true, true, false, true)
+    );
+    // A type a later revisor hides, which this one does not know, hides nothing here.
+    settings
+        .set(KEY_DIFFERENCE_HIDDEN_TYPES, "deleted,hashed")
+        .unwrap();
+    assert_eq!(
+        settings.difference_types().unwrap(),
+        shown(true, false, true, true, true)
+    );
 }
 
 #[test]
@@ -150,6 +202,81 @@ fn the_settings_of_the_details_survive_a_restart() {
     settings.set_warn_missing_entry(false).unwrap();
     assert_eq!(settings.attribute_format().unwrap(), AttributeFormat::Words);
     assert!(!settings.warn_missing_entry().unwrap());
+}
+
+#[test]
+fn showing_other_users_folders_survives_a_restart() {
+    // TASK-43 #5.
+    let tmp = TempDir::new("settings");
+    Settings::open(&db(&tmp))
+        .unwrap()
+        .set_other_users_folders(true)
+        .unwrap();
+    let settings = Settings::open(&db(&tmp)).unwrap();
+    assert!(settings.other_users_folders().unwrap());
+    settings.set_other_users_folders(false).unwrap();
+    assert!(
+        !Settings::open(&db(&tmp))
+            .unwrap()
+            .other_users_folders()
+            .unwrap()
+    );
+}
+
+#[test]
+fn showing_the_copied_path_survives_a_restart() {
+    // TASK-41 #8.
+    let tmp = TempDir::new("settings");
+    Settings::open(&db(&tmp))
+        .unwrap()
+        .set_show_copied_path(true)
+        .unwrap();
+    let settings = Settings::open(&db(&tmp)).unwrap();
+    assert!(settings.show_copied_path().unwrap());
+    settings.set_show_copied_path(false).unwrap();
+    assert!(
+        !Settings::open(&db(&tmp))
+            .unwrap()
+            .show_copied_path()
+            .unwrap()
+    );
+}
+
+#[test]
+fn the_export_settings_survive_a_restart() {
+    // TASK-39 #2, #9.
+    let tmp = TempDir::new("settings");
+    let folder = std::path::Path::new(r"D:\Звіти");
+    {
+        let settings = Settings::open(&db(&tmp)).unwrap();
+        settings.set_open_after_export(true).unwrap();
+        settings.set_export_folder(folder).unwrap();
+    }
+    let settings = Settings::open(&db(&tmp)).unwrap();
+    assert!(settings.open_after_export().unwrap());
+    assert_eq!(settings.export_folder().unwrap().as_deref(), Some(folder));
+}
+
+#[test]
+fn the_export_format_and_the_csv_delimiter_survive_a_restart() {
+    // TASK-40 #1, #5.
+    for delimiter in CsvDelimiter::ALL {
+        let tmp = TempDir::new("settings");
+        {
+            let settings = Settings::open(&db(&tmp)).unwrap();
+            settings.set_export_format(ExportFormat::Csv).unwrap();
+            settings.set_csv_delimiter(delimiter).unwrap();
+        }
+        let settings = Settings::open(&db(&tmp)).unwrap();
+        assert_eq!(settings.export_format().unwrap(), ExportFormat::Csv);
+        assert_eq!(settings.csv_delimiter().unwrap(), delimiter);
+    }
+    let codes: Vec<&str> = CsvDelimiter::ALL.map(CsvDelimiter::as_str).to_vec();
+    assert_eq!(codes, ["windows", "comma", "semicolon", "tab"]);
+    let chars = CsvDelimiter::ALL.map(CsvDelimiter::char);
+    assert_eq!(chars, [None, Some(','), Some(';'), Some('\t')]);
+    assert_eq!(ExportFormat::parse("csv"), Some(ExportFormat::Csv));
+    assert_eq!(ExportFormat::parse("xlsx"), None);
 }
 
 #[test]

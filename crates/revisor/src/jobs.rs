@@ -14,7 +14,7 @@
 //! and a database another connection holds is waited for on the job's thread by the one
 //! rule of the store (ADR-0012), which the window shows and can cancel.
 
-use std::path::Path;
+use std::path::{Path, PathBuf};
 use std::time::Duration;
 
 use revisor_core::compare::{self, CompareError, CompareWork, Difference};
@@ -25,9 +25,16 @@ use revisor_core::store::{
     self, CommentWork, Compacted, Compaction, SnapshotInfo, Store, StoreError,
 };
 
+use crate::difference::Export;
+use crate::export::{ExportWork, Exported, Format};
+
 /// How long a comparison runs before the progress row shows it (TASK-11 #7): a shorter
 /// one shows no progress at all.
 pub const COMPARISON_SHOWN_AFTER: Duration = Duration::from_secs(1);
+
+/// How long an export runs before the progress row shows it (TASK-39 #8), as a
+/// comparison: the export of a usual difference is over before that.
+pub const EXPORT_SHOWN_AFTER: Duration = Duration::from_secs(1);
 
 /// A kind of background job; at most one of each runs at a time.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -36,11 +43,13 @@ pub enum Kind {
     Comparison,
     Compaction,
     Comment,
+    /// The export of the difference shown (TASK-39).
+    Export,
 }
 
 /// What the progress row shows: the progress of the snapshot being taken, else a comment
 /// waiting for the database, else the progress of a comparison that has run for a second
-/// or more, else the profile whose database is being compacted.
+/// or more, else an export that has, else the profile whose database is being compacted.
 #[derive(Clone, Copy, Debug)]
 pub enum Shown<'a> {
     Snapshot(&'a snapshot::Progress),
@@ -52,6 +61,8 @@ pub enum Shown<'a> {
     Compaction(&'a ProfileFile),
     /// A comment waits for the database of its profile (TASK-24).
     Comment,
+    /// The difference is being exported (TASK-39).
+    Export,
 }
 
 impl Shown<'_> {
@@ -61,6 +72,7 @@ impl Shown<'_> {
             Shown::Comparison { .. } => Kind::Comparison,
             Shown::Compaction(_) => Kind::Compaction,
             Shown::Comment => Kind::Comment,
+            Shown::Export => Kind::Export,
         }
     }
 }
@@ -82,6 +94,8 @@ pub struct Flags {
     /// The comment waiting is of the open profile, which then cannot be changed nor its
     /// snapshots deleted, as during a snapshot of it.
     pub commenting_open_profile: bool,
+    /// The difference is being exported; one export goes at a time (TASK-39).
+    pub export_running: bool,
 }
 
 /// A job that has ended: the profile it was of, and how it ended; `Err(Lost)` when its
@@ -128,6 +142,8 @@ pub enum Event {
     Compaction(Ended<Outcome<Compacted, StoreError>>),
     /// A comment that waited for the database ended (TASK-24).
     Comment(Ended<Outcome<(), StoreError>>, Comment),
+    /// An export ended (TASK-39): the file it was to write, and how it ended.
+    Export(PathBuf, Result<Exported, Lost>),
 }
 
 /// A snapshot being taken, the profile it is of, and, for the snapshot of «Знімок +
@@ -164,6 +180,12 @@ struct Commenting {
     announced: bool,
 }
 
+/// The difference being exported, and the file it goes to.
+struct Exporting {
+    path: PathBuf,
+    job: Job<ExportWork>,
+}
+
 /// The background jobs, one place for each kind.
 #[derive(Default)]
 pub struct Jobs {
@@ -171,6 +193,7 @@ pub struct Jobs {
     comparison: Option<Comparing>,
     compaction: Option<Compacting>,
     comment: Option<Commenting>,
+    export: Option<Exporting>,
 }
 
 impl Jobs {
@@ -302,6 +325,14 @@ impl Jobs {
         }
     }
 
+    /// Starts exporting `export` to the file at `path` in `format` (TASK-39, TASK-40); the
+    /// commands see to it that no other export runs.
+    pub fn start_export(&mut self, export: Export, path: PathBuf, format: Format) {
+        debug_assert!(self.export.is_none(), "one export at a time");
+        let job = Job::start(ExportWork::new(export, path.clone(), format));
+        self.export = Some(Exporting { path, job });
+    }
+
     /// Whether a comment has started to wait for the database since the last look, which
     /// the window then says (TASK-24 #2): true once for each comment that waits. The
     /// window looks at the end of every event, after [`Jobs::poll`], so a comment that
@@ -340,11 +371,16 @@ impl Jobs {
                     commenting.job.cancel();
                 }
             }
+            Kind::Export => {
+                if let Some(exporting) = &self.export {
+                    exporting.job.cancel();
+                }
+            }
         }
     }
 
     /// The jobs that have ended, a comment before a snapshot before a comparison before
-    /// a compaction; they leave their places. A snapshot whose save is over is waited for
+    /// a compaction before an export; they leave their places. A snapshot whose save is over is waited for
     /// a moment, so that it ends with the command that waited for its save (TASK-21); so
     /// is a comment that waited for the save of a snapshot of its profile, once that
     /// snapshot has ended, so that the two are said together, the comment first
@@ -378,12 +414,17 @@ impl Jobs {
             let Compacting { profile, .. } = self.compaction.take().expect("polled just now");
             ended.push(Event::Compaction(Ended { profile, outcome }));
         }
+        if let Some(outcome) = self.export.as_mut().and_then(|e| e.job.poll()) {
+            let Exporting { path, .. } = self.export.take().expect("polled just now");
+            ended.push(Event::Export(path, outcome));
+        }
         ended
     }
 
     /// What the progress row shows: a snapshot before a comment waiting for the database
     /// (TASK-24), before a comparison that has run for [`COMPARISON_SHOWN_AFTER`] or
-    /// longer, before a compaction. The comparison of
+    /// longer, before an export that has run for [`EXPORT_SHOWN_AFTER`] or longer
+    /// (TASK-39 #8), before a compaction. The comparison of
     /// «Знімок + порівняння» shows at once: it takes the row over from its snapshot, so
     /// the row, and the focus on it, stay (TASK-12 #5, #9).
     pub fn shown(&self) -> Option<Shown<'_>> {
@@ -402,6 +443,13 @@ impl Jobs {
                 });
             }
         }
+        if self
+            .export
+            .as_ref()
+            .is_some_and(|e| e.job.elapsed() >= EXPORT_SHOWN_AFTER)
+        {
+            return Some(Shown::Export);
+        }
         self.compaction
             .as_ref()
             .map(|compacting| Shown::Compaction(&compacting.profile))
@@ -414,6 +462,7 @@ impl Jobs {
             Kind::Comparison => self.comparison.is_some(),
             Kind::Compaction => self.compaction.is_some(),
             Kind::Comment => self.comment.is_some(),
+            Kind::Export => self.export.is_some(),
         }
     }
 
@@ -423,6 +472,7 @@ impl Jobs {
             || self.comparison.is_some()
             || self.compaction.is_some()
             || self.comment.is_some()
+            || self.export.is_some()
     }
 
     /// The flags of the state, with `open` the database of the open profile.
@@ -439,6 +489,7 @@ impl Jobs {
                 .is_some_and(|c| is_open(&c.profile)),
             comment_waiting: self.comment.is_some(),
             commenting_open_profile: self.comment.as_ref().is_some_and(|c| is_open(&c.profile)),
+            export_running: self.export.is_some(),
         }
     }
 
@@ -491,6 +542,15 @@ impl Jobs {
             profile,
             outcome: job.wait(),
         })
+    }
+
+    /// Cancels the export, if one runs, and waits for it, which is quick: it looks every
+    /// few thousand rows. The file it was writing is gone by then (TASK-39 #8).
+    pub fn stop_export(&mut self) {
+        if let Some(Exporting { job, .. }) = self.export.take() {
+            job.cancel();
+            let _ = job.wait();
+        }
     }
 
     /// Waits for the compaction to end, if there is one; with `interrupt`, interrupts it

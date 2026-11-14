@@ -22,8 +22,8 @@ use revisor_core::compare::{self, CompareError, Difference};
 use revisor_core::job::{Cancel, Lost, Outcome};
 use revisor_core::profiles::{self, ProfileError, ProfileFile, Unreadable};
 use revisor_core::settings::{
-    DifferenceSort, DifferenceView, FocusAfterComparison, FocusAfterSnapshot, Language, Settings,
-    Theme,
+    CsvDelimiter, DifferenceSort, DifferenceView, ExportFormat, FocusAfterComparison,
+    FocusAfterSnapshot, Language, Settings, Theme,
 };
 use revisor_core::snapshot::{Phase, Report, SnapshotError};
 use revisor_core::store::{
@@ -37,6 +37,7 @@ use crate::compare_window;
 use crate::difference::{self, Column, List, Location, View};
 use crate::difference_tree::{self, Entry, More, Open, TreeView};
 use crate::explorer::{self, Reveal};
+use crate::export::{self, Exported};
 use crate::failure::reason;
 use crate::help;
 use crate::i18n::{En, Strings};
@@ -53,7 +54,7 @@ use crate::profile_window::{self, Purpose};
 use crate::settings_window::{self, Values};
 use crate::snapshot_list::{Native, SnapshotList};
 use crate::snapshots::{Arrival, arrival, arrival_after_comparison};
-use crate::state::{AppState, ChangeType, SortColumn, Sources};
+use crate::state::{AppState, ChangeType, ShownTypes, SortColumn, Sources};
 use crate::status::Announcer;
 use crate::text_window;
 use crate::theme;
@@ -64,10 +65,11 @@ use crate::win32::lists::EmptyTexts;
 
 /// The commands that show or hide the types of the difference list's rows, in the order
 /// of [`ChangeType::ALL`] (TASK-13 #22).
-const TYPE_COMMANDS: [CommandId; 4] = [
+const TYPE_COMMANDS: [CommandId; ChangeType::ALL.len()] = [
     CommandId::ShowAdded,
     CommandId::ShowDeleted,
     CommandId::ShowModified,
+    CommandId::ShowMoved,
     CommandId::ShowInaccessible,
 ];
 
@@ -108,18 +110,20 @@ fn cancel_command(kind: Kind) -> CommandId {
         Kind::Comparison => CommandId::CancelComparison,
         Kind::Compaction => CommandId::CancelCompaction,
         Kind::Comment => CommandId::CancelComment,
+        Kind::Export => CommandId::CancelExport,
     }
 }
 
 /// The English of the progress row's button while it shows a job of `kind`: «Скасувати
-/// (N)» for a snapshot, a comparison and a comment waiting for the database (TASK-24), so
+/// (N)» for a snapshot, a comparison, an export (TASK-39 #8) and a comment waiting for
+/// the database (TASK-24), so
 /// that the button keeps its label from the snapshot of «Знімок + порівняння» to its
 /// comparison (TASK-12 #9) — no letter of «Cancel comment» is free in the main window,
 /// where M is the field «Порівняння» —, and the command's own name for a compaction.
 fn cancel_english(kind: Kind) -> &'static str {
     match kind {
         Kind::Compaction => En.command(CommandId::CancelCompaction),
-        Kind::Snapshot | Kind::Comparison | Kind::Comment => En.cancel_job(),
+        Kind::Snapshot | Kind::Comparison | Kind::Comment | Kind::Export => En.cancel_job(),
     }
 }
 
@@ -127,7 +131,7 @@ fn cancel_english(kind: Kind) -> &'static str {
 fn cancel_label(s: &dyn Strings, kind: Kind) -> String {
     let words = match kind {
         Kind::Compaction => s.command(CommandId::CancelCompaction),
-        Kind::Snapshot | Kind::Comparison | Kind::Comment => s.cancel_job(),
+        Kind::Snapshot | Kind::Comparison | Kind::Comment | Kind::Export => s.cancel_job(),
     };
     compose(s, cancel_english(kind), words)
 }
@@ -244,7 +248,7 @@ pub struct MainWindow {
     /// The field «Фільтр:» and the check boxes of the types under the difference list
     /// (TASK-13 #22, #24), which work once there is a difference.
     filter_field: TextCtrl,
-    type_boxes: [CheckBox; 4],
+    type_boxes: [CheckBox; ChangeType::ALL.len()],
     /// Says how many rows the filter shows once the typing in the field «Фільтр:» pauses
     /// (TASK-13 #26).
     showing_timer: Timer<Frame>,
@@ -316,7 +320,9 @@ impl MainWindow {
             .as_ref()
             .ok()
             .map(|settings| View {
-                types: settings.difference_types().unwrap_or([true; 4]),
+                types: settings
+                    .difference_types()
+                    .unwrap_or([true; ChangeType::ALL.len()]),
                 sort: settings.difference_sort().unwrap_or_default(),
                 layout: settings.difference_view().unwrap_or_default(),
             })
@@ -1046,11 +1052,14 @@ impl MainWindow {
 
     /// The menu item of `id` is highlighted: an item of «Сортувати за» while the difference
     /// shows as a tree says why it is unavailable, in the status bar, which screen readers
-    /// read after the item (TASK-33 #5).
+    /// read after the item (TASK-33 #5); so does «Експортувати…», which has no shortcut to
+    /// say it with (TASK-39 #1).
     fn menu_item_highlighted(&self, id: CommandId) {
         let available = (command(id).available)(&self.state.borrow());
-        if let Err(reason @ Reason::TreeSortedByName) = available {
-            self.refuse(id, reason);
+        match available {
+            Err(reason @ Reason::TreeSortedByName) => self.refuse(id, reason),
+            Err(reason) if id == CommandId::Export => self.refuse(id, reason),
+            _ => {}
         }
     }
 
@@ -1090,6 +1099,7 @@ impl MainWindow {
             CommandId::ShowAdded => self.toggle_type(ChangeType::Added),
             CommandId::ShowDeleted => self.toggle_type(ChangeType::Deleted),
             CommandId::ShowModified => self.toggle_type(ChangeType::Modified),
+            CommandId::ShowMoved => self.toggle_type(ChangeType::Moved),
             CommandId::ShowInaccessible => self.toggle_type(ChangeType::Inaccessible),
             CommandId::SortByPath => self.sort_by(SortColumn::Path),
             CommandId::SortByName => self.sort_by(SortColumn::Name),
@@ -1104,6 +1114,9 @@ impl MainWindow {
             CommandId::ViewAsTree => self.set_layout(DifferenceView::Tree),
             CommandId::Details => self.show_details(),
             CommandId::ShowInExplorer => self.show_in_explorer(),
+            CommandId::CopyPath => self.copy_path(),
+            CommandId::Export => self.export(),
+            CommandId::CancelExport => self.jobs.borrow().cancel(Kind::Export),
             CommandId::KeyboardShortcuts => help::show_shortcuts(&self.frame, s),
             CommandId::About => help::show_about(&self.frame, s),
         }
@@ -1290,6 +1303,7 @@ impl MainWindow {
             s,
             Purpose::New,
             &ProfileSettings::new_profile(),
+            self.other_users_folders(),
             move |name| profiles::name_taken(&known, name, None),
             move |settings| {
                 profiles::create(&dir, settings).map_err(|e| save_failure(s, settings, &e))
@@ -1314,6 +1328,7 @@ impl MainWindow {
             s,
             Purpose::Edit,
             &initial,
+            self.other_users_folders(),
             move |name| profiles::name_taken(&known, name, Some(&open.path)),
             move |settings| {
                 profiles::update(&path, settings).map_err(|e| save_failure(s, settings, &e))
@@ -1410,6 +1425,45 @@ impl MainWindow {
             .unwrap_or(false)
     }
 
+    /// Whether the status bar names the path «Копіювати шлях» copied (TASK-41 #8); off by
+    /// default.
+    fn show_copied_path(&self) -> bool {
+        self.settings
+            .as_ref()
+            .ok()
+            .and_then(|settings| settings.show_copied_path().ok())
+            .unwrap_or(false)
+    }
+
+    /// Whether the exported file opens in the program Windows assigns to it (TASK-39 #9);
+    /// off by default.
+    fn open_after_export(&self) -> bool {
+        self.settings
+            .as_ref()
+            .ok()
+            .and_then(|settings| settings.open_after_export().ok())
+            .unwrap_or(false)
+    }
+
+    /// What separates the values of CSV (TASK-40 #5); that of Windows by default.
+    fn csv_delimiter(&self) -> CsvDelimiter {
+        self.settings
+            .as_ref()
+            .ok()
+            .and_then(|settings| settings.csv_delimiter().ok())
+            .unwrap_or_default()
+    }
+
+    /// Whether the list of typical folders offers other users' folders (TASK-43 #5); off by
+    /// default.
+    fn other_users_folders(&self) -> bool {
+        self.settings
+            .as_ref()
+            .ok()
+            .and_then(|settings| settings.other_users_folders().ok())
+            .unwrap_or(false)
+    }
+
     /// Shows the settings window and keeps what the user confirmed. A new theme shows at
     /// once (TASK-34 #3). When the language setting makes the next start speak another
     /// language, offers to restart now (TASK-16 #3).
@@ -1426,6 +1480,10 @@ impl MainWindow {
             tree_node_text: self.difference_list.borrow().node_text(),
             confirm_snapshot_deletion: self.confirm_deletion(),
             warn_missing_entry: self.warn_missing_entry(),
+            show_copied_path: self.show_copied_path(),
+            other_users_folders: self.other_users_folders(),
+            open_after_export: self.open_after_export(),
+            csv_delimiter: self.csv_delimiter(),
         };
         let Some(values) = settings_window::show(&self.frame, s, initial) else {
             return;
@@ -1443,6 +1501,10 @@ impl MainWindow {
                     settings.set_confirm_snapshot_deletion(values.confirm_snapshot_deletion)
                 })
                 .and_then(|()| settings.set_warn_missing_entry(values.warn_missing_entry))
+                .and_then(|()| settings.set_show_copied_path(values.show_copied_path))
+                .and_then(|()| settings.set_other_users_folders(values.other_users_folders))
+                .and_then(|()| settings.set_open_after_export(values.open_after_export))
+                .and_then(|()| settings.set_csv_delimiter(values.csv_delimiter))
                 .map_err(|e| reason(s, &e)),
             Err(message) => Err(message.clone()),
         };
@@ -1459,14 +1521,13 @@ impl MainWindow {
         // Sizes in the list and the summary as the setting «Розмір» says (TASK-13 #17),
         // attributes in the details as «Атрибути» says (TASK-14 #7), and the tree's nodes
         // as «Вузли дерева» says (TASK-33 #6).
-        let current = {
+        {
             let mut list = self.difference_list.borrow_mut();
             list.set_size_format(values.size_format);
             list.set_attribute_format(values.attribute_format);
             list.set_node_text(values.tree_node_text);
-            list.current()
-        };
-        self.refresh_difference(current);
+        }
+        self.restyle_difference();
         // «Same as Windows» is read now, not at the start: the language of Windows may
         // have changed meanwhile, and the next start would take the new one.
         let next = crate::language_of(values.language, win32::language::ui_language);
@@ -2056,6 +2117,25 @@ impl MainWindow {
         self.describe_difference();
     }
 
+    /// Brings the difference shown in line with formats that changed in the settings: the
+    /// rows of the list repaint in place, the tree's nodes take their new texts, and what is
+    /// said about the difference follows. A format changes no row and no order, so the list
+    /// is neither counted nor selected again: setting its count, even the same one, makes it
+    /// announce the row with the focus once more, just after the settings' window has given
+    /// the focus back to that row (TASK-45).
+    fn restyle_difference(&self) {
+        if self.layout() == DifferenceView::Tree {
+            let model = self.difference_list.borrow();
+            self.tree().refresh(&*model, model.tree_current());
+        } else {
+            let count = self.difference_list.borrow().len();
+            if count > 0 {
+                self.difference().refresh_items(0, count as i64 - 1);
+            }
+        }
+        self.describe_difference();
+    }
+
     /// What is said about the difference shown: the name of the list and the text of its
     /// empty area (#3, #11, #25), the field «Порівняння» (#1, #11), the check boxes and
     /// the menu's marks, which follow the view at the event's end (#22), the sort arrow of the headers (#21),
@@ -2139,7 +2219,7 @@ impl MainWindow {
     /// Shows the rows of `types` (#22), from the check boxes, the menu and its keys; the
     /// view is kept for the next differences and starts (#28), and the status bar says
     /// how many rows the list shows (#26).
-    fn set_types(&self, types: [bool; 4]) {
+    fn set_types(&self, types: ShownTypes) {
         let current = self.difference_list.borrow_mut().set_types(types);
         self.refresh_difference(current);
         if let Ok(settings) = &self.settings {
@@ -2313,6 +2393,142 @@ impl MainWindow {
         }
     }
 
+    // --- Copying the path (TASK-41) -----------------------------------------------------
+
+    /// «Копіювати шлях»: puts the whole path of the entry with the focus on the clipboard,
+    /// with no quotes — or that of a folder of the tree that is no change itself — and the
+    /// status bar says so, with the path when the setting asks for it (#2, #3, #8); the
+    /// focus stays. The clipboard is flushed, so the path stays on it after revisor
+    /// closes. When the clipboard stays busy, wxWidgets says why in a window of its own,
+    /// which wxDragon cannot turn off, and the status bar says the path was not copied
+    /// (#9).
+    fn copy_path(&self) {
+        let s = self.s;
+        let Some(path) = self.difference_list.borrow().current_path() else {
+            return;
+        };
+        let text = path.to_string_lossy();
+        let clipboard = Clipboard::get();
+        if !clipboard.set_text(&text) {
+            self.say(s.path_not_copied());
+            return;
+        }
+        clipboard.flush();
+        let shown = self.show_copied_path().then_some(&*text);
+        self.say(&s.path_copied(shown));
+    }
+
+    // --- Export (TASK-39) ---------------------------------------------------------------
+
+    /// «Експортувати…»: asks where to save the report of the difference as the list shows
+    /// it now (#2, #3), in a save dialog titled after the command, which offers the name
+    /// of the profile and of both snapshots, in the folder exported to last, else in
+    /// «Документи», and asks before it overwrites a file. revisor keeps that folder
+    /// itself: wxWidgets gives the dialog its folder without a client GUID, so Windows
+    /// would not. The report is then written in the background (#8).
+    fn export(&self) {
+        let s = self.s;
+        let (export, name) = {
+            let list = self.difference_list.borrow();
+            let Some(export) = list.export() else {
+                return;
+            };
+            (export, list.export_name(&win32::format::file_name_time))
+        };
+        // The type of file chosen last comes first (TASK-40 #1).
+        let last = self
+            .settings
+            .as_ref()
+            .ok()
+            .and_then(|settings| settings.export_format().ok())
+            .unwrap_or_default();
+        let name = name
+            .map(|name| format!("{name}.{}", last.extension()))
+            .unwrap_or_default();
+        let folder = self
+            .settings
+            .as_ref()
+            .ok()
+            .and_then(|settings| settings.export_folder().ok().flatten())
+            .or_else(revisor_core::typical::documents)
+            .unwrap_or_default();
+        // The types in the order of ExportFormat::ALL, which the index of the one chosen
+        // is a position in.
+        let wildcard = format!(
+            "{}|*.txt|{}|*.csv",
+            s.export_text_type(),
+            s.export_csv_type()
+        );
+        let dialog = FileDialog::builder(&self.frame)
+            .with_message(&plain(s.command(CommandId::Export)))
+            .with_default_dir(&folder.to_string_lossy())
+            .with_default_file(&name)
+            .with_wildcard(&wildcard)
+            .with_style(FileDialogStyle::Save | FileDialogStyle::OverwritePrompt)
+            .build();
+        dialog.set_filter_index(
+            ExportFormat::ALL
+                .iter()
+                .position(|&f| f == last)
+                .unwrap_or(0) as i32,
+        );
+        let chosen = (dialog.show_modal() == ID_OK)
+            .then(|| dialog.get_path())
+            .flatten();
+        // The type of file chosen says the format, whatever the name's extension
+        // (decided 2026-11-14).
+        let format = usize::try_from(dialog.get_filter_index())
+            .ok()
+            .and_then(|i| ExportFormat::ALL.get(i).copied())
+            .unwrap_or_default();
+        dialog.destroy();
+        let Some(path) = chosen.map(PathBuf::from) else {
+            return;
+        };
+        if let Ok(settings) = &self.settings {
+            let _ = settings.set_export_format(format);
+        }
+        let format = match format {
+            ExportFormat::Text => export::Format::Text,
+            ExportFormat::Csv => export::Format::Csv {
+                delimiter: export::csv_delimiter(self.csv_delimiter()),
+            },
+        };
+        if let (Ok(settings), Some(parent)) = (&self.settings, path.parent()) {
+            // The next export starts there; a folder not kept only costs a click then.
+            let _ = settings.set_export_folder(parent);
+        }
+        self.jobs.borrow_mut().start_export(export, path, format);
+        self.refresh_progress_row();
+    }
+
+    /// Ends the export (#8, #9): the status bar names the file written, which screen
+    /// readers read with the focus where it is — Microsoft advises no window for a
+    /// success —, and the file opens in its program when the setting says so; a
+    /// cancelled export says so, and a failed one says why in a window titled after the
+    /// command.
+    fn export_ended(&self, path: PathBuf, outcome: Result<Exported, Lost>) {
+        let s = self.s;
+        self.refresh_progress_row();
+        let name = path
+            .file_name()
+            .map(|name| name.to_string_lossy().into_owned())
+            .unwrap_or_default();
+        match outcome {
+            Ok(Outcome::Done(written)) => {
+                self.say(&s.exported(&name));
+                if self.open_after_export()
+                    && let Err(e) = export::open(&written)
+                {
+                    self.fail(&s.open_failed(&reason(s, &e)));
+                }
+            }
+            Ok(Outcome::Cancelled) => self.say(s.export_cancelled()),
+            Ok(Outcome::Failed(e)) => self.fail(&s.export_failed(&reason(s, &e))),
+            Err(Lost) => self.fail(&s.export_failed(s.export_stopped())),
+        }
+    }
+
     /// The progress field for the comparison the row shows, with the bar once the
     /// comparison has run for [`COMPARISON_BAR_AFTER`] (#8). A phase the row has not
     /// said yet — comparing, or waiting for the database — is said in the status bar,
@@ -2355,6 +2571,8 @@ impl MainWindow {
         self.timer.stop();
         self.jobs.borrow().cancel(Kind::Comparison);
         self.jobs.borrow().cancel(Kind::Comment);
+        // An export cancelled is waited for, which is quick, so its file goes too.
+        self.jobs.borrow_mut().stop_export();
         if !self.jobs.borrow().runs(Kind::Compaction) {
             return;
         }
@@ -2556,6 +2774,11 @@ impl MainWindow {
                         self.comment_ended(ended, comment);
                     });
                 }
+                Event::Export(path, outcome) => {
+                    self.event(Source::Command(CommandId::Export), || {
+                        self.export_ended(path, outcome);
+                    });
+                }
             }
         }
         self.say_comment_waiting();
@@ -2645,6 +2868,7 @@ impl MainWindow {
                 self.comparison_progress_text(progress, elapsed),
             )),
             Some(Shown::Comment) => Some((Kind::Comment, s.waiting_for_database().to_string())),
+            Some(Shown::Export) => Some((Kind::Export, s.exporting().to_string())),
             Some(Shown::Compaction(profile)) => {
                 Some((Kind::Compaction, s.compacting(&profile.name)))
             }
@@ -2652,6 +2876,10 @@ impl MainWindow {
         }
         .map(|(kind, text)| (kind, text, cancel_label(s, kind)));
         let kind = shown.as_ref().map(|(kind, ..)| *kind);
+        // An export that has run for a second is said as it shows, as a comparison is.
+        if kind == Some(Kind::Export) && self.shown_kind.get() != kind {
+            self.say(s.exporting());
+        }
         if kind != Some(Kind::Comparison) {
             self.said_waiting.set(None);
             self.gauge.show(false);

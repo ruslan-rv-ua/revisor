@@ -28,10 +28,12 @@ pub enum CommandId {
     CancelComparison,
     Details,
     ShowInExplorer,
+    CopyPath,
     FilterByText,
     ShowAdded,
     ShowDeleted,
     ShowModified,
+    ShowMoved,
     ShowInaccessible,
     SortByPath,
     SortByName,
@@ -44,6 +46,8 @@ pub enum CommandId {
     SortDescending,
     ViewAsList,
     ViewAsTree,
+    Export,
+    CancelExport,
     KeyboardShortcuts,
     About,
 }
@@ -122,6 +126,9 @@ pub enum Reason {
     /// The focus of the difference tree is on a node «Ще…», which stands for the nodes of
     /// a page not shown and is no file or folder (TASK-37 #7).
     MoreNode,
+    /// The difference is being exported, and one export goes at a time (TASK-39).
+    ExportRunning,
+    ExportNotRunning,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -294,8 +301,8 @@ fn change_shown(state: &AppState) -> Result<(), Reason> {
     require(state.difference_rows > 0, Reason::NoChangeShown)
 }
 
-/// The change to act on is an entry or a folder, which File Explorer can show: not a node
-/// «Ще…» of the tree (TASK-37 #7).
+/// The change to act on is an entry or a folder, which File Explorer can show and whose path
+/// can be copied: not a node «Ще…» of the tree (TASK-37 #7, TASK-41 #4).
 fn entry_shown(state: &AppState) -> Result<(), Reason> {
     change_shown(state)?;
     require(!state.more_node, Reason::MoreNode)
@@ -347,6 +354,16 @@ fn compaction_running(state: &AppState) -> Result<(), Reason> {
 
 fn comment_waiting(state: &AppState) -> Result<(), Reason> {
     require(state.comment_waiting, Reason::CommentNotWaiting)
+}
+
+/// The difference shown can be exported (TASK-39 #1): one export at a time.
+fn exportable(state: &AppState) -> Result<(), Reason> {
+    difference_shown(state)?;
+    require(!state.export_running, Reason::ExportRunning)
+}
+
+fn export_running(state: &AppState) -> Result<(), Reason> {
+    require(state.export_running, Reason::ExportNotRunning)
 }
 
 const fn place(menu: MenuId, group: u8) -> Place {
@@ -581,6 +598,19 @@ pub static COMMANDS: &[Command] = &[
             entry_shown,
         )
     },
+    // Ctrl+Shift+C, as «Копіювати як шлях» in File Explorer and in Everything (TASK-41).
+    Command {
+        shortcut: Some(key(Key::Letter(b'C')).ctrl().shift()),
+        context: Some(ContextPlace {
+            pane: Pane::Difference,
+            group: 0,
+        }),
+        ..item(
+            CommandId::CopyPath,
+            place(MenuId::Difference, 0),
+            entry_shown,
+        )
+    },
     Command {
         shortcut: Some(key(Key::Letter(b'F')).ctrl()),
         ..item(
@@ -602,8 +632,12 @@ pub static COMMANDS: &[Command] = &[
         ..shown_check(CommandId::ShowModified, 3)
     },
     Command {
+        checked: Some(|s| s.shows(ChangeType::Moved)),
+        ..shown_check(CommandId::ShowMoved, 4)
+    },
+    Command {
         checked: Some(|s| s.shows(ChangeType::Inaccessible)),
-        ..shown_check(CommandId::ShowInaccessible, 4)
+        ..shown_check(CommandId::ShowInaccessible, 5)
     },
     view_radio(CommandId::ViewAsList, |s| s.layout == DifferenceView::List),
     view_radio(CommandId::ViewAsTree, |s| s.layout == DifferenceView::Tree),
@@ -624,6 +658,18 @@ pub static COMMANDS: &[Command] = &[
     }),
     sort_radio(CommandId::SortAscending, 1, |s| !s.sort.descending),
     sort_radio(CommandId::SortDescending, 1, |s| s.sort.descending),
+    // A rare command, in a group of its own at the bottom, with no shortcut (TASK-39 #1).
+    Command {
+        ellipsis: true,
+        ..item(CommandId::Export, place(MenuId::Difference, 4), exportable)
+    },
+    Command {
+        ..item(
+            CommandId::CancelExport,
+            place(MenuId::Difference, 4),
+            export_running,
+        )
+    },
     // Help
     Command {
         shortcut: Some(key(Key::F(1))),
@@ -725,12 +771,14 @@ mod tests {
         assert_eq!(validate(COMMANDS, &En), Vec::<String>::new());
     }
 
-    /// The commands of the difference list (TASK-13): the filter and the order.
-    const DIFFERENCE_VIEW: [CommandId; 14] = [
+    /// The commands of the difference list (TASK-13, TASK-42): the filter — by text and by
+    /// the five types — and the order.
+    const DIFFERENCE_VIEW: [CommandId; 15] = [
         CommandId::FilterByText,
         CommandId::ShowAdded,
         CommandId::ShowDeleted,
         CommandId::ShowModified,
+        CommandId::ShowMoved,
         CommandId::ShowInaccessible,
         CommandId::SortByPath,
         CommandId::SortByName,
@@ -771,11 +819,37 @@ mod tests {
                 CommandId::CancelComment => {
                     assert_eq!(available, Err(Reason::CommentNotWaiting));
                 }
+                CommandId::CancelExport => {
+                    assert_eq!(available, Err(Reason::ExportNotRunning));
+                }
                 _ => assert_eq!(available, Ok(()), "{:?}", c.id),
             }
         }
         let take = command(CommandId::TakeSnapshot).available;
         assert_eq!(take(&AppState::new()), Err(Reason::NoProfiles));
+    }
+
+    #[test]
+    fn export_needs_a_difference_and_goes_one_at_a_time() {
+        // TASK-39 #1.
+        let export = command(CommandId::Export).available;
+        let cancel = command(CommandId::CancelExport).available;
+        assert_eq!(export(&AppState::new()), Err(Reason::NoDifference));
+        let shown = AppState {
+            has_difference: true,
+            ..AppState::new()
+        };
+        assert_eq!(export(&shown), Ok(()));
+        let exporting = AppState {
+            export_running: true,
+            ..shown
+        };
+        assert_eq!(export(&exporting), Err(Reason::ExportRunning));
+        assert_eq!(cancel(&exporting), Ok(()));
+        // A difference with no row shown can be exported: its report has the header.
+        let c = command(CommandId::Export);
+        assert!(c.ellipsis && c.shortcut.is_none());
+        assert_eq!(c.place.menu, MenuId::Difference);
     }
 
     #[test]
@@ -825,6 +899,50 @@ mod tests {
     }
 
     #[test]
+    fn copy_path_acts_on_the_entry_in_focus_as_file_explorer_does() {
+        // TASK-41 #1, #4: the conditions of «Показати в Провіднику» and their reasons.
+        let available = |state: &AppState| (command(CommandId::CopyPath).available)(state);
+        let rows = AppState {
+            has_difference: true,
+            difference_rows: 1,
+            ..AppState::new()
+        };
+        assert_eq!(available(&rows), Ok(()));
+        assert_eq!(
+            available(&AppState {
+                difference_rows: 0,
+                ..rows.clone()
+            }),
+            Err(Reason::NoChangeShown)
+        );
+        assert_eq!(available(&AppState::new()), Err(Reason::NoDifference));
+        let more = AppState {
+            layout: DifferenceView::Tree,
+            more_node: true,
+            ..rows
+        };
+        assert_eq!(available(&more), Err(Reason::MoreNode));
+        // Right after «Показати в Провіднику», in the menu and in the context menu, with
+        // Ctrl+Shift+C from anywhere in the window and the letter O.
+        let c = command(CommandId::CopyPath);
+        let at = |id| COMMANDS.iter().position(|c| c.id == id).unwrap();
+        assert_eq!(at(CommandId::CopyPath), at(CommandId::ShowInExplorer) + 1);
+        assert_eq!(c.place, place(MenuId::Difference, 0));
+        assert_eq!(
+            c.context,
+            Some(ContextPlace {
+                pane: Pane::Difference,
+                group: 0
+            })
+        );
+        assert_eq!(c.shortcut, Some(key(Key::Letter(b'C')).ctrl().shift()));
+        assert_eq!(c.scope, None);
+        assert_eq!(c.list_key, None);
+        assert!(!c.ellipsis, "it asks for nothing more");
+        assert_eq!(letter(En.command(c.id)), Some(b'O'));
+    }
+
+    #[test]
     fn the_filter_and_the_order_need_a_difference_of_any_profile() {
         // A difference shown while no profile is open, its profile deleted (TASK-13 #6).
         let shown = AppState {
@@ -840,19 +958,21 @@ mod tests {
             );
             assert_eq!(command(id).place.menu, MenuId::Difference, "{id:?}");
         }
-        // The keys of the document «Клавіатура й меню» (#30).
+        // The keys of the document «Клавіатура й меню» (#30): the types in the order of the
+        // check boxes, renamed or moved entries fourth (TASK-42 #11).
         let keys = [
             (CommandId::FilterByText, key(Key::Letter(b'F')).ctrl(), b'F'),
             (CommandId::ShowAdded, key(Key::Digit(1)).ctrl(), b'A'),
             (CommandId::ShowDeleted, key(Key::Digit(2)).ctrl(), b'T'),
             (CommandId::ShowModified, key(Key::Digit(3)).ctrl(), b'M'),
-            (CommandId::ShowInaccessible, key(Key::Digit(4)).ctrl(), b'N'),
+            (CommandId::ShowMoved, key(Key::Digit(4)).ctrl(), b'V'),
+            (CommandId::ShowInaccessible, key(Key::Digit(5)).ctrl(), b'N'),
         ];
         for (id, shortcut, access) in keys {
             assert_eq!(command(id).shortcut, Some(shortcut), "{id:?}");
             assert_eq!(letter(En.command(id)), Some(access), "{id:?}");
         }
-        for id in &DIFFERENCE_VIEW[5..] {
+        for id in &DIFFERENCE_VIEW[6..] {
             let c = command(*id);
             assert_eq!(c.place.submenu.map(|(sub, _)| sub), Some(SubmenuId::SortBy));
             assert_eq!(c.shortcut, None, "the submenu has no shortcuts");
@@ -867,7 +987,7 @@ mod tests {
         };
         let checked = |id, state: &AppState| (command(id).checked.unwrap())(state);
         // Every type shown, by path, ascending (TASK-13 #28).
-        for id in &DIFFERENCE_VIEW[1..5] {
+        for id in &DIFFERENCE_VIEW[1..6] {
             assert!(checked(*id, &state), "{id:?}");
         }
         assert!(checked(CommandId::SortByPath, &state));
@@ -941,7 +1061,7 @@ mod tests {
         assert!(checked(CommandId::ViewAsTree, &tree));
         assert!(!checked(CommandId::ViewAsList, &tree));
         // The tree is always by name; the order of the list stays for it.
-        for id in &DIFFERENCE_VIEW[5..] {
+        for id in &DIFFERENCE_VIEW[6..] {
             assert_eq!(available(*id, &list), Ok(()), "{id:?}");
             assert_eq!(
                 available(*id, &tree),
@@ -950,7 +1070,7 @@ mod tests {
             );
         }
         // The filter works in both.
-        for id in &DIFFERENCE_VIEW[..5] {
+        for id in &DIFFERENCE_VIEW[..6] {
             assert_eq!(available(*id, &tree), Ok(()), "{id:?}");
         }
         assert_eq!(

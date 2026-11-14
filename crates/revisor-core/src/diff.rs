@@ -1,6 +1,6 @@
-//! Comparison of two trees of file system entries by the rules of TASK-10. The
-//! comparison of two snapshots, which pairs their folders, loads the trees and reports
-//! what was left out, is [`crate::compare`].
+//! Comparison of trees of file system entries by the rules of TASK-10, with the entries
+//! renamed or moved between them (TASK-42). The comparison of two snapshots, which pairs
+//! their folders, loads the trees and reports what was left out, is [`crate::compare`].
 //!
 //! Entries are matched by path. Among the children of two matched folders, those with the
 //! very same name are matched first, then the rest without regard to case, as NTFS
@@ -9,28 +9,44 @@
 //! - an entry only in the newer tree is added, one only in the older is deleted, with
 //!   every entry of its subtree;
 //! - an entry whose kind changed (file, folder, link) is deleted and added again;
-//! - an entry is modified when its name case, size, creation time, last write time,
-//!   attributes, version, link target or NTFS file ID differ. Another file ID at the same
-//!   path means the entry was deleted and made again: it is replaced. The archive, normal
-//!   and cloud state attributes are ignored, and so is the last write time of folders,
-//!   which changes with their contents.
+//! - an entry is modified when its size, creation time, last write time, attributes,
+//!   version, link target or NTFS file ID differ. Another file ID at the same path means
+//!   the entry was deleted and made again: it is replaced. The archive, normal and cloud
+//!   state attributes are ignored, and so is the last write time of folders, which
+//!   changes with their contents;
+//! - an entry whose name differs in case only, and which is not replaced, is renamed.
+//!
+//! An entry that would be deleted, or is replaced, and one that would be added are one
+//! entry, renamed or moved, when they have the same file ID on the same volume, the same
+//! kind and the same creation time (`moves`). It is one change, at its newer path. A
+//! folder renamed or moved is compared with what it held before, by the paths below it,
+//! so only what changed inside it shows, at the newer paths; and "the same folder" is a
+//! folder matched by path or moved, so a file renamed inside a moved folder is renamed,
+//! not moved. A folder that took the place of one that moved away is replaced, and holds
+//! nothing of what the other held: its contents are added, unless they moved there.
+//! Trees compared together ([`diff_many`]) may hold the two entries of a pair in two of
+//! the comparisons: an entry moved from one folder of a profile to another.
 //!
 //! Entries that match an exclusion are left out with their subtrees; the compared roots
-//! never are. Entries inaccessible in at least one tree are listed apart and are never
+//! never are. Inside a folder that moved, what is excluded at either of its places is
+//! left out. Entries inaccessible in at least one tree are listed apart and are never
 //! added or deleted. Children of a folder inaccessible on one side that are missing on
 //! the other side are skipped: it is unknown whether they were there.
+
+mod moves;
 
 use std::cmp::Ordering;
 use std::ffi::OsStr;
 use std::fmt;
 use std::os::windows::ffi::OsStrExt;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicU64, Ordering::Relaxed};
 
 use crate::exclude::{Branch, Exclusions};
 use crate::job::Cancel;
-use crate::path::upcase;
+use crate::path::{parts, upcase};
 use crate::scan::{Entry, EntryKind, VersionInfo};
+use moves::{Moves, Site};
 
 const FILE_ATTRIBUTE_ARCHIVE: u32 = 0x20;
 const FILE_ATTRIBUTE_NORMAL: u32 = 0x80;
@@ -59,14 +75,19 @@ pub enum ChangeKind {
     Added,
     Deleted,
     Modified,
+    /// Renamed or moved (TASK-42): the entry `old` is now the entry `new`, at another
+    /// path. [`Fields::NAME`] and [`Fields::FOLDER`] say which part of the path differs,
+    /// and the other fields what else does, as for a modified entry.
+    Moved,
 }
 
 /// Fields of an entry that differ between the snapshots, as bit flags.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Default)]
-pub struct Fields(pub u8);
+pub struct Fields(pub u16);
 
 impl Fields {
-    /// The name differs in case only.
+    /// The name differs: in any way for a renamed or moved entry, in case only for a
+    /// replaced one.
     pub const NAME: Fields = Fields(1);
     pub const SIZE: Fields = Fields(1 << 1);
     pub const CREATED: Fields = Fields(1 << 2);
@@ -77,6 +98,9 @@ impl Fields {
     /// Another NTFS file ID at the same path: the entry was deleted and made again, so it
     /// is replaced, even when nothing else differs.
     pub const FILE_ID: Fields = Fields(1 << 7);
+    /// A moved entry is in another folder than it was. A folder matched by path, or one
+    /// that moved itself, is the same folder.
+    pub const FOLDER: Fields = Fields(1 << 8);
 
     pub fn contains(self, other: Fields) -> bool {
         self.0 & other.0 == other.0
@@ -108,18 +132,23 @@ pub struct Change {
     pub kind: ChangeKind,
     pub old: Option<u32>,
     pub new: Option<u32>,
-    /// What differs; empty unless the entry is modified.
+    /// What differs; empty for an added or deleted entry.
     pub fields: Fields,
+    /// Among comparisons made together ([`diff_many`]), the one whose older tree holds
+    /// `old`, when that is another one than the change's own: the entry, or a folder it
+    /// is in, moved between their trees.
+    pub old_in: Option<u32>,
 }
 
 impl Change {
-    /// The path of the changed entry: in the newer tree for an added entry, in the older
-    /// one otherwise.
+    /// The path of the changed entry: in the newer tree for an added, renamed or moved
+    /// entry, in the older one otherwise. `old` is the older tree that holds the entry
+    /// ([`Change::old_in`]).
     pub fn path(&self, old: &[Entry], new: &[Entry]) -> PathBuf {
-        match (self.old, self.new) {
-            (Some(a), _) => path(old, a),
-            (None, Some(b)) => path(new, b),
-            (None, None) => unreachable!("a change is in at least one tree"),
+        match (self.kind, self.old, self.new) {
+            (ChangeKind::Moved, _, Some(b)) | (_, None, Some(b)) => path(new, b),
+            (_, Some(a), _) => path(old, a),
+            (_, None, None) => unreachable!("a change is in at least one tree"),
         }
     }
 }
@@ -131,15 +160,18 @@ pub struct Inaccessible {
     pub new: Option<u32>,
     /// How many changes come before the entry in tree order: the entry stands right
     /// before the change at this index, so the changes and the inaccessible entries
-    /// merge into one list in tree order (TASK-13 #20). An entry that is also modified
-    /// comes before its change.
+    /// merge into one list in tree order (TASK-13 #20). An entry that is also modified,
+    /// renamed or moved comes before its change.
     pub changes_before: u32,
+    /// The comparison whose older tree holds `old`, as [`Change::old_in`].
+    pub old_in: Option<u32>,
 }
 
 /// Differences between two trees, in tree order: each folder comes before its contents,
 /// and the children of a folder are sorted by name. The two lists are each in tree order;
 /// [`Inaccessible::changes_before`] says where the inaccessible entries stand among the
-/// changes.
+/// changes. A renamed or moved entry stands where it is in the newer tree, and what was
+/// deleted inside a moved folder where that folder is now.
 #[derive(Clone, Debug, Default)]
 pub struct Diff {
     pub changes: Vec<Change>,
@@ -190,9 +222,10 @@ pub struct Filter<'a> {
 pub struct Rules<'a> {
     /// `None` leaves nothing out.
     pub filter: Option<Filter<'a>>,
-    /// Whether file IDs are compared: only when both trees lie on the same volume, where
-    /// the IDs are unique.
-    pub file_ids: bool,
+    /// The volumes the older and the newer tree lie on, by their serial numbers. File IDs
+    /// are unique within a volume, so they are compared, and renamed and moved entries
+    /// looked for, only between trees of one volume.
+    pub volumes: [u64; 2],
 }
 
 impl Rules<'_> {
@@ -200,9 +233,18 @@ impl Rules<'_> {
     pub fn plain() -> Self {
         Rules {
             filter: None,
-            file_ids: true,
+            volumes: [0; 2],
         }
     }
+}
+
+/// One comparison among those made together by [`diff_many`]: the two subtrees, whose
+/// roots are always matched with each other, and what the comparison applies to them.
+#[derive(Clone, Debug)]
+pub struct Pair<'a> {
+    pub old: Subtree<'a>,
+    pub new: Subtree<'a>,
+    pub rules: Rules<'a>,
 }
 
 /// Compares the subtree `old` with the subtree `new`: their roots are always matched
@@ -216,12 +258,7 @@ pub fn diff(
     diff_counting(old, new, rules, cancel, &AtomicU64::new(0))
 }
 
-/// [`diff`] that counts the entries visited in `visited`, for the progress of a
-/// comparison (TASK-11 #8): an entry matched in both trees counts for both, one whose
-/// kind changed counts once as deleted and once as added. The count goes up every
-/// [`CANCEL_CHECK`] entries and at the end, and is never taken back. Entries the
-/// comparison leaves out — excluded, or under a folder inaccessible on one side only —
-/// are never visited, so the count may end short of the trees' size.
+/// [`diff`] that counts the entries visited in `visited`, as [`diff_many`] does.
 pub fn diff_counting(
     old: Subtree<'_>,
     new: Subtree<'_>,
@@ -229,57 +266,52 @@ pub fn diff_counting(
     cancel: &Cancel,
     visited: &AtomicU64,
 ) -> Result<Diff, Cancelled> {
-    let roots = match (old.entries.is_empty(), new.entries.is_empty()) {
-        (false, false) => vec![Item::Both(old.root, new.root)],
-        (false, true) => vec![Item::Old(old.root)],
-        (true, false) => vec![Item::New(new.root)],
-        (true, true) => Vec::new(),
+    let pair = Pair {
+        old,
+        new,
+        rules: rules.clone(),
     };
-    let mut walk = Walk {
-        old: Tree::new(old.entries),
-        new: Tree::new(new.entries),
-        rules,
-        diff: Diff::default(),
-        frames: vec![Frame {
-            items: roots,
-            branch: rules
-                .filter
-                .as_ref()
-                .map(|f| f.branch.clone())
-                .unwrap_or_default(),
-            of_roots: true,
-        }],
-        old_keys: Keys::default(),
-        new_keys: Keys::default(),
+    let mut diffs = diff_many(&[pair], cancel, visited)?;
+    Ok(diffs.pop().expect("one difference for one comparison"))
+}
+
+/// Compares each of `pairs`, and looks for entries renamed or moved within them and
+/// between them: a difference for each comparison, in their order. An entry moved from
+/// the older tree of one comparison to the newer tree of another is a change of the
+/// latter ([`Change::old_in`]). Cancelling `cancel` stops with [`Cancelled`].
+///
+/// `visited` counts the entries visited, for the progress of a comparison (TASK-11 #8):
+/// an entry matched in both trees counts for both, one whose kind changed counts once as
+/// deleted and once as added. The count goes up every [`CANCEL_CHECK`] entries and at
+/// the end, and is never taken back. Entries the comparison leaves out — excluded, or
+/// under a folder inaccessible on one side only — are never visited, so the count may
+/// end short of the trees' size. Where renamed or moved entries are found, what holds
+/// them is walked again, which is not counted.
+pub fn diff_many(
+    pairs: &[Pair<'_>],
+    cancel: &Cancel,
+    visited: &AtomicU64,
+) -> Result<Vec<Diff>, Cancelled> {
+    let forest = Forest {
+        old: pairs.iter().map(|p| Tree::new(p.old.entries)).collect(),
+        new: pairs.iter().map(|p| Tree::new(p.new.entries)).collect(),
     };
-    let mut seen = 0usize;
-    let mut counted = 0u64;
-    while let Some(frame) = walk.frames.last_mut() {
-        let Some(item) = frame.items.pop() else {
-            walk.frames.pop();
-            continue;
-        };
-        if seen.is_multiple_of(CANCEL_CHECK) {
-            if cancel.is_cancelled() {
-                return Err(Cancelled);
-            }
-            visited.fetch_add(counted, Relaxed);
-            counted = 0;
-        }
-        seen += 1;
-        // A pair whose kinds differ is visited again as a deleted and an added entry.
-        counted += match item {
-            Item::Both(a, b) => {
-                let same_kind =
-                    walk.old.entries[a as usize].kind == walk.new.entries[b as usize].kind;
-                if same_kind { 2 } else { 0 }
-            }
-            Item::Old(_) | Item::New(_) => 1,
-        };
-        walk.visit(item);
+    let mut moves = Moves::default();
+    let mut walked = Vec::with_capacity(pairs.len());
+    for at in 0..pairs.len() as u32 {
+        walked.push(walk(&forest, pairs, &moves, at, cancel, visited)?);
     }
-    visited.fetch_add(counted, Relaxed);
-    Ok(walk.diff)
+    loop {
+        // The blocks of each comparison that hold an entry of a pair just found.
+        let again = moves::find(&forest, pairs, &walked, &mut moves, cancel)?;
+        if again.iter().all(Vec::is_empty) {
+            return Ok(walked.into_iter().map(|walked| walked.diff).collect());
+        }
+        for (at, again) in again.iter().enumerate().filter(|(_, a)| !a.is_empty()) {
+            let was = std::mem::take(&mut walked[at]);
+            walked[at] = walk_again(&forest, pairs, &moves, at as u32, was, again, cancel)?;
+        }
+    }
 }
 
 /// Path of entry `index`: the root path joined with the names down to the entry.
@@ -293,6 +325,28 @@ pub fn path(entries: &[Entry], index: u32) -> PathBuf {
     let mut path = PathBuf::from(&*entries[i].name);
     path.extend(names.iter().rev());
     path
+}
+
+/// The name of entry `index` alone: a root, which is named by its whole path, by the
+/// last part of it, or by the whole path for the root of a drive.
+pub fn name(entries: &[Entry], index: u32) -> &OsStr {
+    let entry = &entries[index as usize];
+    match entry.parent {
+        Some(_) => &entry.name,
+        None => Path::new(&*entry.name).file_name().unwrap_or(&entry.name),
+    }
+}
+
+/// The path of the folder entry `index` is in; empty for the root of a drive.
+pub fn folder(entries: &[Entry], index: u32) -> PathBuf {
+    let entry = &entries[index as usize];
+    match entry.parent {
+        Some(parent) => path(entries, parent),
+        None => Path::new(&*entry.name)
+            .parent()
+            .map(Path::to_path_buf)
+            .unwrap_or_default(),
+    }
 }
 
 /// Children of every entry, found from the parent links, so the order of the entries
@@ -334,6 +388,13 @@ impl<'a> Tree<'a> {
         let i = index as usize;
         &self.children[self.start[i] as usize..self.start[i + 1] as usize]
     }
+}
+
+/// The trees of the comparisons made together, by comparison: an entry of one may have
+/// moved to another.
+struct Forest<'a> {
+    old: Vec<Tree<'a>>,
+    new: Vec<Tree<'a>>,
 }
 
 /// A child of a folder in [`Keys`].
@@ -443,113 +504,638 @@ enum Item {
     New(u32),
 }
 
+/// Where a folder stands against the exclusions.
+#[derive(Clone, Default)]
+struct Place {
+    /// By its path in the newer tree, or in the older one where the newer has none.
+    branch: Branch,
+    /// By the path it had in the older tree, for a folder that moved and for those inside
+    /// it: what is excluded at either place is left out.
+    old_branch: Option<Branch>,
+}
+
+/// The folder whose children a frame holds.
+struct Folder {
+    place: Place,
+    /// The comparison whose older tree the older children are in.
+    old_tree: u32,
+    /// The older folder that the newer one continues, in `old_tree`: the folder matched
+    /// with it by path, or the one that moved to it. A newer entry that an older child of
+    /// this folder became has stayed in its folder.
+    old_dir: Option<u32>,
+    /// The block that ends with the last of the children.
+    closes: Option<u32>,
+}
+
 /// The items of one folder still to visit.
 struct Frame {
     /// Reversed, so `pop` gives the next item in tree order.
     items: Vec<Item>,
     /// Where the folder whose children these are stands against the exclusions; in the
     /// frame of the roots, where the roots themselves stand.
-    branch: Branch,
+    place: Place,
     of_roots: bool,
+    /// As in [`Folder`].
+    old_tree: u32,
+    old_dir: Option<u32>,
+    /// The children of a folder that is in one tree only: all of them are in that tree,
+    /// below an entry deleted or added.
+    one_sided: bool,
+    /// The frame among the contexts of the blocks, once a block of an item of it is noted.
+    context: Option<u32>,
+    closes: Option<u32>,
 }
 
-struct Walk<'a, 'r> {
-    old: Tree<'a>,
-    new: Tree<'a>,
-    rules: &'r Rules<'r>,
+/// A part of a difference that is walked again when an entry in it turns out to have
+/// moved, while the rest of the difference stays as it is: what one item of a frame gave,
+/// with all that is below it. Such an item is an entry in one tree only, met among
+/// entries of both — deleted or added with all it holds, any of which may have moved — or
+/// a folder replaced at its path, which holds nothing of the older one once that one is
+/// found elsewhere. The blocks stand in the order of the walk, one inside another where a
+/// folder inside a block has both sides again.
+#[derive(Clone, Copy)]
+struct Block {
+    item: Item,
+    /// The frame the item was met in, among [`Walked::contexts`].
+    context: u32,
+    /// Where what the item gave starts and ends among the changes, and among the
+    /// inaccessible entries.
+    changes: (u32, u32),
+    inaccessible: (u32, u32),
+}
+
+/// What a frame was when an item of it was met, to walk the item again.
+struct Context {
+    place: Place,
+    of_roots: bool,
+    old_tree: u32,
+    old_dir: Option<u32>,
+}
+
+/// What the walk of a comparison gives: its difference, and the blocks of it.
+#[derive(Default)]
+struct Walked {
     diff: Diff,
+    blocks: Vec<Block>,
+    /// The frames of the blocks; one walked again keeps its frame, so they only grow.
+    contexts: Vec<Context>,
+}
+
+/// The walk of one comparison: every frame is in its newer tree, and in an older tree of
+/// any of the comparisons made together.
+struct Walk<'w, 'a> {
+    forest: &'w Forest<'a>,
+    pairs: &'w [Pair<'a>],
+    /// The entries renamed or moved, as found so far.
+    moves: &'w Moves,
+    /// The comparison walked.
+    at: u32,
+    out: Walked,
     /// A stack of frames, one per folder being walked.
     frames: Vec<Frame>,
     old_keys: Keys,
     new_keys: Keys,
+    cancel: &'w Cancel,
+    /// Counts the entries visited, on the first walk.
+    visited: Option<&'w AtomicU64>,
+    /// How many items the walk has visited, and how many entries it has yet to count.
+    seen: usize,
+    counted: u64,
 }
 
-impl Walk<'_, '_> {
+/// Walks the comparison `at` of `pairs` for the first time, when no entry is known to
+/// have moved, counting the entries visited in `visited`.
+fn walk(
+    forest: &Forest<'_>,
+    pairs: &[Pair<'_>],
+    moves: &Moves,
+    at: u32,
+    cancel: &Cancel,
+    visited: &AtomicU64,
+) -> Result<Walked, Cancelled> {
+    let pair = &pairs[at as usize];
+    let roots = match (pair.old.entries.is_empty(), pair.new.entries.is_empty()) {
+        (false, false) => vec![Item::Both(pair.old.root, pair.new.root)],
+        (false, true) => vec![Item::Old(pair.old.root)],
+        (true, false) => vec![Item::New(pair.new.root)],
+        (true, true) => Vec::new(),
+    };
+    let branch = pair
+        .rules
+        .filter
+        .as_ref()
+        .map(|f| f.branch.clone())
+        .unwrap_or_default();
+    let mut walk = Walk::new(forest, pairs, moves, at, cancel, Some(visited));
+    walk.run(Frame {
+        items: roots,
+        place: Place {
+            branch,
+            old_branch: None,
+        },
+        of_roots: true,
+        old_tree: at,
+        old_dir: None,
+        one_sided: false,
+        context: None,
+        closes: None,
+    })?;
+    Ok(walk.out)
+}
+
+/// Walks again the blocks of `was`, the walk of the comparison `at` so far, that `again`
+/// marks, with the renamed and moved entries found since; the rest of the difference
+/// stays as it was.
+fn walk_again(
+    forest: &Forest<'_>,
+    pairs: &[Pair<'_>],
+    moves: &Moves,
+    at: u32,
+    was: Walked,
+    again: &[bool],
+    cancel: &Cancel,
+) -> Result<Walked, Cancelled> {
+    let Walked {
+        diff: old,
+        blocks,
+        contexts,
+    } = was;
+    let mut walk = Walk::new(forest, pairs, moves, at, cancel, None);
+    walk.out.contexts = contexts;
+    walk.out.diff.changes.reserve(old.changes.len());
+    walk.out.diff.inaccessible.reserve(old.inaccessible.len());
+    // How far the old difference is taken over: so many changes and inaccessible entries.
+    let mut taken = (0u32, 0u32);
+    // Takes over the old difference up to `to`. The inaccessible entries say how many
+    // changes stand before them, which is as many more as the blocks walked again added.
+    let take = |walk: &mut Walk<'_, '_>, taken: &mut (u32, u32), to: (u32, u32)| {
+        let (changes, inaccessible) = (
+            taken.0 as usize..to.0 as usize,
+            taken.1 as usize..to.1 as usize,
+        );
+        let added = walk.out.diff.changes.len() as i64 - i64::from(taken.0);
+        let entries = old.inaccessible[inaccessible]
+            .iter()
+            .map(|entry| Inaccessible {
+                changes_before: (i64::from(entry.changes_before) + added) as u32,
+                ..*entry
+            });
+        walk.out.diff.inaccessible.extend(entries);
+        walk.out
+            .diff
+            .changes
+            .extend_from_slice(&old.changes[changes]);
+        *taken = to;
+    };
+    let ends = |block: &Block| (block.changes.1, block.inaccessible.1);
+    // The blocks kept that the walk is inside of, by their places in the new difference,
+    // with where each ends in the old one.
+    let mut inside: Vec<(usize, (u32, u32))> = Vec::new();
+    let close = |walk: &mut Walk<'_, '_>, kept: usize| {
+        let (changes, inaccessible) = walk.end();
+        walk.out.blocks[kept].changes.1 = changes;
+        walk.out.blocks[kept].inaccessible.1 = inaccessible;
+    };
+    for (block, &again) in blocks.iter().zip(again) {
+        let starts = (block.changes.0, block.inaccessible.0);
+        // A block inside one walked again was walked with it.
+        if starts.0 < taken.0 || starts.1 < taken.1 {
+            continue;
+        }
+        // The blocks kept that end before this one starts.
+        while let Some(&(kept, end)) = inside.last()
+            && end.0 <= starts.0
+            && end.1 <= starts.1
+        {
+            take(&mut walk, &mut taken, end);
+            close(&mut walk, kept);
+            inside.pop();
+        }
+        take(&mut walk, &mut taken, starts);
+        if again {
+            let context = &walk.out.contexts[block.context as usize];
+            let frame = Frame {
+                items: vec![block.item],
+                place: context.place.clone(),
+                of_roots: context.of_roots,
+                old_tree: context.old_tree,
+                old_dir: context.old_dir,
+                one_sided: false,
+                context: Some(block.context),
+                closes: None,
+            };
+            walk.run(frame)?;
+            taken = ends(block);
+        } else {
+            let (changes, inaccessible) = walk.end();
+            inside.push((walk.out.blocks.len(), ends(block)));
+            walk.out.blocks.push(Block {
+                changes: (changes, changes),
+                inaccessible: (inaccessible, inaccessible),
+                ..*block
+            });
+        }
+    }
+    while let Some((kept, end)) = inside.pop() {
+        take(&mut walk, &mut taken, end);
+        close(&mut walk, kept);
+    }
+    let end = (old.changes.len() as u32, old.inaccessible.len() as u32);
+    take(&mut walk, &mut taken, end);
+    Ok(walk.out)
+}
+
+impl<'w, 'a> Walk<'w, 'a> {
+    fn new(
+        forest: &'w Forest<'a>,
+        pairs: &'w [Pair<'a>],
+        moves: &'w Moves,
+        at: u32,
+        cancel: &'w Cancel,
+        visited: Option<&'w AtomicU64>,
+    ) -> Self {
+        Walk {
+            forest,
+            pairs,
+            moves,
+            at,
+            out: Walked::default(),
+            frames: Vec::new(),
+            old_keys: Keys::default(),
+            new_keys: Keys::default(),
+            cancel,
+            visited,
+            seen: 0,
+            counted: 0,
+        }
+    }
+
+    /// Visits the items of `frame` and all that is below them, in tree order.
+    fn run(&mut self, frame: Frame) -> Result<(), Cancelled> {
+        let base = self.frames.len();
+        self.frames.push(frame);
+        while self.frames.len() > base {
+            let frame = self
+                .frames
+                .last_mut()
+                .expect("there are frames above the base");
+            let Some(item) = frame.items.pop() else {
+                let closes = frame.closes;
+                self.frames.pop();
+                if let Some(block) = closes {
+                    self.close(block);
+                }
+                continue;
+            };
+            let old_tree = frame.old_tree;
+            if self.seen.is_multiple_of(CANCEL_CHECK) {
+                if self.cancel.is_cancelled() {
+                    return Err(Cancelled);
+                }
+                self.count();
+            }
+            self.seen += 1;
+            // A pair whose kinds differ is visited again as a deleted and an added entry.
+            self.counted += match item {
+                Item::Both(a, b) => {
+                    let same_kind = self.old_entry((old_tree, a)).kind == self.new_entry(b).kind;
+                    if same_kind { 2 } else { 0 }
+                }
+                Item::Old(_) | Item::New(_) => 1,
+            };
+            self.visit(item);
+        }
+        self.count();
+        Ok(())
+    }
+
+    /// Adds the entries visited since the last count to the count of the comparison.
+    fn count(&mut self) {
+        if let Some(visited) = self.visited {
+            visited.fetch_add(self.counted, Relaxed);
+        }
+        self.counted = 0;
+    }
+
+    fn top(&self) -> &Frame {
+        self.frames.last().expect("an item comes from a frame")
+    }
+
+    fn old_entry(&self, (tree, index): Site) -> &'a Entry {
+        &self.forest.old[tree as usize].entries[index as usize]
+    }
+
+    fn new_entry(&self, index: u32) -> &'a Entry {
+        &self.forest.new[self.at as usize].entries[index as usize]
+    }
+
+    /// How many changes and inaccessible entries the difference has so far.
+    fn end(&self) -> (u32, u32) {
+        (
+            self.out.diff.changes.len() as u32,
+            self.out.diff.inaccessible.len() as u32,
+        )
+    }
+
+    /// Starts a block: what `item`, of the frame on top, gives from here on.
+    fn open(&mut self, item: Item) -> u32 {
+        let frame = self.frames.last_mut().expect("an item comes from a frame");
+        let contexts = &mut self.out.contexts;
+        let context = *frame.context.get_or_insert_with(|| {
+            contexts.push(Context {
+                place: frame.place.clone(),
+                of_roots: frame.of_roots,
+                old_tree: frame.old_tree,
+                old_dir: frame.old_dir,
+            });
+            (contexts.len() - 1) as u32
+        });
+        let (changes, inaccessible) = self.end();
+        self.out.blocks.push(Block {
+            item,
+            context,
+            changes: (changes, changes),
+            inaccessible: (inaccessible, inaccessible),
+        });
+        (self.out.blocks.len() - 1) as u32
+    }
+
+    /// Ends the block `block` here.
+    fn close(&mut self, block: u32) {
+        let (changes, inaccessible) = self.end();
+        let block = &mut self.out.blocks[block as usize];
+        block.changes.1 = changes;
+        block.inaccessible.1 = inaccessible;
+    }
+
     fn visit(&mut self, item: Item) {
         match item {
             Item::Both(a, b) => self.visit_both(a, b),
-            Item::Old(a) => {
-                let entry = &self.old.entries[a as usize];
-                if entry.inaccessible {
-                    self.inaccessible(Some(a), None);
-                } else {
-                    self.change(ChangeKind::Deleted, Some(a), None, Fields::default());
-                    if entry.kind == EntryKind::Dir {
-                        let branch = self.branch_of(&entry.name);
-                        self.push_children(Some(a), None, false, branch);
-                    }
-                }
+            Item::Old(a) => self.visit_old(a),
+            Item::New(b) => self.visit_new(b),
+        }
+    }
+
+    fn visit_old(&mut self, a: u32) {
+        let frame = self.top();
+        let (old_tree, among_both) = (frame.old_tree, !frame.one_sided);
+        // An entry that moved is compared where it is now.
+        if self.moves.is_moved((old_tree, a)) {
+            return;
+        }
+        // Deleted with all it holds, any of which may turn out to have moved.
+        let block = among_both.then(|| self.open(Item::Old(a)));
+        let entry = self.old_entry((old_tree, a));
+        if entry.inaccessible {
+            self.inaccessible(Some((old_tree, a)), None);
+        } else {
+            self.change(
+                ChangeKind::Deleted,
+                Some((old_tree, a)),
+                None,
+                Fields::default(),
+            );
+            if entry.kind == EntryKind::Dir {
+                let folder = Folder {
+                    place: self.place_of(&entry.name),
+                    old_tree,
+                    old_dir: None,
+                    closes: block,
+                };
+                return self.push_children(Some(a), None, false, folder);
             }
-            Item::New(b) => {
-                let entry = &self.new.entries[b as usize];
-                if entry.inaccessible {
-                    self.inaccessible(None, Some(b));
-                } else {
-                    self.change(ChangeKind::Added, None, Some(b), Fields::default());
-                    if entry.kind == EntryKind::Dir {
-                        let branch = self.branch_of(&entry.name);
-                        self.push_children(None, Some(b), false, branch);
-                    }
-                }
+        }
+        if let Some(block) = block {
+            self.close(block);
+        }
+    }
+
+    fn visit_new(&mut self, b: u32) {
+        if let Some(from) = self.moves.old_of((self.at, b)) {
+            return self.visit_moved(from, b);
+        }
+        let frame = self.top();
+        let (old_tree, among_both) = (frame.old_tree, !frame.one_sided);
+        // Added with all it holds, any of which may turn out to have moved here.
+        let block = among_both.then(|| self.open(Item::New(b)));
+        let entry = self.new_entry(b);
+        if entry.inaccessible {
+            self.inaccessible(None, Some(b));
+        } else {
+            self.change(ChangeKind::Added, None, Some(b), Fields::default());
+            if entry.kind == EntryKind::Dir {
+                let folder = Folder {
+                    place: self.place_of(&entry.name),
+                    old_tree,
+                    old_dir: None,
+                    closes: block,
+                };
+                return self.push_children(None, Some(b), false, folder);
             }
+        }
+        if let Some(block) = block {
+            self.close(block);
+        }
+    }
+
+    /// The newer entry `b` is the older entry `from`, renamed or moved: one change, and
+    /// for a folder its contents compared with those it had.
+    fn visit_moved(&mut self, from: Site, b: u32) {
+        let (old, new) = (self.old_entry(from), self.new_entry(b));
+        let unknown = old.inaccessible || new.inaccessible;
+        // The two have one file ID, so the entry is not replaced.
+        let mut fields = changed_fields(old, new, unknown, false);
+        let (old_tree, new_tree) = (
+            self.forest.old[from.0 as usize].entries,
+            self.forest.new[self.at as usize].entries,
+        );
+        if name(old_tree, from.1) != name(new_tree, b) {
+            fields |= Fields::NAME;
+        }
+        if !self.in_the_same_folder(from, b) {
+            fields |= Fields::FOLDER;
+        }
+        if unknown {
+            self.inaccessible(Some(from), Some(b));
+        }
+        if fields.contains(Fields::NAME) || fields.contains(Fields::FOLDER) {
+            self.change(ChangeKind::Moved, Some(from), Some(b), fields);
+        } else if !fields.is_empty() {
+            // The same name in the same folder: the entry came back to its path, into a
+            // folder that took the place of its own.
+            self.change(ChangeKind::Modified, Some(from), Some(b), fields);
+        }
+        if old.kind == EntryKind::Dir {
+            let folder = Folder {
+                place: Place {
+                    branch: self.place_of(&new.name).branch,
+                    old_branch: self.old_branch(from),
+                },
+                old_tree: from.0,
+                old_dir: Some(from.1),
+                closes: None,
+            };
+            self.push_children(Some(from.1), Some(b), unknown, folder);
         }
     }
 
     fn visit_both(&mut self, a: u32, b: u32) {
-        let (old, new) = (&self.old.entries[a as usize], &self.new.entries[b as usize]);
-        let frame = self.frames.last().expect("an item comes from a frame");
-        if old.kind != new.kind {
+        let frame = self.top();
+        let (old_tree, of_roots, old_dir) = (frame.old_tree, frame.of_roots, frame.old_dir);
+        let (old, new) = (self.old_entry((old_tree, a)), self.new_entry(b));
+        // A newer entry that moved here from elsewhere is at a path of its own: the
+        // older entry at this path is not the one it continues.
+        let moved_here = self
+            .moves
+            .old_of((self.at, b))
+            .is_some_and(|from| from != (old_tree, a));
+        if old.kind != new.kind || moved_here {
             // Visited in this order: deleted first, then added.
+            let place = frame.place.clone();
             self.frames.push(Frame {
                 items: vec![Item::New(b), Item::Old(a)],
-                branch: frame.branch.clone(),
-                of_roots: frame.of_roots,
+                place,
+                of_roots,
+                old_tree,
+                old_dir,
+                one_sided: false,
+                context: None,
+                closes: None,
             });
             return;
         }
         let unknown = old.inaccessible || new.inaccessible;
-        let fields = changed_fields(old, new, frame.of_roots, unknown, self.rules.file_ids);
+        let file_ids = self.pairs[old_tree as usize].rules.volumes[0]
+            == self.pairs[self.at as usize].rules.volumes[1];
+        let mut fields = changed_fields(old, new, unknown, file_ids);
+        // The names of the compared roots are not compared: a root is named by its
+        // whole path.
+        if !of_roots && old.name != new.name {
+            fields |= Fields::NAME;
+        }
+        let replaced = fields.contains(Fields::FILE_ID);
+        let is_dir = old.kind == EntryKind::Dir;
+        // A folder replaced holds nothing of the older one once that one is found
+        // elsewhere.
+        let block = (is_dir && replaced).then(|| self.open(Item::Both(a, b)));
         if unknown {
-            self.inaccessible(Some(a), Some(b));
+            self.inaccessible(Some((old_tree, a)), Some(b));
         }
-        if !fields.is_empty() {
-            self.change(ChangeKind::Modified, Some(a), Some(b), fields);
+        if fields.contains(Fields::NAME) && !replaced {
+            // The same entry under a name of another case: renamed.
+            self.change(ChangeKind::Moved, Some((old_tree, a)), Some(b), fields);
+        } else if !fields.is_empty() {
+            self.change(ChangeKind::Modified, Some((old_tree, a)), Some(b), fields);
         }
-        if old.kind == EntryKind::Dir {
-            let branch = self.branch_of(&old.name);
-            self.push_children(Some(a), Some(b), unknown, branch);
+        if !is_dir {
+            return;
+        }
+        let folder = Folder {
+            place: self.place_of(&old.name),
+            old_tree,
+            old_dir: Some(a),
+            closes: block,
+        };
+        if !(replaced && self.moves.is_moved((old_tree, a))) {
+            self.push_children(Some(a), Some(b), unknown, folder);
+        } else if !unknown {
+            // The older folder moved away with what it held, which is compared where the
+            // folder is now: this one holds nothing of it.
+            self.push_children(None, Some(b), false, folder);
+        } else if let Some(block) = block {
+            self.close(block);
         }
     }
 
-    fn change(&mut self, kind: ChangeKind, old: Option<u32>, new: Option<u32>, fields: Fields) {
-        self.diff.changes.push(Change {
+    fn change(&mut self, kind: ChangeKind, old: Option<Site>, new: Option<u32>, fields: Fields) {
+        let old_in = self.old_in(old);
+        self.out.diff.changes.push(Change {
             kind,
-            old,
+            old: old.map(|(_, index)| index),
             new,
             fields,
+            old_in,
         });
     }
 
-    fn inaccessible(&mut self, old: Option<u32>, new: Option<u32>) {
-        let changes_before = self.diff.changes.len() as u32;
-        self.diff.inaccessible.push(Inaccessible {
-            old,
+    fn inaccessible(&mut self, old: Option<Site>, new: Option<u32>) {
+        let changes_before = self.out.diff.changes.len() as u32;
+        let old_in = self.old_in(old);
+        self.out.diff.inaccessible.push(Inaccessible {
+            old: old.map(|(_, index)| index),
             new,
             changes_before,
+            old_in,
         });
+    }
+
+    /// The comparison whose older tree holds `old`, when it is not the one walked.
+    fn old_in(&self, old: Option<Site>) -> Option<u32> {
+        old.map(|(tree, _)| tree).filter(|&tree| tree != self.at)
+    }
+
+    /// Whether the newer entry `b` is in the folder the older entry `from` was in: the
+    /// folder matched with that one by path, or the one it moved to. The roots of the
+    /// comparisons have no folders among the entries, so theirs are told by their paths.
+    fn in_the_same_folder(&self, from: Site, b: u32) -> bool {
+        let frame = self.top();
+        match self.old_entry(from).parent {
+            Some(parent) if !frame.of_roots => {
+                frame.old_tree == from.0 && frame.old_dir == Some(parent)
+            }
+            _ => {
+                let was = folder(self.forest.old[from.0 as usize].entries, from.1);
+                let is = folder(self.forest.new[self.at as usize].entries, b);
+                parts(was.as_os_str()) == parts(is.as_os_str())
+            }
+        }
     }
 
     /// Where a folder named `name`, an item of the frame on top, stands against the
     /// exclusions.
-    fn branch_of(&self, name: &OsStr) -> Branch {
-        let frame = self.frames.last().expect("an item comes from a frame");
-        match &self.rules.filter {
-            Some(filter) if !frame.of_roots => filter
-                .exclusions
-                .child(&frame.branch, name)
-                .expect("an excluded child is never queued"),
-            _ => frame.branch.clone(),
+    fn place_of(&self, name: &OsStr) -> Place {
+        let frame = self.top();
+        if frame.of_roots {
+            return frame.place.clone();
         }
+        let below = |comparison: u32, branch: &Branch| match &self.pairs[comparison as usize]
+            .rules
+            .filter
+        {
+            Some(filter) => filter
+                .exclusions
+                .child(branch, name)
+                .expect("an excluded child is never queued"),
+            None => branch.clone(),
+        };
+        Place {
+            branch: below(self.at, &frame.place.branch),
+            old_branch: frame
+                .place
+                .old_branch
+                .as_ref()
+                .map(|branch| below(frame.old_tree, branch)),
+        }
+    }
+
+    /// Where the older folder `from` stood against the exclusions of its comparison, at
+    /// its own path; `None` when that comparison leaves nothing out.
+    fn old_branch(&self, (tree, index): Site) -> Option<Branch> {
+        let pair = &self.pairs[tree as usize];
+        let filter = pair.rules.filter.as_ref()?;
+        let entries = pair.old.entries;
+        let mut names = Vec::new();
+        let mut at = index;
+        while at != pair.old.root {
+            names.push(&*entries[at as usize].name);
+            at = entries[at as usize].parent?;
+        }
+        names
+            .iter()
+            .rev()
+            .try_fold(filter.branch.clone(), |branch, name| {
+                filter.exclusions.child(&branch, name)
+            })
     }
 
     /// Matches the children of a folder by name and queues them, except the excluded ones.
@@ -559,14 +1145,17 @@ impl Walk<'_, '_> {
         old: Option<u32>,
         new: Option<u32>,
         skip_unmatched: bool,
-        branch: Branch,
+        folder: Folder,
     ) {
+        let (forest, pairs) = (self.forest, self.pairs);
+        let old_tree = &forest.old[folder.old_tree as usize];
+        let new_tree = &forest.new[self.at as usize];
         match old {
-            Some(a) => self.old_keys.fill(&self.old, a),
+            Some(a) => self.old_keys.fill(old_tree, a),
             None => self.old_keys.spans.clear(),
         }
         match new {
-            Some(b) => self.new_keys.fill(&self.new, b),
+            Some(b) => self.new_keys.fill(new_tree, b),
             None => self.new_keys.spans.clear(),
         }
         let (ok, nk) = (&self.old_keys, &self.new_keys);
@@ -587,9 +1176,9 @@ impl Walk<'_, '_> {
                         items.push(Item::Both(ok.spans[i].child, nk.spans[j].child));
                     } else {
                         match_run(
-                            &self.old,
+                            old_tree,
                             &ok.spans[i..i2],
-                            &self.new,
+                            new_tree,
                             &nk.spans[j..j2],
                             &mut items,
                         );
@@ -611,18 +1200,30 @@ impl Walk<'_, '_> {
         }
         // Checked after matching, once per path rather than once per side: matching is
         // cheap next to a check against the dozens of exclusions a profile has.
-        if let Some(filter) = &self.rules.filter {
-            let name = |item: &Item| match *item {
-                Item::Both(a, _) | Item::Old(a) => &self.old.entries[a as usize].name,
-                Item::New(b) => &self.new.entries[b as usize].name,
-            };
-            items.retain(|item| filter.exclusions.child(&branch, name(item)).is_some());
+        let name_of = |item: &Item| match *item {
+            Item::Both(a, _) | Item::Old(a) => &old_tree.entries[a as usize].name,
+            Item::New(b) => &new_tree.entries[b as usize].name,
+        };
+        if let Some(filter) = &pairs[self.at as usize].rules.filter {
+            let branch = &folder.place.branch;
+            items.retain(|item| filter.exclusions.child(branch, name_of(item)).is_some());
+        }
+        if let (Some(branch), Some(filter)) = (
+            &folder.place.old_branch,
+            &pairs[folder.old_tree as usize].rules.filter,
+        ) {
+            items.retain(|item| filter.exclusions.child(branch, name_of(item)).is_some());
         }
         items.reverse();
         self.frames.push(Frame {
             items,
-            branch,
+            place: folder.place,
             of_roots: false,
+            old_tree: folder.old_tree,
+            old_dir: folder.old_dir,
+            one_sided: old.is_none() || new.is_none(),
+            context: None,
+            closes: folder.closes,
         });
     }
 }
@@ -648,25 +1249,16 @@ pub fn ignored_fields(old: &Entry, new: &Entry, unknown: bool) -> Fields {
             differ |= field;
         }
     }
-    let counted = changed_fields(old, new, true, unknown, false);
+    let counted = changed_fields(old, new, unknown, false);
     Fields(differ.0 & !counted.0)
 }
 
-/// Fields that differ between two entries of the same kind. The names of the compared
-/// roots are not compared: a root is named by its whole path. `unknown` is set when
-/// either entry is inaccessible, so its version or link target may be missing.
-fn changed_fields(
-    old: &Entry,
-    new: &Entry,
-    is_root: bool,
-    unknown: bool,
-    file_ids: bool,
-) -> Fields {
+/// Fields that differ between two entries of the same kind, the name apart: whoever
+/// compares them knows whether the names count. `unknown` is set when either entry is
+/// inaccessible, so its version or link target may be missing.
+fn changed_fields(old: &Entry, new: &Entry, unknown: bool, file_ids: bool) -> Fields {
     let mut fields = Fields::default();
     let is_dir = old.kind == EntryKind::Dir;
-    if !is_root && old.name != new.name {
-        fields |= Fields::NAME;
-    }
     if old.size != new.size {
         fields |= Fields::SIZE;
     }

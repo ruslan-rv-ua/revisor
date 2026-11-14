@@ -5,15 +5,15 @@
 //! sizes are written, which rows the difference list shows in which order (TASK-13), how
 //! the details of a change write attributes, whether showing a change in File Explorer
 //! warns when it is no longer on disk (TASK-14), whether the difference shows as a list or
-//! as a tree, with how much its nodes say (TASK-33), and the theme of the interface
-//! (TASK-34).
+//! as a tree, with how much its nodes say (TASK-33), the theme of the interface
+//! (TASK-34), and whether the list of typical folders offers other users' folders (TASK-43).
 //! Each setting is one row of a key–value table, read and written through typed methods,
 //! so a later setting needs no change of the schema.
 
 use std::fmt;
 use std::fs;
 use std::io;
-use std::path::Path;
+use std::path::{Path, PathBuf};
 use std::time::Duration;
 
 use rusqlite::types::Value;
@@ -41,7 +41,9 @@ const KEY_CONFIRM_SNAPSHOT_DELETION: &str = "confirm_snapshot_deletion";
 const KEY_LANGUAGE: &str = "language";
 const KEY_FOCUS_AFTER_COMPARISON: &str = "focus_after_comparison";
 const KEY_SIZE_FORMAT: &str = "size_format";
+/// Until 0.3: the names of the types shown.
 const KEY_DIFFERENCE_TYPES: &str = "difference_types";
+const KEY_DIFFERENCE_HIDDEN_TYPES: &str = "difference_hidden_types";
 const KEY_DIFFERENCE_SORT: &str = "difference_sort";
 const KEY_DIFFERENCE_DESCENDING: &str = "difference_descending";
 const KEY_ATTRIBUTE_FORMAT: &str = "attribute_format";
@@ -49,6 +51,12 @@ const KEY_WARN_MISSING_ENTRY: &str = "warn_missing_entry";
 const KEY_DIFFERENCE_VIEW: &str = "difference_view";
 const KEY_TREE_NODE_TEXT: &str = "tree_node_text";
 const KEY_THEME: &str = "theme";
+const KEY_OTHER_USERS_FOLDERS: &str = "other_users_folders";
+const KEY_OPEN_AFTER_EXPORT: &str = "open_after_export";
+const KEY_EXPORT_FOLDER: &str = "export_folder";
+const KEY_EXPORT_FORMAT: &str = "export_format";
+const KEY_CSV_DELIMITER: &str = "csv_delimiter";
+const KEY_SHOW_COPIED_PATH: &str = "show_copied_path";
 
 #[derive(Debug)]
 pub enum SettingsError {
@@ -208,23 +216,105 @@ impl AttributeFormat {
     }
 }
 
+/// The format the difference is exported in (TASK-40 #1): the type of file last chosen
+/// in the save dialog, which it offers first the next time.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub enum ExportFormat {
+    /// The text report, for reading (TASK-39).
+    #[default]
+    Text,
+    /// CSV, for Excel and scripts.
+    Csv,
+}
+
+impl ExportFormat {
+    /// Every value, in the order the save dialog lists the types of file.
+    pub const ALL: [Self; 2] = [Self::Text, Self::Csv];
+
+    /// The value as the database stores it.
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::Text => "text",
+            Self::Csv => "csv",
+        }
+    }
+
+    pub fn parse(text: &str) -> Option<Self> {
+        Self::ALL.into_iter().find(|v| v.as_str() == text)
+    }
+
+    /// The extension of the file: "txt", "csv".
+    pub fn extension(self) -> &'static str {
+        match self {
+            Self::Text => "txt",
+            Self::Csv => "csv",
+        }
+    }
+}
+
+/// What separates the values of a line of CSV (TASK-40 #5): the list separator of the
+/// regional settings of Windows, so Excel on the same computer opens the file in columns,
+/// or a character the user names.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub enum CsvDelimiter {
+    /// The list separator of Windows: «;» in the Ukrainian region, «,» in the English.
+    #[default]
+    Windows,
+    Comma,
+    Semicolon,
+    Tab,
+}
+
+impl CsvDelimiter {
+    /// Every value, in the order the settings window lists them.
+    pub const ALL: [Self; 4] = [Self::Windows, Self::Comma, Self::Semicolon, Self::Tab];
+
+    /// The value as the database stores it.
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::Windows => "windows",
+            Self::Comma => "comma",
+            Self::Semicolon => "semicolon",
+            Self::Tab => "tab",
+        }
+    }
+
+    pub fn parse(text: &str) -> Option<Self> {
+        Self::ALL.into_iter().find(|v| v.as_str() == text)
+    }
+
+    /// The character, or `None` for that of Windows, which the caller reads.
+    pub fn char(self) -> Option<char> {
+        match self {
+            Self::Windows => None,
+            Self::Comma => Some(','),
+            Self::Semicolon => Some(';'),
+            Self::Tab => Some('\t'),
+        }
+    }
+}
+
 /// A type of the rows of the difference list, by which its filter shows them (TASK-13
 /// #22), in the order of the filter's check boxes: added, deleted and modified entries,
-/// replaced ones among the modified, and inaccessible entries, which are not changes.
+/// replaced ones among the modified, renamed or moved entries (TASK-42), and inaccessible
+/// entries, which are not changes.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
 pub enum ChangeType {
     Added,
     Deleted,
     Modified,
+    /// Renamed or moved.
+    Moved,
     Inaccessible,
 }
 
 impl ChangeType {
     /// Every type, in the order of the check boxes.
-    pub const ALL: [Self; 4] = [
+    pub const ALL: [Self; 5] = [
         Self::Added,
         Self::Deleted,
         Self::Modified,
+        Self::Moved,
         Self::Inaccessible,
     ];
 
@@ -234,6 +324,7 @@ impl ChangeType {
             Self::Added => "added",
             Self::Deleted => "deleted",
             Self::Modified => "modified",
+            Self::Moved => "moved",
             Self::Inaccessible => "inaccessible",
         }
     }
@@ -242,6 +333,9 @@ impl ChangeType {
         Self::ALL.into_iter().find(|v| v.as_str() == text)
     }
 }
+
+/// Which types of rows the difference shows, indexed by [`ChangeType`].
+pub type ShownTypes = [bool; ChangeType::ALL.len()];
 
 /// What the difference list is sorted by (TASK-13 #21): the path, as a tree, which is the
 /// default, or one of its columns.
@@ -542,30 +636,39 @@ impl Settings {
         self.set(KEY_SIZE_FORMAT, value.as_str())
     }
 
-    /// Which types of rows the difference list shows, indexed by [`ChangeType`]; all of
-    /// them when nothing is stored (TASK-13 #28).
-    pub fn difference_types(&self) -> Result<[bool; 4], SettingsError> {
-        Ok(match self.get(KEY_DIFFERENCE_TYPES)? {
-            Some(Value::Text(text)) => {
-                let mut shown = [false; 4];
-                for name in text.split(',') {
-                    if let Some(kind) = ChangeType::parse(name) {
-                        shown[kind as usize] = true;
-                    }
-                }
-                shown
+    /// Which types of rows the difference list shows; all of them when nothing is stored
+    /// (TASK-13 #28). The types hidden are what is stored, so a type a later revisor adds
+    /// is shown until the user hides it (TASK-42 #11).
+    pub fn difference_types(&self) -> Result<ShownTypes, SettingsError> {
+        let mut shown = [true; ChangeType::ALL.len()];
+        if let Some(Value::Text(hidden)) = self.get(KEY_DIFFERENCE_HIDDEN_TYPES)? {
+            for kind in hidden.split(',').filter_map(ChangeType::parse) {
+                shown[kind as usize] = false;
             }
-            _ => [true; 4],
-        })
+        } else if let Some(Value::Text(names)) = self.get(KEY_DIFFERENCE_TYPES)? {
+            // Until 0.3 the types shown were stored, of the four there were: the others
+            // of those four are hidden, and renamed or moved entries, which came with
+            // 0.4, are shown.
+            let stored: Vec<ChangeType> = names.split(',').filter_map(ChangeType::parse).collect();
+            for kind in [
+                ChangeType::Added,
+                ChangeType::Deleted,
+                ChangeType::Modified,
+                ChangeType::Inaccessible,
+            ] {
+                shown[kind as usize] = stored.contains(&kind);
+            }
+        }
+        Ok(shown)
     }
 
-    pub fn set_difference_types(&self, shown: [bool; 4]) -> Result<(), SettingsError> {
-        let names: Vec<&str> = ChangeType::ALL
+    pub fn set_difference_types(&self, shown: ShownTypes) -> Result<(), SettingsError> {
+        let hidden: Vec<&str> = ChangeType::ALL
             .into_iter()
-            .filter(|&kind| shown[kind as usize])
+            .filter(|&kind| !shown[kind as usize])
             .map(ChangeType::as_str)
             .collect();
-        self.set(KEY_DIFFERENCE_TYPES, names.join(","))
+        self.set(KEY_DIFFERENCE_HIDDEN_TYPES, hidden.join(","))
     }
 
     /// The order of the difference list; by path, ascending, when nothing is stored.
@@ -609,6 +712,85 @@ impl Settings {
 
     pub fn set_warn_missing_entry(&self, warn: bool) -> Result<(), SettingsError> {
         self.set(KEY_WARN_MISSING_ENTRY, i64::from(warn))
+    }
+
+    /// Whether the status bar names the path «Копіювати шлях» copied; off by default, so
+    /// that it says only «Шлях скопійовано.» (TASK-41 #8).
+    pub fn show_copied_path(&self) -> Result<bool, SettingsError> {
+        Ok(matches!(
+            self.get(KEY_SHOW_COPIED_PATH)?,
+            Some(Value::Integer(n)) if n != 0
+        ))
+    }
+
+    pub fn set_show_copied_path(&self, show: bool) -> Result<(), SettingsError> {
+        self.set(KEY_SHOW_COPIED_PATH, i64::from(show))
+    }
+
+    /// Whether the list of typical folders offers the folders of the other users of this
+    /// computer; off by default (TASK-43 #5).
+    pub fn other_users_folders(&self) -> Result<bool, SettingsError> {
+        Ok(matches!(
+            self.get(KEY_OTHER_USERS_FOLDERS)?,
+            Some(Value::Integer(n)) if n != 0
+        ))
+    }
+
+    pub fn set_other_users_folders(&self, show: bool) -> Result<(), SettingsError> {
+        self.set(KEY_OTHER_USERS_FOLDERS, i64::from(show))
+    }
+
+    /// Whether the file the difference was exported to opens in the program Windows
+    /// assigns to it; off by default (TASK-39 #9).
+    pub fn open_after_export(&self) -> Result<bool, SettingsError> {
+        Ok(matches!(
+            self.get(KEY_OPEN_AFTER_EXPORT)?,
+            Some(Value::Integer(n)) if n != 0
+        ))
+    }
+
+    pub fn set_open_after_export(&self, open: bool) -> Result<(), SettingsError> {
+        self.set(KEY_OPEN_AFTER_EXPORT, i64::from(open))
+    }
+
+    /// The folder the difference was last exported to (TASK-39 #2): the save dialog
+    /// starts there. revisor keeps it itself, as wxWidgets gives the dialog its folder
+    /// without a client GUID, so Windows does not remember it.
+    pub fn export_folder(&self) -> Result<Option<PathBuf>, SettingsError> {
+        Ok(match self.get(KEY_EXPORT_FOLDER)? {
+            Some(Value::Text(path)) if !path.is_empty() => Some(PathBuf::from(path)),
+            _ => None,
+        })
+    }
+
+    pub fn set_export_folder(&self, folder: &Path) -> Result<(), SettingsError> {
+        self.set(KEY_EXPORT_FOLDER, folder.to_string_lossy().into_owned())
+    }
+
+    /// The type of file the difference was last exported as (TASK-40 #1); the text
+    /// report when nothing is stored.
+    pub fn export_format(&self) -> Result<ExportFormat, SettingsError> {
+        Ok(match self.get(KEY_EXPORT_FORMAT)? {
+            Some(Value::Text(text)) => ExportFormat::parse(&text).unwrap_or_default(),
+            _ => ExportFormat::default(),
+        })
+    }
+
+    pub fn set_export_format(&self, value: ExportFormat) -> Result<(), SettingsError> {
+        self.set(KEY_EXPORT_FORMAT, value.as_str())
+    }
+
+    /// What separates the values of CSV (TASK-40 #5); that of Windows when nothing is
+    /// stored.
+    pub fn csv_delimiter(&self) -> Result<CsvDelimiter, SettingsError> {
+        Ok(match self.get(KEY_CSV_DELIMITER)? {
+            Some(Value::Text(text)) => CsvDelimiter::parse(&text).unwrap_or_default(),
+            _ => CsvDelimiter::default(),
+        })
+    }
+
+    pub fn set_csv_delimiter(&self, value: CsvDelimiter) -> Result<(), SettingsError> {
+        self.set(KEY_CSV_DELIMITER, value.as_str())
     }
 
     /// Whether the difference shows as a list or as a tree; as a list when nothing is

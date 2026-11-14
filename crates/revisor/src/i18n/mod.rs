@@ -15,8 +15,8 @@ use revisor_core::compare::Warning;
 use revisor_core::exclude::PatternError;
 use revisor_core::scan::EntryKind;
 use revisor_core::settings::{
-    AttributeFormat, ChangeType, DifferenceView, FocusAfterComparison, FocusAfterSnapshot,
-    Language, SizeFormat, Theme, TreeNodeText,
+    AttributeFormat, ChangeType, CsvDelimiter, DifferenceView, FocusAfterComparison,
+    FocusAfterSnapshot, Language, SizeFormat, Theme, TreeNodeText,
 };
 use revisor_core::typical::TypicalFolder;
 
@@ -215,10 +215,16 @@ pub trait Strings {
     fn add_typical_folders(&self) -> &'static str;
     /// A typical folder in its list, before its path.
     fn typical_folder(&self, folder: TypicalFolder) -> &'static str;
+    /// A folder of another user of this computer in the list of typical folders, before
+    /// its path: the user folder, AppData or the desktop of `user` (TASK-43).
+    fn other_user_folder(&self, folder: TypicalFolder, user: &str) -> String;
     /// The button of the list of typical folders that adds the checked ones.
     fn add(&self) -> &'static str;
     /// Said instead of the list when no typical folder is left to add.
     fn typical_folders_in_profile(&self) -> &'static str;
+    /// Said above the list of typical folders, and after the message that all of them are
+    /// in the profile, when other users' folders are left out for want of rights (TASK-43).
+    fn other_users_need_admin(&self) -> &'static str;
     fn profile_exclusions(&self) -> &'static str;
     /// The button that makes a new profile.
     fn create(&self) -> &'static str;
@@ -388,6 +394,9 @@ pub trait Strings {
     fn field(&self, field: Field) -> &'static str;
     /// In which snapshot an inaccessible entry is so, as the column «Що змінилося» says.
     fn inaccessible_in(&self, which: InaccessibleIn) -> &'static str;
+    /// Where a renamed or moved entry was, as the column «Що змінилося» starts (TASK-42):
+    /// "з a.txt"; `former` is its name, its folder or its path then.
+    fn moved_from(&self, former: &str) -> String;
     /// A size in bytes; `text` is the count in the user's format: "5 байтів".
     fn bytes(&self, bytes: u64, text: &str) -> String;
     /// The unit of 1024 (or 1000) bytes to the power `power`, from 1 to 6: KB to EB.
@@ -459,6 +468,16 @@ pub trait Strings {
     fn attribute_option(&self, value: AttributeFormat) -> &'static str;
     /// The check box of the setting «Попереджати, коли запису вже немає на диску».
     fn warn_missing_entry(&self) -> &'static str;
+    /// The check box of the setting «Показувати скопійований шлях у рядку стану»
+    /// (TASK-41).
+    fn show_copied_path(&self) -> &'static str;
+    /// The check box of the setting «Показувати теки інших користувачів у переліку
+    /// типових тек» (TASK-43).
+    fn other_users_folders(&self) -> &'static str;
+    /// The tabs of the settings window (TASK-44): «Загальні», «Знімки», «Різниця».
+    fn settings_general(&self) -> &'static str;
+    fn settings_snapshots(&self) -> &'static str;
+    fn settings_difference(&self) -> &'static str;
     /// The question before File Explorer opens the folder of an entry no longer on disk.
     fn entry_gone_question(&self) -> &'static str;
     /// The button of that question that opens the folder.
@@ -466,6 +485,49 @@ pub trait Strings {
     /// Why File Explorer was not opened: no folder of `path` is on disk.
     fn no_folder_on_disk(&self, path: &str) -> String;
     fn explorer_failed(&self, reason: &str) -> String;
+
+    // Copying the path of the entry in focus (TASK-41).
+    /// The status bar once the path is on the clipboard: «Шлях скопійовано.», or with the
+    /// path, when the setting asks for it: «Шлях скопійовано: C:\Data\app.exe.».
+    fn path_copied(&self, path: Option<&str>) -> String;
+    /// The status bar when the path could not be put on the clipboard.
+    fn path_not_copied(&self) -> &'static str;
+
+    // The export of the difference (TASK-39).
+    /// The type of file of the save dialog: «Текстовий звіт (*.txt)».
+    fn export_text_type(&self) -> &'static str;
+    /// The second type of file of the save dialog: «CSV (*.csv)» (TASK-40 #1).
+    fn export_csv_type(&self) -> &'static str;
+    /// The progress row's text while the difference is exported.
+    fn exporting(&self) -> &'static str;
+    /// The status bar after the export: «Різницю експортовано: <file>.».
+    fn exported(&self, file: &str) -> String;
+    fn export_cancelled(&self) -> &'static str;
+    fn export_failed(&self, reason: &str) -> String;
+    /// Why an export failed when its thread ended without a result.
+    fn export_stopped(&self) -> &'static str;
+    /// Why the exported file did not open in its program.
+    fn open_failed(&self, reason: &str) -> String;
+    /// The setting «Відкривати файл після експорту», and the settings window's tab of it.
+    fn open_after_export(&self) -> &'static str;
+    fn settings_export(&self) -> &'static str;
+    /// The setting «Роздільник у CSV» (TASK-40 #5), without access key or colon, and its
+    /// values.
+    fn csv_delimiter(&self) -> &'static str;
+    fn csv_delimiter_option(&self, value: CsvDelimiter) -> &'static str;
+    /// The first line of the report: «Звіт про різницю, revisor 0.5.0».
+    fn report_title(&self, version: &str) -> String;
+    /// The line of the filter of the report: the types shown, when not all are, and the
+    /// text, when there is one.
+    fn report_filter(&self, types: Option<&[ChangeType]>, text: Option<&str>) -> String;
+    /// A line of the report's header per folder compared.
+    fn report_folder(&self, path: &str) -> String;
+    /// The name of a group of the report, with its count: «Додано: 3».
+    fn report_group(&self, kind: ChangeType, count: &str) -> String;
+    /// A replaced entry, in its line of the report.
+    fn report_replaced(&self) -> &'static str;
+    /// In which snapshot an entry is inaccessible and why, in its line of the report.
+    fn report_inaccessible(&self, inaccessible: &Inaccessibility) -> String;
 
     // Key names that are not printed on most keyboards.
     fn key_space(&self) -> &'static str;
@@ -682,6 +744,36 @@ mod tests {
             "Inaccessible folder"
         );
         assert_eq!(En.change(RowChange::Replaced, EntryKind::File), "Replaced");
+        // Renamed and moved entries (TASK-42 #6): what happened, with the kind of a folder
+        // and of a link, and where the entry was.
+        assert_eq!(
+            Uk.change(RowChange::Renamed, EntryKind::File),
+            "Перейменовано"
+        );
+        assert_eq!(
+            Uk.change(RowChange::Moved, EntryKind::Dir),
+            "Переміщено теку"
+        );
+        assert_eq!(
+            Uk.change(RowChange::MovedAndRenamed, EntryKind::Link),
+            "Переміщено й перейменовано посилання"
+        );
+        assert_eq!(
+            En.change(RowChange::Renamed, EntryKind::Dir),
+            "Folder renamed"
+        );
+        assert_eq!(En.change(RowChange::Moved, EntryKind::Link), "Link moved");
+        assert_eq!(
+            En.change(RowChange::MovedAndRenamed, EntryKind::File),
+            "Moved and renamed"
+        );
+        assert_eq!(Uk.moved_from(r"C:\Old\a.txt"), r"з C:\Old\a.txt");
+        assert_eq!(En.moved_from("a.txt"), "from a.txt");
+        assert_eq!(
+            Uk.type_box(ChangeType::Moved),
+            "Перейменовані чи переміщені"
+        );
+        assert_eq!(En.type_box(ChangeType::Moved), "Renamed or mo&ved");
         assert_eq!(
             Uk.nothing_compared_yet("F7", "Ctrl+F7"),
             "Ще нічого не порівнювали. Натисніть клавішу F7, щоб порівняти поточний знімок із \

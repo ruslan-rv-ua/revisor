@@ -9,6 +9,83 @@ release that section becomes the version's own, and the release page publishes i
 
 ## [Unreleased]
 
+## [0.4.0] - 2026-11-14
+
+### Added
+
+- **The path of a change can be copied.** Difference › Copy path, with `Ctrl+Shift+C` as in
+  File Explorer, and the same item of the context menu of the list and the tree put the full
+  path of the entry in focus on the clipboard, with no quotes; a folder of the tree that did
+  not change itself gives its own path. The status bar says Path copied., and the new setting
+  Show the copied path in the status bar, on the Difference tab and off by default, adds the
+  path. The path stays on the clipboard after revisor closes.
+- **The difference can be exported to CSV**, for Excel and scripts. Difference › Export…
+  offers CSV (*.csv) as the second type of file, and the save dialog offers the type chosen
+  last; the type chosen, not the name's extension, says the format. The file has a line of
+  column names and a line per entry shown, in the order of paths, with no header or summary.
+  Its format is the same in every language and region: English column names and codes, sizes
+  in bytes, local times in ISO 8601 with the offset from UTC and seven digits of the second,
+  versions as four numbers, and each field of an entry as a pair of columns, `_before` and
+  `_after`, filled whenever the entry has the field. The new setting CSV delimiter, on the
+  Export tab of Settings, separates the values by the list separator of Windows by default,
+  or by a comma, a semicolon or a tab. The file is UTF-8 with a byte order mark and CRLF line
+  ends, values are quoted as RFC 4180 says, and a link target that starts as a formula gets
+  an apostrophe before it.
+- **The difference can be exported to a text report.** Difference › Export… saves the entries
+  the difference shows, with its type and text filter, to a text file: a header with revisor's
+  version, the pair of snapshots, the summary, the filter and the folders compared, then the
+  changes in groups by type, a line each that starts with the full path and says what changed,
+  before and after. The order is always by path, whatever the order or view of the window.
+  The save dialog offers the profile's name and the times of both snapshots, in Documents or
+  the folder exported to last, and asks before it overwrites a file. A long export runs in the
+  background with Cancel; a canceled or failed one leaves no part of a file, and the file it
+  was to overwrite stays whole. The status bar names the file saved, and the new setting Open
+  the file after export, on the new Export tab of Settings and off by default, opens it.
+- **The difference recognises renamed and moved entries.** A file, folder or link renamed or
+  moved within its volume, also between the folders of a profile, is one entry at its new
+  path instead of one deleted and one added. The Change column says Renamed, Moved, or Moved
+  and renamed, and What changed says where the entry was, then what else changed in it. A
+  renamed or moved folder is one entry, followed only by what changed inside it. revisor
+  knows an entry by its NTFS file ID, kind and creation time, which every snapshot since 0.1
+  holds, so earlier snapshots compare this way too. The summary counts these entries apart,
+  the Filter field also finds an entry by the path it had, and the details show the path
+  before and after.
+- **A filter for renamed or moved entries.** The check box Renamed or moved and the same item
+  of the Difference menu, with `Ctrl+4`, show or hide them. They are shown after the update
+  whatever other types were hidden before.
+- **Your user folder and other users' folders among the typical folders.** Add typical folders
+  also offers your whole user folder next to your AppData and desktop; if you check it with
+  either, only the user folder is added. The setting Show other users' folders in the typical
+  folders list, on the Snapshots tab and off by default, adds the user folder, AppData and
+  desktop of each other user of the computer at the end of the list, unchecked. revisor can
+  open them only when it runs as administrator, and the list says so when it cannot.
+
+### Changed
+
+- **The user folder and Windows are unchecked** when the list of typical folders opens: they
+  are large, and programs seldom write there. The other typical folders are checked as before.
+- **Settings are on tabs**: General (language and theme), Snapshots, Difference, and Export.
+  `Ctrl+Tab` or `Ctrl+PgDn` switch them, and NVDA names the tab it comes to. An access key
+  works on the tab shown, and OK keeps the settings of every tab.
+- **`Ctrl+5` shows or hides inaccessible entries**, which `Ctrl+4` did: the shortcuts follow
+  the check boxes, and Renamed or moved is the fourth of them now.
+- **A name that changed in case only is a rename.** An entry whose name differs only in the
+  case of its letters shows as Renamed, from its earlier name; it used to show as Modified.
+- **A new file in the place of one that moved away.** Where the file at a path is another one
+  now and the earlier one is found at another path, the old place still shows as Replaced, and
+  the file that left shows as renamed or moved. A folder made in the place of a renamed one
+  shows as Folder replaced, with all it holds as added.
+
+### Fixed
+
+- **OK in Settings no longer makes a screen reader say the row in focus twice.** Saving the
+  settings set the count of the difference list's rows again, and the list announced its row
+  in focus a second time, just after the focus had come back to it; now the rows only repaint
+  in the new formats. In the difference tree, OK no longer makes NVDA add "expanded" after the
+  node in focus: a folder that is open already is no longer expanded again.
+- **An access key of a check box in Settings says its new state** also when the check box
+  already has the focus: it presses the check box as a click does. Before, NVDA said nothing.
+
 ## [0.3.0] - 2026-11-10
 
 ### Added
@@ -140,7 +217,8 @@ keyboard and with a screen reader.
 - **Error messages** name the causes revisor recognizes in its own words—what happened, why,
   and what to do—and give the Windows or SQLite text and its code for the rest.
 
-[Unreleased]: https://github.com/ruslan-rv-ua/revisor/compare/v0.3.0...HEAD
+[Unreleased]: https://github.com/ruslan-rv-ua/revisor/compare/v0.4.0...HEAD
+[0.4.0]: https://github.com/ruslan-rv-ua/revisor/compare/v0.3.0...v0.4.0
 [0.3.0]: https://github.com/ruslan-rv-ua/revisor/compare/v0.2.0...v0.3.0
 [0.2.0]: https://github.com/ruslan-rv-ua/revisor/compare/v0.1.0...v0.2.0
 [0.1.0]: https://github.com/ruslan-rv-ua/revisor/releases/tag/v0.1.0
