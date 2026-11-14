@@ -1521,14 +1521,13 @@ impl MainWindow {
         // Sizes in the list and the summary as the setting «Розмір» says (TASK-13 #17),
         // attributes in the details as «Атрибути» says (TASK-14 #7), and the tree's nodes
         // as «Вузли дерева» says (TASK-33 #6).
-        let current = {
+        {
             let mut list = self.difference_list.borrow_mut();
             list.set_size_format(values.size_format);
             list.set_attribute_format(values.attribute_format);
             list.set_node_text(values.tree_node_text);
-            list.current()
-        };
-        self.refresh_difference(current);
+        }
+        self.restyle_difference();
         // «Same as Windows» is read now, not at the start: the language of Windows may
         // have changed meanwhile, and the next start would take the new one.
         let next = crate::language_of(values.language, win32::language::ui_language);
@@ -2113,6 +2112,25 @@ impl MainWindow {
             }
             if count > 0 {
                 list.refresh_items(0, count as i64 - 1);
+            }
+        }
+        self.describe_difference();
+    }
+
+    /// Brings the difference shown in line with formats that changed in the settings: the
+    /// rows of the list repaint in place, the tree's nodes take their new texts, and what is
+    /// said about the difference follows. A format changes no row and no order, so the list
+    /// is neither counted nor selected again: setting its count, even the same one, makes it
+    /// announce the row with the focus once more, just after the settings' window has given
+    /// the focus back to that row (TASK-45).
+    fn restyle_difference(&self) {
+        if self.layout() == DifferenceView::Tree {
+            let model = self.difference_list.borrow();
+            self.tree().refresh(&*model, model.tree_current());
+        } else {
+            let count = self.difference_list.borrow().len();
+            if count > 0 {
+                self.difference().refresh_items(0, count as i64 - 1);
             }
         }
         self.describe_difference();

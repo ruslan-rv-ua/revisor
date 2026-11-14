@@ -76,6 +76,11 @@ release that section becomes the version's own, and the release page publishes i
 
 ### Fixed
 
+- **OK in Settings no longer makes a screen reader say the row in focus twice.** Saving the
+  settings set the count of the difference list's rows again, and the list announced its row
+  in focus a second time, just after the focus had come back to it; now the rows only repaint
+  in the new formats. In the difference tree, OK no longer makes NVDA add "expanded" after the
+  node in focus: a folder that is open already is no longer expanded again.
 - **An access key of a check box in Settings says its new state** also when the check box
   already has the focus: it presses the check box as a click does. Before, NVDA said nothing.
 
