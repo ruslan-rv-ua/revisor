@@ -274,6 +274,22 @@ fn a_folder_that_is_no_change_has_its_path_and_the_summary_of_its_contents() {
 }
 
 #[test]
+fn the_path_to_copy_in_the_tree_is_that_of_the_node_in_focus() {
+    // TASK-41 #2, #5: a node that is a change, its row's; a folder that is no change
+    // itself, the folder's; the top level, its whole path.
+    let mut list = tree_showing(difference(vec![sample()], Vec::new()));
+    list.tree_focus(node(&list, "old.txt"));
+    assert_eq!(
+        list.current_path(),
+        Some(PathBuf::from(r"C:\Data\app\old.txt"))
+    );
+    list.tree_focus(node(&list, "app —"));
+    assert_eq!(list.current_path(), Some(PathBuf::from(r"C:\Data\app")));
+    list.tree_focus(node(&list, r"C:\Data"));
+    assert_eq!(list.current_path(), Some(PathBuf::from(r"C:\Data")));
+}
+
+#[test]
 fn a_node_that_is_a_change_has_the_details_and_the_place_of_its_row() {
     let mut list = tree_showing(difference(vec![sample()], Vec::new()));
     list.tree_focus(node(&list, "old.txt"));

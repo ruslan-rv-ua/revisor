@@ -397,6 +397,38 @@ fn moved_folder() -> FolderDifference {
 }
 
 #[test]
+fn the_path_to_copy_of_a_renamed_or_moved_entry_is_where_it_is_now() {
+    // TASK-41 #2, #5: as File Explorer shows it (#8), and in the tree as in the list.
+    let mut list = showing(difference(vec![sample()], Vec::new()));
+    list.focus(2);
+    assert_eq!(
+        list.current_path(),
+        Some(PathBuf::from(r"C:\Data\docs\Notes.txt"))
+    );
+    list.focus(4);
+    assert_eq!(
+        list.current_path(),
+        Some(PathBuf::from(r"C:\Data\Setup.EXE"))
+    );
+    // What was deleted inside a moved folder: where the folder is now (#4); the folder
+    // it is in now, which did not change itself, by its path in the tree.
+    let mut list = showing(difference(vec![moved_folder()], Vec::new()));
+    list.focus(2);
+    let gone = Some(PathBuf::from(r"C:\Data\new\docs\gone.txt"));
+    assert_eq!(list.current_path(), gone);
+    list.set_layout(DifferenceView::Tree);
+    assert_eq!(list.current_path(), gone);
+    let new = list
+        .tree_roots()
+        .into_iter()
+        .flat_map(|root| list.tree_children(root))
+        .find(|&n| list.tree_label(n).starts_with("new —"))
+        .expect("the folder new is a node of its own");
+    list.tree_focus(new);
+    assert_eq!(list.current_path(), Some(PathBuf::from(r"C:\Data\new")));
+}
+
+#[test]
 fn what_was_deleted_inside_a_moved_folder_shows_where_the_folder_is_now() {
     // #4: the folder is one row, and what changed inside it stands at the new paths.
     let mut list = showing(difference(vec![moved_folder()], Vec::new()));

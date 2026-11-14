@@ -85,6 +85,7 @@ impl Strings for Uk {
             CommandId::CancelComment => "Скасувати коментар",
             CommandId::Details => "Подробиці",
             CommandId::ShowInExplorer => "Показати в Провіднику",
+            CommandId::CopyPath => "Копіювати шлях",
             CommandId::Export => "Експортувати",
             CommandId::CancelExport => "Скасувати експорт",
             CommandId::FilterByText => "Фільтрувати за текстом",
@@ -1203,6 +1204,10 @@ impl Strings for Uk {
         "Попереджати, коли запису вже немає на диску"
     }
 
+    fn show_copied_path(&self) -> &'static str {
+        "Показувати скопійований шлях у рядку стану"
+    }
+
     fn other_users_folders(&self) -> &'static str {
         "Показувати теки інших користувачів у переліку типових тек"
     }
@@ -1355,6 +1360,17 @@ impl Strings for Uk {
 
     fn explorer_failed(&self, reason: &str) -> String {
         format!("Провідник не відкрито: {reason}.")
+    }
+
+    fn path_copied(&self, path: Option<&str>) -> String {
+        match path {
+            Some(path) => format!("Шлях скопійовано: {path}."),
+            None => "Шлях скопійовано.".into(),
+        }
+    }
+
+    fn path_not_copied(&self) -> &'static str {
+        "Шлях не скопійовано."
     }
 
     fn key_space(&self) -> &'static str {

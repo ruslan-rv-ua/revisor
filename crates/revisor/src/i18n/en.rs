@@ -79,6 +79,7 @@ impl Strings for En {
             CommandId::CancelComment => "Cancel co&mment",
             CommandId::Details => "&Details",
             CommandId::ShowInExplorer => "Show in File &Explorer",
+            CommandId::CopyPath => "C&opy path",
             CommandId::Export => "E&xport",
             CommandId::CancelExport => "&Cancel export",
             CommandId::FilterByText => "&Filter by text",
@@ -1207,6 +1208,10 @@ impl Strings for En {
         "&Warn when the entry is no longer on disk"
     }
 
+    fn show_copied_path(&self) -> &'static str {
+        "S&how the copied path in the status bar"
+    }
+
     fn other_users_folders(&self) -> &'static str {
         "Show &other users' folders in the typical folders list"
     }
@@ -1360,6 +1365,17 @@ impl Strings for En {
 
     fn explorer_failed(&self, reason: &str) -> String {
         format!("File Explorer did not open: {reason}.")
+    }
+
+    fn path_copied(&self, path: Option<&str>) -> String {
+        match path {
+            Some(path) => format!("Path copied: {path}."),
+            None => "Path copied.".into(),
+        }
+    }
+
+    fn path_not_copied(&self) -> &'static str {
+        "The path was not copied."
     }
 
     fn key_space(&self) -> &'static str {

@@ -489,6 +489,35 @@ fn the_details_and_the_path_are_of_the_row_at_a_place_of_the_list() {
 }
 
 #[test]
+fn the_path_to_copy_is_the_whole_path_of_the_change_in_focus() {
+    // TASK-41 #2, #5: from the later snapshot where the entry is there, else from the
+    // earlier, with no quotes; renamed and moved entries are in `tests::moved`.
+    let mut list = showing(difference(vec![sample()], Vec::new()));
+    let mut copied = |index| {
+        list.focus(index);
+        list.current_path()
+    };
+    let path = |text: &str| Some(PathBuf::from(text));
+    assert_eq!(copied(0), path(r"C:\Data\app\app.exe"), "modified");
+    assert_eq!(copied(1), path(r"C:\Data\app\new.txt"), "added");
+    assert_eq!(copied(2), path(r"C:\Data\app\old.txt"), "deleted");
+    assert_eq!(copied(3), path(r"C:\Data\docs"), "inaccessible");
+    assert_eq!(copied(4), path(r"C:\Data\link"), "a link deleted");
+    assert_eq!(
+        copied(5),
+        path(r"C:\Data\link"),
+        "a folder added in its place"
+    );
+    // An entry inaccessible in the earlier snapshot only, absent from the later.
+    let mut made = Made::new(r"C:\Data");
+    made.inaccessible("locked", EntryKind::Dir, Some(true), None);
+    let list = showing(difference(vec![made.done()], Vec::new()));
+    assert_eq!(list.current_path(), path(r"C:\Data\locked"));
+    // No difference, nothing to copy.
+    assert_eq!(list_with(&En, Box::new(Plain)).current_path(), None);
+}
+
+#[test]
 fn an_inaccessible_entry_that_is_also_renamed_shows_what_changed_in_its_details() {
     // A folder inaccessible later whose name changed case is two rows: inaccessible, and
     // renamed (TASK-42); the details of both name the change of the name (TASK-14 #4).

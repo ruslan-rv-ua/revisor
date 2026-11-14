@@ -35,6 +35,8 @@ fn a_new_settings_file_is_made_with_the_defaults() {
     // The details of a change (TASK-14 #7, #13): attributes in words, and no warning.
     assert_eq!(settings.attribute_format().unwrap(), AttributeFormat::Words);
     assert!(!settings.warn_missing_entry().unwrap());
+    // «Шлях скопійовано.» without the path (TASK-41 #8).
+    assert!(!settings.show_copied_path().unwrap());
     // Typical folders of the current user only (TASK-43 #5).
     assert!(!settings.other_users_folders().unwrap());
     assert!(!settings.open_after_export().unwrap());
@@ -217,6 +219,25 @@ fn showing_other_users_folders_survives_a_restart() {
         !Settings::open(&db(&tmp))
             .unwrap()
             .other_users_folders()
+            .unwrap()
+    );
+}
+
+#[test]
+fn showing_the_copied_path_survives_a_restart() {
+    // TASK-41 #8.
+    let tmp = TempDir::new("settings");
+    Settings::open(&db(&tmp))
+        .unwrap()
+        .set_show_copied_path(true)
+        .unwrap();
+    let settings = Settings::open(&db(&tmp)).unwrap();
+    assert!(settings.show_copied_path().unwrap());
+    settings.set_show_copied_path(false).unwrap();
+    assert!(
+        !Settings::open(&db(&tmp))
+            .unwrap()
+            .show_copied_path()
             .unwrap()
     );
 }

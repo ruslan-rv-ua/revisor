@@ -468,6 +468,9 @@ pub trait Strings {
     fn attribute_option(&self, value: AttributeFormat) -> &'static str;
     /// The check box of the setting «Попереджати, коли запису вже немає на диску».
     fn warn_missing_entry(&self) -> &'static str;
+    /// The check box of the setting «Показувати скопійований шлях у рядку стану»
+    /// (TASK-41).
+    fn show_copied_path(&self) -> &'static str;
     /// The check box of the setting «Показувати теки інших користувачів у переліку
     /// типових тек» (TASK-43).
     fn other_users_folders(&self) -> &'static str;
@@ -482,6 +485,13 @@ pub trait Strings {
     /// Why File Explorer was not opened: no folder of `path` is on disk.
     fn no_folder_on_disk(&self, path: &str) -> String;
     fn explorer_failed(&self, reason: &str) -> String;
+
+    // Copying the path of the entry in focus (TASK-41).
+    /// The status bar once the path is on the clipboard: «Шлях скопійовано.», or with the
+    /// path, when the setting asks for it: «Шлях скопійовано: C:\Data\app.exe.».
+    fn path_copied(&self, path: Option<&str>) -> String;
+    /// The status bar when the path could not be put on the clipboard.
+    fn path_not_copied(&self) -> &'static str;
 
     // The export of the difference (TASK-39).
     /// The type of file of the save dialog: «Текстовий звіт (*.txt)».

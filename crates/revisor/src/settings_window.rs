@@ -2,9 +2,10 @@
 //! control of their own — the interface language (TASK-16), its theme (TASK-34), what the
 //! focus does when a snapshot ends, what it does when a comparison ends (TASK-11), how sizes
 //! are written (TASK-13), how the details of a change write attributes (TASK-14), what the
-//! nodes of the difference tree say (TASK-33), whether deleting snapshots asks first, and
-//! whether showing a change no longer on disk in File Explorer asks first (TASK-14), and
-//! whether the list of typical folders offers other users' folders (TASK-43). The
+//! nodes of the difference tree say (TASK-33), whether deleting snapshots asks first,
+//! whether showing a change no longer on disk in File Explorer asks first (TASK-14),
+//! whether the status bar names the path copied (TASK-41), and whether the list of typical
+//! folders offers other users' folders (TASK-43). The
 //! profile opened last and the view of the difference — its types, order, list or tree — are
 //! kept without a control. The settings lie on tabs (TASK-44): «Загальні», «Знімки»,
 //! «Різниця» and «Експорт», which holds whether the exported file opens (TASK-39) and what
@@ -35,6 +36,7 @@ pub struct Values {
     pub tree_node_text: TreeNodeText,
     pub confirm_snapshot_deletion: bool,
     pub warn_missing_entry: bool,
+    pub show_copied_path: bool,
     pub other_users_folders: bool,
     pub open_after_export: bool,
     pub csv_delimiter: CsvDelimiter,
@@ -83,13 +85,14 @@ pub(crate) enum Control {
     AttributeFormat,
     TreeNodes,
     WarnMissingEntry,
+    ShowCopiedPath,
     CsvDelimiter,
     OpenAfterExport,
 }
 
 impl Control {
     /// In tab order: tab by tab, as each tab shows them.
-    const ALL: [Control; 12] = [
+    const ALL: [Control; 13] = [
         Self::Language,
         Self::Theme,
         Self::FocusAfterSnapshot,
@@ -100,6 +103,7 @@ impl Control {
         Self::AttributeFormat,
         Self::TreeNodes,
         Self::WarnMissingEntry,
+        Self::ShowCopiedPath,
         Self::CsvDelimiter,
         Self::OpenAfterExport,
     ];
@@ -115,7 +119,8 @@ impl Control {
             | Self::SizeFormat
             | Self::AttributeFormat
             | Self::TreeNodes
-            | Self::WarnMissingEntry => Page::Difference,
+            | Self::WarnMissingEntry
+            | Self::ShowCopiedPath => Page::Difference,
             Self::CsvDelimiter | Self::OpenAfterExport => Page::Export,
         }
     }
@@ -132,6 +137,7 @@ impl Control {
             Self::TreeNodes => |s| s.tree_nodes(),
             Self::ConfirmDeletion => |s| s.confirm_snapshot_deletion(),
             Self::WarnMissingEntry => |s| s.warn_missing_entry(),
+            Self::ShowCopiedPath => |s| s.show_copied_path(),
             Self::OtherUsersFolders => |s| s.other_users_folders(),
             Self::CsvDelimiter => |s| s.csv_delimiter(),
             Self::OpenAfterExport => |s| s.open_after_export(),
@@ -145,6 +151,7 @@ impl Control {
             self,
             Self::ConfirmDeletion
                 | Self::WarnMissingEntry
+                | Self::ShowCopiedPath
                 | Self::OtherUsersFolders
                 | Self::OpenAfterExport
         )
@@ -193,6 +200,7 @@ struct Window {
     confirm: CheckBox,
     other_users: CheckBox,
     warn_missing: CheckBox,
+    show_copied_path: CheckBox,
     csv_delimiter: Choice,
     open_after_export: CheckBox,
 }
@@ -349,6 +357,8 @@ pub fn show(parent: &Frame, s: &'static dyn Strings, initial: Values) -> Option<
     );
     let warn_missing =
         difference.check_box(s, Control::WarnMissingEntry, initial.warn_missing_entry);
+    let show_copied_path =
+        difference.check_box(s, Control::ShowCopiedPath, initial.show_copied_path);
     difference.finish(&notebook, s, Page::Difference);
 
     let export = Tab::new(&notebook);
@@ -403,6 +413,7 @@ pub fn show(parent: &Frame, s: &'static dyn Strings, initial: Values) -> Option<
         confirm,
         other_users,
         warn_missing,
+        show_copied_path,
         csv_delimiter,
         open_after_export,
     });
@@ -447,6 +458,7 @@ impl Window {
             Control::CsvDelimiter => self.csv_delimiter.set_focus(),
             Control::ConfirmDeletion => press(&self.confirm),
             Control::WarnMissingEntry => press(&self.warn_missing),
+            Control::ShowCopiedPath => press(&self.show_copied_path),
             Control::OtherUsersFolders => press(&self.other_users),
             Control::OpenAfterExport => press(&self.open_after_export),
         }
@@ -483,6 +495,7 @@ impl Window {
                 .unwrap_or_default(),
             confirm_snapshot_deletion: self.confirm.get_value(),
             warn_missing_entry: self.warn_missing.get_value(),
+            show_copied_path: self.show_copied_path.get_value(),
             other_users_folders: self.other_users.get_value(),
             open_after_export: self.open_after_export.get_value(),
             csv_delimiter: CsvDelimiter::ALL
@@ -519,6 +532,8 @@ mod tests {
                 Control::AttributeFormat,
                 Control::TreeNodes,
                 Control::WarnMissingEntry,
+                // TASK-41 #8.
+                Control::ShowCopiedPath,
             ]
         );
         // TASK-39 #9.
@@ -583,6 +598,15 @@ mod tests {
         assert_eq!(
             Control::WarnMissingEntry.label(&Uk),
             "Попереджати, коли запису вже немає на диску (&W)"
+        );
+        // TASK-41 #8: H, as S is the size's.
+        assert_eq!(
+            Control::ShowCopiedPath.label(&En),
+            "S&how the copied path in the status bar"
+        );
+        assert_eq!(
+            Control::ShowCopiedPath.label(&Uk),
+            "Показувати скопійований шлях у рядку стану (&H)"
         );
         // TASK-43 #5.
         assert_eq!(

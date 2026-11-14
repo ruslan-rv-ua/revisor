@@ -188,10 +188,15 @@ mod tests {
                 default: Some(CommandId::CompareWithPrevious),
             }
         );
+        // «Копіювати шлях» right after File Explorer, in the same group (TASK-41 #1).
         assert_eq!(
             context_menu(Pane::Difference, &ready),
             ContextMenu {
-                groups: vec![vec![CommandId::Details, CommandId::ShowInExplorer]],
+                groups: vec![vec![
+                    CommandId::Details,
+                    CommandId::ShowInExplorer,
+                    CommandId::CopyPath,
+                ]],
                 default: Some(CommandId::Details),
             }
         );
@@ -233,6 +238,7 @@ mod tests {
             "Видалити знімки — Delete (лише в переліку знімків)",
             "Порівняти з попереднім — F7, Enter у переліку знімків",
             "Подробиці — Alt+Enter, Enter у списку чи дереві різниці",
+            "Копіювати шлях — Ctrl+Shift+C",
             "Додані — Ctrl+1",
             // The types in the order of the check boxes (TASK-42 #11).
             "Перейменовані чи переміщені — Ctrl+4",
@@ -264,6 +270,20 @@ mod tests {
                 .any(|l| l == "List or tree — Ctrl+T")
         );
         assert!(!uk.contains("Деревом"), "the pair takes one line");
+    }
+
+    #[test]
+    fn copy_path_shows_ctrl_shift_c_and_its_letter() {
+        // TASK-41 #1.
+        let c = command(CommandId::CopyPath);
+        assert_eq!(menu_label(&En, c), "C&opy path\tCtrl+Shift+C");
+        assert_eq!(menu_label(&Uk, c), "Копіювати шлях (&O)\tCtrl+Shift+C");
+        assert_eq!(context_label(&Uk, c), "Копіювати шлях (&O)");
+        assert!(
+            shortcuts_text(&En)
+                .lines()
+                .any(|l| l == "Copy path — Ctrl+Shift+C")
+        );
     }
 
     #[test]

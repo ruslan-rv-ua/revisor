@@ -259,6 +259,15 @@ pub enum Location {
     Folder(PathBuf),
 }
 
+impl Location {
+    /// The whole path of the entry or of the folder.
+    pub fn into_path(self) -> PathBuf {
+        match self {
+            Self::Entry(path) | Self::Folder(path) => path,
+        }
+    }
+}
+
 /// What the window's state knows of the difference list (`AppState::of`, ADR-0013):
 /// whether it shows a difference, how many rows it shows and its view.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
@@ -1285,6 +1294,14 @@ impl List {
                 })
             }
         }
+    }
+
+    /// The whole path «Копіювати шлях» copies (TASK-41 #2): that of the entry with the
+    /// focus, in the list or in the tree, as File Explorer would show it — where the entry
+    /// is now, else where it was —, or that of a folder of the tree that is no change
+    /// itself.
+    pub fn current_path(&self) -> Option<PathBuf> {
+        self.current_location().map(Location::into_path)
     }
 
     /// The details of the row `r`.
