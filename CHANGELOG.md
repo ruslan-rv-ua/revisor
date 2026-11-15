@@ -11,6 +11,14 @@ release that section becomes the version's own, and the release page publishes i
 
 ### Added
 
+- **A sound when a snapshot ends.** A snapshot and Snapshot and compare end with a sound of
+  revisor's own, two notes up when they succeed and two lower notes down when they fail or are
+  canceled, heard whether or not revisor's window is in front, so there is no need to switch
+  back to it to learn that the work is over. By default only operations longer than
+  10 seconds sound. Settings › General has four new check boxes, all on by default: a sound for
+  each end, Only after operations longer than 10 seconds, and Pass status bar messages to the
+  screen reader. With the last one off, NVDA no longer reads the status bar by itself, but
+  `NVDA+End` still reads its text.
 - **A command line for scripts.** `revisor-cli.exe`, a console program beside `revisor.exe`,
   works on the profiles of the window. `revisor-cli snapshot --profile <name>` takes a snapshot
   and writes the number of the new snapshot, and nothing else, to the output; `--comment <text>`
