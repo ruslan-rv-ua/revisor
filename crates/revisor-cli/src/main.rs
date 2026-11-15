@@ -511,9 +511,11 @@ fn drive<W: Work>(
                 watch.told = true;
                 console.say(s.cli_waiting());
             }
+            // Every wait past the limit is cancelled, not only the first: a job whose
+            // database frees in the very cycle it is cancelled in goes on, and the next
+            // wait of the command is still limited.
             if let Some(limit) = watch.limit
                 && watch.waited >= limit
-                && watch.timed_out.is_none()
             {
                 watch.timed_out = Some(limit);
                 job.cancel();
