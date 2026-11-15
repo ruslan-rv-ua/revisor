@@ -4,10 +4,12 @@ title: Панель різниці — один модуль володіє чо
 status: Draft
 assignee: []
 created_date: '2026-11-15T15:47:00Z'
-updated_date: '2026-11-15T15:47:00Z'
+updated_date: '2026-11-15T16:11:00Z'
 labels:
   - architecture
+milestone: m-8
 dependencies: []
+ordinal: 38560
 ---
 
 ## Description

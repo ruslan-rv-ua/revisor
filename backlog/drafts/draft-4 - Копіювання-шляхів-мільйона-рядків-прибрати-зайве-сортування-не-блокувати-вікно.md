@@ -6,15 +6,20 @@ title: >-
 status: Draft
 assignee: []
 created_date: '2026-11-15T14:58:00Z'
+updated_date: '2026-11-15T16:11:00Z'
 labels:
   - review difference
+milestone: m-8
 dependencies: []
+ordinal: 38800
 ---
 
 ## Description
 
 <!-- SECTION:DESCRIPTION:BEGIN -->
 Огляд коду (2026-11-15). «Копіювати шлях» після Ctrl+A на великій різниці (до мільйона рядків, TASK-11 #6) працює синхронно в потоці вікна: selected_places будує вектор (0..count), paths_text ще раз копіює, сортує й дедуплікує вже впорядковані унікальні місця, а потім будує рядок у десятки МБ. Вікно й NVDA не відповідають кілька секунд без повідомлення. Місця: crates/revisor-ui/src/difference.rs paths_text, crates/revisor/src/main_window.rs copy_path. Прибрати зайве сортування; подумати про повідомлення «Копіювання…» або поріг.
+
+Порядок (2026-11-15): після DRAFT-8 (панель різниці). selected_places переходить у панель, тож правка копіювання йде вже в новому місці.
 <!-- SECTION:DESCRIPTION:END -->
 
 ## Definition of Done

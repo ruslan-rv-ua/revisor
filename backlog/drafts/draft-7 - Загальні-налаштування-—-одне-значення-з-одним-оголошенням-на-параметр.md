@@ -4,10 +4,12 @@ title: Загальні налаштування — одне значення �
 status: Draft
 assignee: []
 created_date: '2026-11-15T15:37:00Z'
-updated_date: '2026-11-15T15:38:00Z'
+updated_date: '2026-11-15T16:11:00Z'
 labels:
   - architecture
+milestone: m-8
 dependencies: []
+ordinal: 38320
 ---
 
 ## Description
