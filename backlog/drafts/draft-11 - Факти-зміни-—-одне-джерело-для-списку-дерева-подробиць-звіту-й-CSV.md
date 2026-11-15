@@ -4,10 +4,12 @@ title: Факти зміни — одне джерело для списку, д
 status: Draft
 assignee: []
 created_date: '2026-11-15T16:06:00Z'
-updated_date: '2026-11-15T16:06:00Z'
+updated_date: '2026-11-15T16:11:00Z'
 labels:
   - architecture
+milestone: m-8
 dependencies: []
+ordinal: 38880
 ---
 
 ## Description

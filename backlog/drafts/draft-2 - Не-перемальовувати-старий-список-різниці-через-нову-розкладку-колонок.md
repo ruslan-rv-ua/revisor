@@ -4,15 +4,20 @@ title: Не перемальовувати старий список різни�
 status: Draft
 assignee: []
 created_date: '2026-11-15T14:58:00Z'
+updated_date: '2026-11-15T16:11:00Z'
 labels:
   - review difference
+milestone: m-8
 dependencies: []
+ordinal: 38640
 ---
 
 ## Description
 
 <!-- SECTION:DESCRIPTION:BEGIN -->
 Огляд коду (2026-11-15). У set_columns спільний ListColumns замінюється на новий до того, як старий, ще показаний список спорожнено (old.set_item_count(0)). Між цими моментами віртуальний зворотний виклик старого списку відображає старі індекси колонок через нову розкладку: неправильні тексти клітинок або порожня остання колонка, якщо список перемалюється. Місце: crates/revisor/src/main_window.rs, set_columns.
+
+Порядок (2026-11-15): після DRAFT-8 (панель різниці). Порядок заміни списків переходить у панель, і виправлення починається з тесту на записувальному контролі.
 <!-- SECTION:DESCRIPTION:END -->
 
 ## Definition of Done

@@ -4,15 +4,20 @@ title: Зберігати множинне виділення списку рі�
 status: Draft
 assignee: []
 created_date: '2026-11-15T14:58:00Z'
+updated_date: '2026-11-15T16:11:00Z'
 labels:
   - review difference
+milestone: m-8
 dependencies: []
+ordinal: 38720
 ---
 
 ## Description
 
 <!-- SECTION:DESCRIPTION:BEGIN -->
 Огляд коду (/code-review, 2026-11-15) після злиття TASK-50. Фільтр за типами («Показувати…») і текстовий фільтр викликають refresh_difference(current), який через select_only залишає виділеним лише рядок із фокусом, тоді як сортування та зміна колонок зберігають множинне виділення (TASK-50 #6). Користувач, що натиснув Ctrl+A і звузив список, копіює лише один шлях. Місце: crates/revisor/src/main_window.rs, set_types / filter_typed / clear_filter.
+
+Порядок (2026-11-15): після DRAFT-8 (панель різниці). Виділення рядків переходить у панель, і виправлення починається з тесту на записувальному контролі.
 <!-- SECTION:DESCRIPTION:END -->
 
 ## Definition of Done

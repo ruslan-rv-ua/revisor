@@ -4,9 +4,12 @@ title: Прибрати обгортки snapshot_report у main_window
 status: Draft
 assignee: []
 created_date: '2026-11-15T14:58:00Z'
+updated_date: '2026-11-15T16:11:00Z'
 labels:
   - review cleanup
+milestone: m-8
 dependencies: []
+ordinal: 38240
 ---
 
 ## Description
