@@ -59,7 +59,10 @@ The main scenario takes four steps, all from the keyboard:
   text, sort the list by any column, read the details of a change, before and after
   (`Alt+Enter`), show it in File Explorer (`Ctrl+Enter`), or copy its full path
   (`Ctrl+Shift+C`), which the status bar confirms; Settings › Difference › Show the copied path
-  in the status bar makes it name the path too. Settings › Difference › Difference list columns
+  in the status bar makes it name the path too. Select several changes in the list with the
+  usual Windows keys (`Shift` or `Ctrl` with the arrows, `Ctrl+Space`, `Ctrl+A`) and
+  `Ctrl+Shift+C` copies all their paths, a line each, without quotes; the status bar says how
+  many. Sorting keeps them selected. Settings › Difference › Difference list columns
   chooses which columns the list shows and in which order, so that NVDA reads, say, the change
   first and no folder path: check or uncheck a column, Move up and Move down move it, Defaults
   brings all six back; Name is always shown. A column you resize with the mouse keeps its width.
@@ -187,7 +190,8 @@ lists them in the application too.
 | `Ctrl+F7` | Compare the current snapshot with another one you choose |
 | `Alt+Enter` | Show the details of the change in focus, before and after; `Enter` in the difference list or tree does the same |
 | `Ctrl+Enter` | Show the change in File Explorer |
-| `Ctrl+Shift+C` | Copy the full path of the change in focus, or of the folder in focus in the tree |
+| `Ctrl+Shift+C` | Copy the full paths of the changes selected in the list, a line each, or of the change in focus; in the tree, of the change or folder in focus |
+| `Shift` or `Ctrl` with the arrows, `Ctrl+Space`, `Ctrl+A` | Select several snapshots, or several changes in the difference list |
 | `Ctrl+F` | Move to the Filter field; `Esc` there clears it |
 | `Ctrl+1` to `Ctrl+5` | Show or hide added, deleted, modified, renamed or moved, and inaccessible entries |
 | `Ctrl+T` | Show the difference as a tree, or as a list again |

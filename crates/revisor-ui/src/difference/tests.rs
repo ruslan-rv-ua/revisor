@@ -1035,6 +1035,77 @@ fn sorting_keeps_the_focus_on_its_change() {
 }
 
 #[test]
+fn the_paths_of_several_changes_come_a_line_each_in_the_order_of_the_list() {
+    // TASK-50 #3: whole paths, no quotes, CRLF between them, none after the last.
+    let mut list = showing(difference(vec![sample()], Vec::new()));
+    assert_eq!(
+        list.paths_text(&[6, 1]),
+        "C:\\Data\\app\\new.txt\r\nC:\\Data\\z.txt",
+        "in the order of the list, whatever the order of the places"
+    );
+    assert_eq!(list.paths_text(&[3]), r"C:\Data\docs", "one path, no break");
+    // In another order, the order of the list then.
+    list.set_sort(DifferenceSort {
+        column: SortColumn::Path,
+        descending: true,
+    });
+    assert_eq!(
+        list.paths_text(&[0, 5]),
+        "C:\\Data\\z.txt\r\nC:\\Data\\app\\new.txt"
+    );
+    // Spaces get no quotes either.
+    let mut made = Made::new(r"C:\Program Files");
+    made.added("a b.txt", EntryKind::File, 1);
+    made.added("c.txt", EntryKind::File, 1);
+    let list = showing(difference(vec![made.done()], Vec::new()));
+    assert_eq!(
+        list.paths_text(&[0, 1]),
+        "C:\\Program Files\\a b.txt\r\nC:\\Program Files\\c.txt"
+    );
+    assert_eq!(list.paths_text(&[]), "");
+}
+
+#[test]
+fn the_status_bar_says_how_many_paths_were_copied() {
+    // TASK-50 #4.
+    let list = showing(difference(vec![sample()], Vec::new()));
+    assert_eq!(list.paths_copied(3), "3 paths copied.");
+    let mut list = list_with(&Uk, Box::new(Plain));
+    list.replace(difference(vec![sample()], Vec::new()), programs());
+    assert_eq!(list.paths_copied(1234), "Скопійовано шляхів: 1234.");
+}
+
+#[test]
+fn the_selection_stays_on_its_changes_in_another_order() {
+    // TASK-50 #6: the rows selected, not their places, so sorting keeps them selected.
+    let mut list = showing(difference(vec![sample()], Vec::new()));
+    let selected = list.selection(&[1, 6]);
+    assert_eq!(selected.len(), 2);
+    list.set_sort(DifferenceSort {
+        column: SortColumn::Path,
+        descending: true,
+    });
+    assert_eq!(list.places(&selected), [0, 5], "top to bottom");
+    assert_eq!(list.path_of(0), r"C:\Data\z.txt");
+    assert_eq!(list.path_of(5), r"C:\Data\app\new.txt");
+    list.set_sort(DifferenceSort::default());
+    assert_eq!(list.places(&selected), [1, 6]);
+    // Rows the filter hides have no place.
+    list.set_types([false, true, true, true, true]);
+    assert_eq!(list.places(&selected), Vec::<usize>::new());
+    let selected = list.selection(&[0, 1, 99]);
+    assert_eq!(
+        selected.len(),
+        2,
+        "a place the list does not show is no row"
+    );
+    // Without a difference, nothing.
+    let empty = list_with(&En, Box::new(Plain));
+    assert!(empty.selection(&[0]).is_empty());
+    assert!(empty.places(&selected).is_empty());
+}
+
+#[test]
 fn a_new_difference_keeps_the_view_but_not_the_text_filter() {
     let mut list = showing(difference(vec![sample()], Vec::new()));
     let sort = DifferenceSort {

@@ -33,7 +33,7 @@ use wxdragon::prelude::*;
 use crate::access::{Dispatcher, Name, Target, compose, field_label, plain};
 use crate::commands::{COMMANDS, CommandId, CommandKind, MenuId, Pane, Reason, command};
 use crate::compare_window;
-use crate::difference::{Column, List, Location, View};
+use crate::difference::{Column, List, Location, Selection, View};
 use crate::difference_arrival;
 use crate::difference_tree::{self, Entry, More, Open, TreeView};
 use crate::explorer::{self, Reveal};
@@ -438,13 +438,12 @@ impl MainWindow {
         comparison_field.set_min_size(Size::new(-1, COMPARISON_HEIGHT));
         // Virtual lists: a difference may have a million rows (TASK-11 #6), and a list
         // asks for the text of the ones it shows. Two of them in a panel of their own, the
-        // second disabled and without a size at first.
+        // second disabled and without a size at first. Several changes can be selected,
+        // to copy their paths (TASK-50 #1).
         let difference_holder = Panel::builder(&panel).build();
         let differences = [(); 2].map(|()| {
             let list = ListCtrl::builder(&difference_holder)
-                .with_style(
-                    ListCtrlStyle::Report | ListCtrlStyle::Virtual | ListCtrlStyle::SingleSel,
-                )
+                .with_style(ListCtrlStyle::Report | ListCtrlStyle::Virtual)
                 .build();
             insert_columns(&list, s, &columns.borrow());
             // The headers sort the list (TASK-13 #21).
@@ -772,8 +771,8 @@ impl MainWindow {
             }
         });
 
-        // The difference list (TASK-13): its headers sort it, the focus picks the one row
-        // selected, and its filter's field and check boxes change what it shows.
+        // The difference list (TASK-13): its headers sort it, the model follows the row with
+        // the focus, and its filter's field and check boxes change what it shows.
         for (i, list) in self.differences.iter().enumerate() {
             self.bind(
                 Source::Navigation,
@@ -2215,8 +2214,8 @@ impl MainWindow {
     // --- The difference list (TASK-13) --------------------------------------------------
 
     /// The focus of the difference list `list` has moved to the row at `index`: the model
-    /// keeps it, and it is the one row selected, as the list selects only the change with
-    /// the focus (#19).
+    /// keeps it. The selection is the list's own: Ctrl with the arrows moves the focus
+    /// without selecting (TASK-50 #1).
     fn difference_focused(&self, list: usize, index: i32) {
         let Ok(index) = usize::try_from(index) else {
             return;
@@ -2225,10 +2224,20 @@ impl MainWindow {
             return;
         }
         self.difference_list.borrow_mut().focus(index);
-        let hwnd = self.differences[list].get_handle();
-        if !win32::lists::is_selected(hwnd, index) {
-            win32::lists::select_only(hwnd, index);
+    }
+
+    /// The rows selected in the difference list shown, top to bottom; none in the tree.
+    fn selected_places(&self) -> Vec<usize> {
+        if self.layout() != DifferenceView::List {
+            return Vec::new();
         }
+        let list = self.difference().get_handle();
+        let count = self.difference_list.borrow().len();
+        // Every row, after Ctrl+A, without asking the list for each of a million.
+        if count > 0 && win32::lists::selected_count(list) == count {
+            return (0..count).collect();
+        }
+        win32::lists::selected_rows(list)
     }
 
     /// Brings the difference list in line with the model once the view or the difference
@@ -2236,6 +2245,13 @@ impl MainWindow {
     /// said about the difference. The tree, when it is shown, changes its items in place,
     /// its focus where the model says (TASK-33 #4).
     fn refresh_difference(&self, current: Option<usize>) {
+        self.refresh_difference_keeping(current, None);
+    }
+
+    /// As [`Self::refresh_difference`], with the rows of `kept` selected again in the list
+    /// where they are now, and the focus on its row whether selected or not (TASK-50 #6);
+    /// without `kept`, the row with the focus is the one selected.
+    fn refresh_difference_keeping(&self, current: Option<usize>, kept: Option<&Selection>) {
         if self.layout() == DifferenceView::Tree {
             let model = self.difference_list.borrow();
             self.tree().refresh(&*model, model.tree_current());
@@ -2243,8 +2259,16 @@ impl MainWindow {
             let list = self.difference();
             let count = self.difference_list.borrow().len();
             list.set_item_count(count as i64);
-            if let Some(row) = current {
-                win32::lists::select_only(list.get_handle(), row);
+            match kept {
+                Some(kept) => {
+                    let places = self.difference_list.borrow().places(kept);
+                    win32::lists::select_rows(list.get_handle(), &places, count, current);
+                }
+                None => {
+                    if let Some(row) = current {
+                        win32::lists::select_only(list.get_handle(), row);
+                    }
+                }
             }
             if count > 0 {
                 list.refresh_items(0, count as i64 - 1);
@@ -2387,10 +2411,16 @@ impl MainWindow {
     }
 
     /// Puts the list in the order `sort` (#21), kept for the next differences and starts
-    /// (#28); the focus stays on its change.
+    /// (#28); the focus stays on its change, and the changes selected stay selected
+    /// (TASK-50 #6).
     fn set_sort(&self, sort: DifferenceSort) {
+        let kept = {
+            let places = self.selected_places();
+            self.difference_list.borrow().selection(&places)
+        };
         let current = self.difference_list.borrow_mut().set_sort(sort);
-        self.refresh_difference(current);
+        let kept = (self.layout() == DifferenceView::List).then_some(&kept);
+        self.refresh_difference_keeping(current, kept);
         if let Ok(settings) = &self.settings {
             let _ = settings.set_difference_sort(sort);
         }
@@ -2449,7 +2479,8 @@ impl MainWindow {
     /// new widths change in place. Other columns are built anew in the list not shown,
     /// which has no rows; it takes the rows, the row selected and the focus, and the shown
     /// one's place, as for a new difference, so a screen reader names the list and reads
-    /// the row in its new columns. The view, its order among them, stays.
+    /// the row in its new columns. The view, its order among them, stays, and so do the
+    /// rows selected (TASK-50 #6).
     fn set_columns(&self, chosen: DifferenceColumns) {
         let (same, same_layout) = {
             let columns = self.columns.borrow();
@@ -2486,14 +2517,13 @@ impl MainWindow {
             return;
         }
         let had_focus = win32::focus::focused_window() == old.get_handle();
+        let selected = self.selected_places();
         let (count, current) = {
             let model = self.difference_list.borrow();
             (model.len(), model.current())
         };
         new.set_item_count(count as i64);
-        if let Some(row) = current {
-            win32::lists::select_only(new.get_handle(), row);
-        }
+        win32::lists::select_rows(new.get_handle(), &selected, count, current);
         new.enable(true);
         self.shown_difference.set(next);
         self.place_difference_lists();
@@ -2614,24 +2644,44 @@ impl MainWindow {
     /// «Копіювати шлях»: puts the whole path of the entry with the focus on the clipboard,
     /// with no quotes — or that of a folder of the tree that is no change itself — and the
     /// status bar says so, with the path when the setting asks for it (#2, #3, #8); the
-    /// focus stays. The clipboard is flushed, so the path stays on it after revisor
+    /// focus stays. In the list it copies the changes selected, a path a line, and with
+    /// several the status bar says how many; with none selected, the one with the focus
+    /// (TASK-50 #3, #4). The clipboard is flushed, so the path stays on it after revisor
     /// closes. When the clipboard stays busy, wxWidgets says why in a window of its own,
     /// which wxDragon cannot turn off, and the status bar says the path was not copied
     /// (#9).
     fn copy_path(&self) {
         let s = self.s;
-        let Some(path) = self.difference_list.borrow().current_path() else {
-            return;
+        let selected = self.selected_places();
+        let (text, several) = {
+            let model = self.difference_list.borrow();
+            if selected.len() > 1 {
+                let said = model.paths_copied(selected.len());
+                (model.paths_text(&selected), Some(said))
+            } else {
+                let path = match selected.first() {
+                    Some(&one) => model.entry_path(one),
+                    None => model.current_path(),
+                };
+                let Some(path) = path else {
+                    return;
+                };
+                (path.to_string_lossy().into_owned(), None)
+            }
         };
-        let text = path.to_string_lossy();
         let clipboard = Clipboard::get();
         if !clipboard.set_text(&text) {
             self.say(s.path_not_copied());
             return;
         }
         clipboard.flush();
-        let shown = self.show_copied_path().then_some(&*text);
-        self.say(&s.path_copied(shown));
+        match several {
+            Some(said) => self.say(&said),
+            None => {
+                let shown = self.show_copied_path().then_some(&*text);
+                self.say(&s.path_copied(shown));
+            }
+        }
     }
 
     // --- Export (TASK-39) ---------------------------------------------------------------

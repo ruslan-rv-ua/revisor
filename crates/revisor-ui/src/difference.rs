@@ -234,6 +234,29 @@ impl Location {
     }
 }
 
+/// The rows of the difference selected in the list, kept as rows, not as their places,
+/// so that the same changes are selected again once the list has a new order or new
+/// columns (TASK-50 #6).
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub struct Selection {
+    rows: Vec<u32>,
+}
+
+impl Selection {
+    /// How many rows are selected.
+    pub fn len(&self) -> usize {
+        self.rows.len()
+    }
+
+    /// Whether no row is selected.
+    pub fn is_empty(&self) -> bool {
+        self.rows.is_empty()
+    }
+}
+
+/// The line break between the paths «Копіювати шлях» copies (TASK-50 #3): Windows's own.
+pub const PATH_LINE_BREAK: &str = "\r\n";
+
 /// What the window's state knows of the difference list (`AppState::of`, ADR-0013):
 /// whether it shows a difference, how many rows it shows and its view.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
@@ -1228,6 +1251,62 @@ impl List {
         let shown = self.shown.as_ref()?;
         let &r = shown.visible.get(index)?;
         Some(row_path(shown, r))
+    }
+
+    /// The rows at `places` of the list, which stay the same rows in another order
+    /// (TASK-50 #6); places the list does not show are left out.
+    pub fn selection(&self, places: &[usize]) -> Selection {
+        let Some(shown) = &self.shown else {
+            return Selection::default();
+        };
+        Selection {
+            rows: places
+                .iter()
+                .filter_map(|&place| shown.visible.get(place).copied())
+                .collect(),
+        }
+    }
+
+    /// Where the rows of `selection` are in the list now, top to bottom; those the list
+    /// does not show are left out (TASK-50 #6).
+    pub fn places(&self, selection: &Selection) -> Vec<usize> {
+        let Some(shown) = &self.shown else {
+            return Vec::new();
+        };
+        let mut selected = vec![false; shown.rows.len()];
+        for &r in &selection.rows {
+            if let Some(selected) = selected.get_mut(r as usize) {
+                *selected = true;
+            }
+        }
+        shown
+            .visible
+            .iter()
+            .enumerate()
+            .filter(|&(_, &r)| selected[r as usize])
+            .map(|(place, _)| place)
+            .collect()
+    }
+
+    /// What «Копіювати шлях» puts on the clipboard for the rows at `places` (TASK-50 #3):
+    /// the whole path of each, as [`List::entry_path`] gives it, with no quotes, in the
+    /// order of the list, a line each, with no line break after the last.
+    pub fn paths_text(&self, places: &[usize]) -> String {
+        let mut places = places.to_vec();
+        places.sort_unstable();
+        places.dedup();
+        let paths: Vec<String> = places
+            .into_iter()
+            .filter_map(|place| self.entry_path(place))
+            .map(|path| path.to_string_lossy().into_owned())
+            .collect();
+        paths.join(PATH_LINE_BREAK)
+    }
+
+    /// What the status bar says once the paths of `n` changes are on the clipboard
+    /// (TASK-50 #4).
+    pub fn paths_copied(&self, n: usize) -> String {
+        self.s.paths_copied(&self.count_text(n as u64))
     }
 
     /// The details of the row at `index` of the list (TASK-14 #2–#10): the entry's name
