@@ -185,7 +185,7 @@ jobs:
         run: |
           cargo fetch --locked
           if ($LASTEXITCODE) { exit $LASTEXITCODE }
-          cargo about generate --frozen --fail -m crates/revisor/Cargo.toml -c crates/revisor/about.toml crates/revisor/about.hbs -o crates/revisor/THIRD-PARTY-LICENSES.txt
+          cargo about generate --frozen --fail -m Cargo.toml -c crates/revisor/about.toml crates/revisor/about.hbs -o crates/revisor/THIRD-PARTY-LICENSES.txt
           if ($LASTEXITCODE) { exit $LASTEXITCODE }
           git diff --exit-code -- crates/revisor/THIRD-PARTY-LICENSES.txt
 
