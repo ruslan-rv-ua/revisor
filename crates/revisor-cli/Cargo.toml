@@ -1,0 +1,22 @@
+[package]
+name = "revisor-cli"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+publish = false
+
+[dependencies]
+revisor-core = { path = "../revisor-core" }
+revisor-ui = { path = "../revisor-ui" }
+# Takes the options apart; the help, the errors and the exit codes are revisor's own
+# (ADR-0015).
+lexopt = "0.3.2"
+# Ctrl+C of the console.
+windows-sys = { version = "0.61", features = ["Win32_Foundation", "Win32_System_Console"] }
+
+[dev-dependencies]
+# The tests hold a profile's database busy, as another revisor saving a snapshot does.
+rusqlite = { version = "0.41", features = ["bundled"] }
+
+[build-dependencies]
+embed-manifest = "1.4"

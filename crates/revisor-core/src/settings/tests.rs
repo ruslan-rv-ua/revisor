@@ -49,6 +49,13 @@ fn a_new_settings_file_is_made_with_the_defaults() {
     assert_eq!(settings.tree_node_text().unwrap(), TreeNodeText::Long);
     // The theme as Windows has it (TASK-34 #1).
     assert_eq!(settings.theme().unwrap(), Theme::SameAsWindows);
+    // Sounds after long snapshots, and a status bar that speaks (TASK-46 #1).
+    assert!(settings.sound_after_snapshot().unwrap());
+    assert!(settings.sound_after_snapshot_and_compare().unwrap());
+    assert!(settings.sound_only_after_long().unwrap());
+    assert!(settings.speak_status().unwrap());
+    // The question about a restart as administrator (TASK-48 #1).
+    assert!(settings.offer_restart().unwrap());
     let conn = rusqlite::Connection::open(db(&tmp)).unwrap();
     let version: i64 = conn
         .pragma_query_value(None, "user_version", |r| r.get(0))
@@ -240,6 +247,49 @@ fn showing_the_copied_path_survives_a_restart() {
             .show_copied_path()
             .unwrap()
     );
+}
+
+#[test]
+fn the_sound_and_speech_settings_survive_a_restart() {
+    // TASK-46 #1: each is stored apart, off as well as on.
+    let tmp = TempDir::new("settings");
+    let settings = Settings::open(&db(&tmp)).unwrap();
+    settings.set_sound_after_snapshot(false).unwrap();
+    settings.set_sound_only_after_long(false).unwrap();
+    drop(settings);
+    let settings = Settings::open(&db(&tmp)).unwrap();
+    assert!(!settings.sound_after_snapshot().unwrap());
+    assert!(settings.sound_after_snapshot_and_compare().unwrap());
+    assert!(!settings.sound_only_after_long().unwrap());
+    assert!(settings.speak_status().unwrap());
+    settings.set_sound_after_snapshot(true).unwrap();
+    settings
+        .set_sound_after_snapshot_and_compare(false)
+        .unwrap();
+    settings.set_sound_only_after_long(true).unwrap();
+    settings.set_speak_status(false).unwrap();
+    drop(settings);
+    let settings = Settings::open(&db(&tmp)).unwrap();
+    assert!(settings.sound_after_snapshot().unwrap());
+    assert!(!settings.sound_after_snapshot_and_compare().unwrap());
+    assert!(settings.sound_only_after_long().unwrap());
+    assert!(!settings.speak_status().unwrap());
+}
+
+#[test]
+fn the_offer_of_a_restart_survives_a_restart() {
+    // TASK-48 #1, #9: stored off as well as on, apart from the other flags.
+    let tmp = TempDir::new("settings");
+    let settings = Settings::open(&db(&tmp)).unwrap();
+    settings.set_offer_restart(false).unwrap();
+    drop(settings);
+    let settings = Settings::open(&db(&tmp)).unwrap();
+    assert!(!settings.offer_restart().unwrap());
+    assert!(settings.speak_status().unwrap());
+    assert!(settings.confirm_snapshot_deletion().unwrap());
+    settings.set_offer_restart(true).unwrap();
+    drop(settings);
+    assert!(Settings::open(&db(&tmp)).unwrap().offer_restart().unwrap());
 }
 
 #[test]
@@ -474,5 +524,35 @@ fn the_comparison_focus_setting_is_kept_and_named() {
     assert_eq!(
         FocusAfterComparison::ALL[0],
         FocusAfterComparison::default()
+    );
+}
+
+#[test]
+fn the_difference_columns_and_their_widths_survive_a_restart() {
+    let tmp = TempDir::new("settings");
+    let mut chosen = DifferenceColumns::default();
+    {
+        let settings = Settings::open(&db(&tmp)).unwrap();
+        assert_eq!(
+            settings.difference_columns().unwrap(),
+            DifferenceColumns::default()
+        );
+        chosen.move_up(1);
+        chosen.set_shown(4, false);
+        chosen.set_shown(5, false);
+        settings.set_difference_columns(&chosen).unwrap();
+        // A width dragged with the mouse is kept on its own (TASK-49 #7).
+        settings
+            .set_difference_column_width(DifferenceColumn::Size, 123)
+            .unwrap();
+    }
+    chosen.set_width(DifferenceColumn::Size, 123);
+    let settings = Settings::open(&db(&tmp)).unwrap();
+    assert_eq!(settings.difference_columns().unwrap(), chosen);
+    // A value no revisor wrote falls back to the default.
+    settings.set(KEY_DIFFERENCE_COLUMNS, 7).unwrap();
+    assert_eq!(
+        settings.difference_columns().unwrap(),
+        DifferenceColumns::default()
     );
 }

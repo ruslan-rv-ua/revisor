@@ -5,9 +5,9 @@ status: Done
 assignee:
   - '@claude'
 created_date: '2026-11-13T19:56:00Z'
-updated_date: '2026-11-13T20:18:00Z'
+updated_date: '2026-11-14T14:41:00Z'
 labels: []
-milestone: m-6
+milestone: m-5
 dependencies: []
 references:
   - https://learn.microsoft.com/en-us/windows/win32/uxguide/ctrl-tabs

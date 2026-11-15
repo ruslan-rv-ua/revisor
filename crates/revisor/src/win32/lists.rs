@@ -3,7 +3,7 @@
 //! point a keyboard context menu opens at, and the text a list shows while it has no rows
 //! (TASK-9). The snapshot lists and the difference lists both use them (TASK-27, TASK-32).
 
-use std::cell::RefCell;
+use std::cell::{Cell, RefCell};
 use std::ffi::c_void;
 use std::ptr;
 use std::rc::Rc;
@@ -12,16 +12,17 @@ use windows_sys::Win32::Foundation::{HWND, LPARAM, LRESULT, POINT, RECT, WPARAM}
 use windows_sys::Win32::Graphics::Gdi::{ClientToScreen, InvalidateRect};
 use windows_sys::Win32::UI::Controls::{
     EMF_CENTERED, HDF_SORTDOWN, HDF_SORTUP, HDI_FORMAT, HDITEMW, HDM_GETITEMCOUNT, HDM_GETITEMW,
-    HDM_SETITEMW, LVIR_BOUNDS, LVIS_FOCUSED, LVIS_SELECTED, LVIS_STATEIMAGEMASK, LVITEMW,
-    LVM_ENSUREVISIBLE, LVM_GETHEADER, LVM_GETITEMRECT, LVM_GETITEMSTATE, LVM_GETNEXTITEM,
-    LVM_GETSELECTEDCOUNT, LVM_SETCOLUMNWIDTH, LVM_SETEXTENDEDLISTVIEWSTYLE, LVM_SETITEMSTATE,
-    LVN_GETEMPTYMARKUP, LVNI_FOCUSED, LVNI_SELECTED, LVS_EX_CHECKBOXES, LVS_EX_FULLROWSELECT,
-    LVS_NOSORTHEADER, NMHDR, NMLVEMPTYMARKUP,
+    HDM_SETITEMW, HDN_DIVIDERDBLCLICKW, HDN_ENDTRACKW, LVIF_STATE, LVIR_BOUNDS, LVIS_FOCUSED,
+    LVIS_SELECTED, LVIS_STATEIMAGEMASK, LVITEMW, LVM_ENSUREVISIBLE, LVM_GETCOLUMNWIDTH,
+    LVM_GETHEADER, LVM_GETITEMRECT, LVM_GETITEMSTATE, LVM_GETNEXTITEM, LVM_GETSELECTEDCOUNT,
+    LVM_SETCOLUMNWIDTH, LVM_SETEXTENDEDLISTVIEWSTYLE, LVM_SETITEMSTATE, LVN_GETEMPTYMARKUP,
+    LVN_ITEMCHANGING, LVNI_FOCUSED, LVNI_SELECTED, LVS_EX_CHECKBOXES, LVS_EX_FULLROWSELECT,
+    LVS_NOSORTHEADER, NMHDR, NMHEADERW, NMLISTVIEW, NMLVEMPTYMARKUP,
 };
 use windows_sys::Win32::UI::Shell::{DefSubclassProc, RemoveWindowSubclass, SetWindowSubclass};
 use windows_sys::Win32::UI::WindowsAndMessaging::{
-    GWL_STYLE, GetClientRect, GetWindowLongPtrW, SendMessageW, SetWindowLongPtrW, WM_NCDESTROY,
-    WM_NOTIFY, WM_SIZE,
+    GWL_STYLE, GetClientRect, GetWindowLongPtrW, PostMessageW, SendMessageW, SetWindowLongPtrW,
+    WM_APP, WM_NCDESTROY, WM_NOTIFY, WM_SIZE,
 };
 
 /// The row of a list that has the focus rectangle: the current snapshot (TASK-9).
@@ -52,13 +53,6 @@ pub fn selected_rows(list: *mut c_void) -> Vec<usize> {
     }
 }
 
-/// Whether the row `row` of a list is selected.
-pub fn is_selected(list: *mut c_void, row: usize) -> bool {
-    // SAFETY: a plain list-view message to a live list-view window.
-    let state = unsafe { SendMessageW(list, LVM_GETITEMSTATE, row, LVIS_SELECTED as LPARAM) };
-    state as u32 & LVIS_SELECTED != 0
-}
-
 /// How many rows of a list are selected.
 pub fn selected_count(list: *mut c_void) -> usize {
     // SAFETY: a plain list-view message to a live list-view window.
@@ -79,6 +73,25 @@ pub fn select_only(list: *mut c_void, row: usize) {
     );
     // SAFETY: a plain list-view message to a live list-view window.
     unsafe { SendMessageW(list, LVM_ENSUREVISIBLE, row, 0) };
+}
+
+/// Makes `rows` the selected rows of a list of `count` rows — every row at once, when
+/// they are all —, gives `focus` the focus rectangle, selected or not, and scrolls it into
+/// view (TASK-50 #6); it does not move the keyboard focus to the list.
+pub fn select_rows(list: *mut c_void, rows: &[usize], count: usize, focus: Option<usize>) {
+    if count > 0 && rows.len() == count {
+        set_row_state(list, -1, LVIS_SELECTED, LVIS_SELECTED);
+    } else {
+        set_row_state(list, -1, 0, LVIS_SELECTED);
+        for &row in rows {
+            set_row_state(list, row as isize, LVIS_SELECTED, LVIS_SELECTED);
+        }
+    }
+    if let Some(row) = focus {
+        set_row_state(list, row as isize, LVIS_FOCUSED, LVIS_FOCUSED);
+        // SAFETY: a plain list-view message to a live list-view window.
+        unsafe { SendMessageW(list, LVM_ENSUREVISIBLE, row, 0) };
+    }
 }
 
 /// LVM_SETITEMSTATE on `row`, or on every row with -1.
@@ -218,6 +231,158 @@ pub fn is_checked(list: *mut c_void, row: usize) -> bool {
     // SAFETY: a plain list-view message to a live list-view window.
     let state = unsafe { SendMessageW(list, LVM_GETITEMSTATE, row, LVIS_STATEIMAGEMASK as LPARAM) };
     (state as u32 & LVIS_STATEIMAGEMASK) >> 12 == CHECKED
+}
+
+/// The id of the subclass that keeps a check box checked, among a window's subclasses.
+const KEEP_CHECKED_SUBCLASS: usize = 3;
+
+/// The row of a list whose check box cannot be unchecked: the list's window and the row,
+/// which the owner moves as the row moves.
+pub struct KeptChecked {
+    list: usize,
+    row: Cell<usize>,
+}
+
+impl KeptChecked {
+    /// Moves the lock to `row`; set it before the check boxes of the rows change.
+    pub fn set_row(&self, row: usize) {
+        self.row.set(row);
+    }
+}
+
+/// Keeps the check box of a row of `list` checked: Space or a click on it does nothing
+/// (TASK-49 #3). Windows asks the list's parent before a row's state changes
+/// (LVN_ITEMCHANGING), so `parent`, which must hold no other such lock, is subclassed to
+/// say no.
+pub fn keep_checked(parent: *mut c_void, list: *mut c_void, row: usize) -> Rc<KeptChecked> {
+    let kept = Rc::new(KeptChecked {
+        list: list as usize,
+        row: Cell::new(row),
+    });
+    let data = Rc::into_raw(Rc::clone(&kept)) as usize;
+    // SAFETY: a live window of this thread; the procedure is a plain function, and its
+    // data is a strong count of `kept`, given back as the window goes.
+    unsafe { SetWindowSubclass(parent, Some(keep_checked_proc), KEEP_CHECKED_SUBCLASS, data) };
+    kept
+}
+
+unsafe extern "system" fn keep_checked_proc(
+    hwnd: HWND,
+    msg: u32,
+    wparam: WPARAM,
+    lparam: LPARAM,
+    _id: usize,
+    data: usize,
+) -> LRESULT {
+    match msg {
+        WM_NOTIFY => {
+            // SAFETY: WM_NOTIFY's lparam points at an NMHDR; the data is the strong count
+            // `keep_checked` gave, alive until WM_NCDESTROY.
+            let (header, kept) =
+                unsafe { (&*(lparam as *const NMHDR), &*(data as *const KeptChecked)) };
+            if header.code == LVN_ITEMCHANGING && header.hwndFrom as usize == kept.list {
+                // SAFETY: for this code the NMHDR is the start of an NMLISTVIEW the list
+                // owns for the call.
+                let change = unsafe { &*(lparam as *const NMLISTVIEW) };
+                let image = |state: u32| (state & LVIS_STATEIMAGEMASK) >> 12;
+                let unchecks = change.uChanged & LVIF_STATE != 0
+                    && image(change.uOldState) == CHECKED
+                    && image(change.uNewState) != CHECKED
+                    && change.uNewState & LVIS_STATEIMAGEMASK != 0;
+                if unchecks && usize::try_from(change.iItem).ok() == Some(kept.row.get()) {
+                    return 1;
+                }
+            }
+        }
+        WM_NCDESTROY => {
+            // SAFETY: the subclass installed in `keep_checked`, removed as the window goes,
+            // as the subclassing rules ask; then its strong count is given back, once.
+            unsafe {
+                RemoveWindowSubclass(hwnd, Some(keep_checked_proc), KEEP_CHECKED_SUBCLASS);
+                drop(Rc::from_raw(data as *const KeptChecked));
+            }
+        }
+        _ => {}
+    }
+    // SAFETY: passes the message on to wx's own window procedure.
+    unsafe { DefSubclassProc(hwnd, msg, wparam, lparam) }
+}
+
+/// The id of the subclass that reports column widths, among a list's subclasses.
+const COLUMN_WIDTH_SUBCLASS: usize = 4;
+
+/// The message a list posts itself once one of its columns was resized; `wparam` is the
+/// column. Above WM_APP, which wx does not use for its controls.
+const WM_COLUMN_RESIZED: u32 = WM_APP + 0x49;
+
+/// What a list calls once the user has resized one of its columns: with the column's
+/// index and its new width.
+type Resized = Box<dyn Fn(usize, i32)>;
+
+/// Calls `resized` whenever the user has resized a column of the report list `list`: by
+/// dragging the divider in its header, or by a double click on it, which fits the column
+/// to its text (TASK-49 #7). Widths the program sets are not reported.
+pub fn on_column_resized(list: *mut c_void, resized: impl Fn(usize, i32) + 'static) {
+    let data = Box::into_raw(Box::new(Box::new(resized) as Resized)) as usize;
+    // SAFETY: a live window of this thread; the procedure is a plain function, and its
+    // data is the boxed callback, freed as the window goes.
+    unsafe { SetWindowSubclass(list, Some(column_width_proc), COLUMN_WIDTH_SUBCLASS, data) };
+}
+
+unsafe extern "system" fn column_width_proc(
+    hwnd: HWND,
+    msg: u32,
+    wparam: WPARAM,
+    lparam: LPARAM,
+    _id: usize,
+    data: usize,
+) -> LRESULT {
+    match msg {
+        WM_NOTIFY => {
+            // SAFETY: WM_NOTIFY's lparam points at an NMHDR; for these codes it is the
+            // start of an NMHEADERW the header, the list's child, owns for the call.
+            let header = unsafe { &*(lparam as *const NMHDR) };
+            if header.code == HDN_ENDTRACKW || header.code == HDN_DIVIDERDBLCLICKW {
+                // SAFETY: see above.
+                let item = unsafe { &*(lparam as *const NMHEADERW) };
+                if let Ok(column) = usize::try_from(item.iItem) {
+                    // The header sets the width only after it has told the list, so the
+                    // width is read once its messages are through.
+                    // SAFETY: a plain message to a live window, to itself.
+                    unsafe { PostMessageW(hwnd, WM_COLUMN_RESIZED, column, 0) };
+                }
+            }
+        }
+        WM_COLUMN_RESIZED => {
+            // SAFETY: a plain list-view message to a live list-view window; the data is
+            // the boxed callback, alive until WM_NCDESTROY.
+            let (width, resized) = unsafe {
+                (
+                    SendMessageW(hwnd, LVM_GETCOLUMNWIDTH, wparam, 0),
+                    &*(data as *const Resized),
+                )
+            };
+            // A width that is not positive is no width: the message failed, or the column
+            // is gone, as when the columns were rebuilt before the posted message arrived.
+            if let Ok(width) = i32::try_from(width)
+                && width > 0
+            {
+                resized(wparam, width);
+            }
+            return 0;
+        }
+        WM_NCDESTROY => {
+            // SAFETY: the subclass installed in `on_column_resized`, removed as the window
+            // goes, as the subclassing rules ask; then its callback is freed, once.
+            unsafe {
+                RemoveWindowSubclass(hwnd, Some(column_width_proc), COLUMN_WIDTH_SUBCLASS);
+                drop(Box::from_raw(data as *mut Resized));
+            }
+        }
+        _ => {}
+    }
+    // SAFETY: passes the message on to wx's own window procedure.
+    unsafe { DefSubclassProc(hwnd, msg, wparam, lparam) }
 }
 
 /// Shows the sort arrow of a list's column headers on `column`, up for ascending and down

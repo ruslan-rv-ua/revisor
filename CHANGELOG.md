@@ -9,6 +9,57 @@ release that section becomes the version's own, and the release page publishes i
 
 ## [Unreleased]
 
+## [0.5.0] - 2026-11-15
+
+### Added
+
+- **A sound when a snapshot ends.** A snapshot and Snapshot and compare end with a sound of
+  revisor's own, two notes up when they succeed and two lower notes down when they fail or are
+  canceled, heard whether or not revisor's window is in front, so there is no need to switch
+  back to it to learn that the work is over. By default only operations longer than
+  10 seconds sound. Settings › General has four new check boxes, all on by default: a sound for
+  each end, Only after operations longer than 10 seconds, and Pass status bar messages to the
+  screen reader. With the last one off, NVDA no longer reads the status bar by itself, but
+  `NVDA+End` still reads its text.
+- **A command line for scripts.** `revisor-cli.exe`, a console program beside `revisor.exe`,
+  works on the profiles of the window. `revisor-cli snapshot --profile <name>` takes a snapshot
+  and writes the number of the new snapshot, and nothing else, to the output; `--comment <text>`
+  gives it a comment. `revisor-cli compare --profile <name> --output <file>` compares the latest
+  snapshot with the one before it, or with the one `--with <number>` names, and writes the whole
+  difference, without the filters of the window, as the text report or, for a `.csv` file or
+  with `--format csv`, as CSV: the formats of Difference › Export, with the delimiter of the
+  setting CSV delimiter or of `--delimiter comma|semicolon|tab|windows`. An existing file is
+  replaced whole or not at all. Messages go to the error stream, in English by default and in
+  Ukrainian with `--language uk`; `--progress` adds a line of progress every 10 seconds, and
+  `--quiet` leaves errors only; nothing is animated. The exit code is 0 when the snapshot is
+  saved or the report written, 1 when the work failed or `Ctrl+C` canceled it, and 2 for a
+  wrong call. A profile another revisor action holds is waited for, as in the window, and
+  `--timeout <seconds>` limits the wait. cmd, `.bat` files and PowerShell wait for revisor-cli
+  and get its exit code; the window keeps opening without a console. The release publishes both
+  exes, each with its `.sha256` file, and scoop puts `revisor-cli` on the `PATH` beside
+  `revisor`.
+- **The offer to restart as administrator can be turned off.** The question that follows a
+  snapshot whose entries permissions closed has a check box, Don't offer this again, which
+  turns the offer off however the question is closed; Settings › Snapshots › Offer to restart
+  as administrator after a snapshot turns it on or off. The status bar still says how many
+  entries are inaccessible, and Restart as administrator stays in the menu.
+- **The columns of the difference list can be hidden and reordered.** Settings › Difference ›
+  Difference list columns lists the six columns with a check box each, and Move up, Move down
+  and Defaults below it; the list shows the columns checked, in that order, and NVDA reads a
+  row so. Name cannot be hidden, but it moves like the others. The difference shown takes the
+  new columns at OK, keeping the row selected and the order; the list can still be sorted by a
+  hidden column from the menu. A column resized with the mouse keeps its width after a
+  restart, and Defaults brings the widths back too. The tree, the exports and `revisor-cli`
+  do not change.
+- **Several changes can be selected and their paths copied.** The difference list selects
+  several changes with the usual Windows keys — `Shift` or `Ctrl` with the arrows,
+  `Ctrl+Space`, `Ctrl+A` — and the mouse with `Ctrl` or `Shift`, and NVDA says which rows are
+  selected. Copy path (`Ctrl+Shift+C`) then copies the full paths of all of them, a line each,
+  in the order of the list, without quotes, and the status bar says «N paths copied.». Sorting
+  and new columns keep the selection; a new filter, the tree and a new difference leave only
+  the change in focus selected. Details and Show in File Explorer act on the change in focus,
+  the tree selects one node as before, and the export takes every change shown.
+
 ## [0.4.0] - 2026-11-14
 
 ### Added
@@ -217,7 +268,8 @@ keyboard and with a screen reader.
 - **Error messages** name the causes revisor recognizes in its own words—what happened, why,
   and what to do—and give the Windows or SQLite text and its code for the rest.
 
-[Unreleased]: https://github.com/ruslan-rv-ua/revisor/compare/v0.4.0...HEAD
+[Unreleased]: https://github.com/ruslan-rv-ua/revisor/compare/v0.5.0...HEAD
+[0.5.0]: https://github.com/ruslan-rv-ua/revisor/compare/v0.4.0...v0.5.0
 [0.4.0]: https://github.com/ruslan-rv-ua/revisor/compare/v0.3.0...v0.4.0
 [0.3.0]: https://github.com/ruslan-rv-ua/revisor/compare/v0.2.0...v0.3.0
 [0.2.0]: https://github.com/ruslan-rv-ua/revisor/compare/v0.1.0...v0.2.0

@@ -1,6 +1,7 @@
-# Release (ADR-0010, TASK-19): a pushed `v*` tag builds the one file revisor is distributed as,
-# gates that very file and publishes it with its SHA-256 sidecar on a GitHub Release. The
-# procedure around it is the Backlog document «Випуск релізу».
+# Release (ADR-0010, ADR-0015, TASK-19, TASK-47): a pushed `v*` tag builds the two files revisor
+# is distributed as, revisor.exe and revisor-cli.exe, gates those very files and publishes each
+# with its SHA-256 sidecar on a GitHub Release. The procedure around it is the Backlog document
+# «Випуск релізу».
 #
 # Gate the artifact, not the build config: a build that quietly lost `+crt-static` is green
 # everywhere except in the linked exe's import table, so every gate below reads the file that
@@ -80,18 +81,21 @@ jobs:
           if (-not $cargo) { throw 'Cargo.toml has no [workspace.package] version' }
           if ($cargo -cne $version) { throw "Cargo.toml version '$cargo' does not match tag '$env:TAG'" }
 
-          # The numeric FILEVERSION and PRODUCTVERSION are held to Cargo.toml by
-          # crates/revisor-core/tests/versioninfo.rs, which the Test step runs.
-          $rc = Get-Content crates/revisor/resources/app.rc -Raw
-          foreach ($field in 'FileVersion', 'ProductVersion') {
-            if ($rc -notmatch ('VALUE\s+"' + $field + '",\s*"' + [regex]::Escape($version) + '"')) {
-              throw "app.rc's $field does not match tag '$env:TAG'"
+          # The numeric FILEVERSION and PRODUCTVERSION of both .rc files are held to Cargo.toml
+          # by crates/revisor-core/tests/versioninfo.rs, which the Test step runs.
+          foreach ($rcFile in 'crates/revisor/resources/app.rc', 'crates/revisor-cli/resources/cli.rc') {
+            $rc = Get-Content $rcFile -Raw
+            foreach ($field in 'FileVersion', 'ProductVersion') {
+              if ($rc -notmatch ('VALUE\s+"' + $field + '",\s*"' + [regex]::Escape($version) + '"')) {
+                throw "$rcFile's $field does not match tag '$env:TAG'"
+              }
             }
           }
 
           "VERSION=$version" >> $env:GITHUB_ENV
           "PRERELEASE=$prerelease" >> $env:GITHUB_ENV
           "ASSET=revisor-$env:TAG-x64.exe" >> $env:GITHUB_ENV
+          "CLI_ASSET=revisor-cli-$env:TAG-x64.exe" >> $env:GITHUB_ENV
           "Releasing $env:TAG as version $version (pre-release: $prerelease)"
 
       # The release page says what changed, in the words of that version's CHANGELOG.md
@@ -181,78 +185,91 @@ jobs:
         run: |
           cargo fetch --locked
           if ($LASTEXITCODE) { exit $LASTEXITCODE }
-          cargo about generate --frozen --fail -m crates/revisor/Cargo.toml -c crates/revisor/about.toml crates/revisor/about.hbs -o crates/revisor/THIRD-PARTY-LICENSES.txt
+          cargo about generate --frozen --fail -m Cargo.toml -c crates/revisor/about.toml crates/revisor/about.hbs -o crates/revisor/THIRD-PARTY-LICENSES.txt
           if ($LASTEXITCODE) { exit $LASTEXITCODE }
           git diff --exit-code -- crates/revisor/THIRD-PARTY-LICENSES.txt
 
       - name: Build
         run: cargo build --release --locked --target x86_64-pc-windows-msvc
 
-      # Everything below gates and publishes this copy. This is also the one place the release
-      # file is named; packaging/scoop/revisor.json is written against the same shape.
-      - name: Stage the exe
+      # Everything below gates and publishes these copies. This is also the one place the
+      # release files are named; packaging/scoop/revisor.json is written against the same shape.
+      - name: Stage the exes
         run: |
           New-Item -ItemType Directory -Force dist | Out-Null
           Copy-Item "$env:CARGO_TARGET_DIR\x86_64-pc-windows-msvc\release\revisor.exe" "dist\$env:ASSET"
-          Get-Item "dist\$env:ASSET" | Format-List Name, Length
+          Copy-Item "$env:CARGO_TARGET_DIR\x86_64-pc-windows-msvc\release\revisor-cli.exe" "dist\$env:CLI_ASSET"
+          Get-ChildItem dist | Format-List Name, Length
 
-      # One exe without DLLs (brief, section 5): a lost `+crt-static` is invisible in a green
-      # build and visible here.
-      - name: The exe imports no C runtime DLL
+      # Exes without DLLs (brief, section 5): a lost `+crt-static` is invisible in a green
+      # build and visible here, in each of the two.
+      - name: The exes import no C runtime DLL
         run: |
           $vswhere = "${env:ProgramFiles(x86)}\Microsoft Visual Studio\Installer\vswhere.exe"
           $dumpbin = & $vswhere -latest -products * -find '**\Hostx64\x64\dumpbin.exe' | Select-Object -First 1
           if (-not $dumpbin) { throw 'dumpbin.exe not found through vswhere' }
-          $imports = (& $dumpbin /NOLOGO /DEPENDENTS "dist\$env:ASSET") -join "`n"
-          if ($LASTEXITCODE) { exit $LASTEXITCODE }
-          $imports
-          # Without this, output that was never parsed would pass as "no C runtime".
-          if ($imports -notmatch 'KERNEL32\.dll') { throw 'the import table was not read: no KERNEL32.dll in it' }
-          if ($imports -match 'VCRUNTIME|MSVCP|api-ms-win-crt') {
-            throw 'the exe imports a C runtime DLL: +crt-static was lost'
+          foreach ($asset in $env:ASSET, $env:CLI_ASSET) {
+            $imports = (& $dumpbin /NOLOGO /DEPENDENTS "dist\$asset") -join "`n"
+            if ($LASTEXITCODE) { exit $LASTEXITCODE }
+            $imports
+            # Without this, output that was never parsed would pass as "no C runtime".
+            if ($imports -notmatch 'KERNEL32\.dll') { throw "the import table of $asset was not read: no KERNEL32.dll in it" }
+            if ($imports -match 'VCRUNTIME|MSVCP|api-ms-win-crt') {
+              throw "$asset imports a C runtime DLL: +crt-static was lost"
+            }
           }
 
-      - name: The exe is at most 10 MiB
+      - name: Each exe is at most 10 MiB
         run: |
-          $exe = Get-Item "dist\$env:ASSET"
           $limit = 10MB
-          '{0}: {1:N0} bytes ({2:N2} MiB), limit {3:N0}' -f $exe.Name, $exe.Length, ($exe.Length / 1MB), $limit
-          if ($exe.Length -gt $limit) { throw "the exe is $($exe.Length) bytes, over $limit" }
+          foreach ($asset in $env:ASSET, $env:CLI_ASSET) {
+            $exe = Get-Item "dist\$asset"
+            '{0}: {1:N0} bytes ({2:N2} MiB), limit {3:N0}' -f $exe.Name, $exe.Length, ($exe.Length / 1MB), $limit
+            if ($exe.Length -gt $limit) { throw "$asset is $($exe.Length) bytes, over $limit" }
+          }
 
-      # The exe is unsigned (ADR-0010), so VERSIONINFO is all it says about itself. Read back
-      # from the linked file, not trusted from app.rc: a resource that failed to link leaves a
-      # working exe with no identity.
-      - name: The exe names itself and this version
+      # The exes are unsigned (ADR-0010), so VERSIONINFO is all each says about itself. Read
+      # back from the linked files, not trusted from the .rc files: a resource that failed to
+      # link leaves a working exe with no identity, and each exe must carry its own (ADR-0015).
+      - name: Each exe names itself and this version
         run: |
-          $info = (Get-Item "dist\$env:ASSET").VersionInfo
-          $info | Format-List CompanyName, ProductName, FileDescription, FileVersion, ProductVersion
-          if ($info.CompanyName -cne 'Ruslan Iskov') { throw "CompanyName is '$($info.CompanyName)'" }
-          if ($info.ProductName -cne 'revisor') { throw "ProductName is '$($info.ProductName)'" }
-          if ($info.FileVersion -cne $env:VERSION) { throw "FileVersion '$($info.FileVersion)' is not '$env:VERSION'" }
-          if ($info.ProductVersion -cne $env:VERSION) { throw "ProductVersion '$($info.ProductVersion)' is not '$env:VERSION'" }
+          $own = @{ "$env:ASSET" = 'revisor.exe'; "$env:CLI_ASSET" = 'revisor-cli.exe' }
+          foreach ($asset in $env:ASSET, $env:CLI_ASSET) {
+            $info = (Get-Item "dist\$asset").VersionInfo
+            $info | Format-List CompanyName, ProductName, FileDescription, OriginalFilename, FileVersion, ProductVersion
+            if ($info.CompanyName -cne 'Ruslan Iskov') { throw "$asset`: CompanyName is '$($info.CompanyName)'" }
+            if ($info.ProductName -cne 'revisor') { throw "$asset`: ProductName is '$($info.ProductName)'" }
+            if ($info.OriginalFilename -cne $own[$asset]) { throw "$asset`: OriginalFilename is '$($info.OriginalFilename)', not '$($own[$asset])'" }
+            if ($info.FileVersion -cne $env:VERSION) { throw "$asset`: FileVersion '$($info.FileVersion)' is not '$env:VERSION'" }
+            if ($info.ProductVersion -cne $env:VERSION) { throw "$asset`: ProductVersion '$($info.ProductVersion)' is not '$env:VERSION'" }
+          }
 
       # Written only once every gate has passed, so a failed run leaves no hash for a file
       # nobody should install. `<hex64> *<name>` is sha256sum's own line: Get-FileHash users
       # compare the hex, `sha256sum -c` checks the line, and scoop's autoupdate reads it.
-      - name: Write the SHA-256 sidecar
+      - name: Write the SHA-256 sidecars
         run: |
-          $exe = "dist\$env:ASSET"
-          $hash = (Get-FileHash $exe -Algorithm SHA256).Hash.ToLowerInvariant()
-          "$hash *$env:ASSET" | Out-File -FilePath "$exe.sha256" -Encoding ascii -NoNewline
-          Get-Content "$exe.sha256"
+          foreach ($asset in $env:ASSET, $env:CLI_ASSET) {
+            $exe = "dist\$asset"
+            $hash = (Get-FileHash $exe -Algorithm SHA256).Hash.ToLowerInvariant()
+            "$hash *$asset" | Out-File -FilePath "$exe.sha256" -Encoding ascii -NoNewline
+            Get-Content "$exe.sha256"
+          }
 
-      # Only the PDB can turn a crash report from someone's machine into a call stack, so it
-      # stays with the run for 90 days. It is never on the release: that holds the exe alone.
-      - name: Keep the PDB with the run
+      # Only the PDBs can turn a crash report from someone's machine into a call stack, so they
+      # stay with the run for 90 days. They are never on the release: that holds the exes alone.
+      - name: Keep the PDBs with the run
         uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
           name: revisor-${{ github.ref_name }}-x64-pdb
-          path: ${{ env.CARGO_TARGET_DIR }}\x86_64-pc-windows-msvc\release\revisor.pdb
+          path: |
+            ${{ env.CARGO_TARGET_DIR }}\x86_64-pc-windows-msvc\release\revisor.pdb
+            ${{ env.CARGO_TARGET_DIR }}\x86_64-pc-windows-msvc\release\revisor_cli.pdb
           if-no-files-found: error
           retention-days: 90
 
-      # Exactly two files: the bare exe and its sidecar. No zip: a screen reader user should not
-      # have to unpack an archive to reach the one file revisor is.
+      # Exactly four files: the two bare exes and their sidecars. No zip: a screen reader user
+      # should not have to unpack an archive to reach the files revisor is.
       - name: Publish the GitHub release
         env:
           GH_TOKEN: ${{ github.token }}
@@ -260,6 +277,7 @@ jobs:
           $arguments = @(
             'release', 'create', $env:TAG,
             "dist\$env:ASSET", "dist\$env:ASSET.sha256",
+            "dist\$env:CLI_ASSET", "dist\$env:CLI_ASSET.sha256",
             '--verify-tag',
             '--title', "revisor $env:TAG",
             '--notes-file', $env:NOTES

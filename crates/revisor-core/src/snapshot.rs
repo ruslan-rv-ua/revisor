@@ -7,7 +7,7 @@ use std::fmt;
 use std::fs;
 use std::io;
 use std::path::{Path, PathBuf};
-use std::sync::atomic::{AtomicU8, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU8, Ordering};
 use std::time::{Duration, Instant};
 
 use windows_sys::Win32::Foundation;
@@ -101,6 +101,9 @@ pub struct Progress {
     /// The scans of all the profile's folders report here, so the count goes on.
     scan: scan::Progress,
     phase: AtomicU8,
+    /// Whether the snapshot waits for a database another connection holds; only a
+    /// snapshot taken by [`take_when_free`] waits so.
+    waiting: AtomicBool,
 }
 
 impl Progress {
@@ -125,6 +128,12 @@ impl Progress {
     fn set_phase(&self, phase: Phase) {
         self.phase.store(phase as u8, Ordering::Relaxed);
     }
+
+    /// Whether the snapshot waits now for a database another connection holds (ADR-0012):
+    /// another revisor saving a snapshot of the same profile or compacting it.
+    pub fn is_waiting(&self) -> bool {
+        self.waiting.load(Ordering::Relaxed)
+    }
 }
 
 /// Taking a snapshot as a background job (ADR-0011): [`take`] on the job's thread.
@@ -132,6 +141,9 @@ impl Progress {
 pub struct SnapshotWork {
     db: PathBuf,
     comment: Option<String>,
+    /// Whether the work waits for a busy database by the rule of the store, as
+    /// [`take_when_free`] does, rather than as [`take`] does.
+    when_free: bool,
 }
 
 impl SnapshotWork {
@@ -140,6 +152,16 @@ impl SnapshotWork {
         Self {
             db: db.to_path_buf(),
             comment: comment.map(String::from),
+            when_free: false,
+        }
+    }
+
+    /// A snapshot as [`SnapshotWork::new`] takes it, which waits for a busy database as
+    /// [`take_when_free`] does (TASK-47).
+    pub fn when_free(db: &Path, comment: Option<&str>) -> Self {
+        Self {
+            when_free: true,
+            ..Self::new(db, comment)
         }
     }
 }
@@ -149,7 +171,12 @@ impl Work for SnapshotWork {
     type Output = Outcome<Report, SnapshotError>;
 
     fn run(self, progress: &Progress, cancel: &Cancel) -> Self::Output {
-        let result = take(&self.db, self.comment.as_deref(), progress, cancel);
+        let comment = self.comment.as_deref();
+        let result = if self.when_free {
+            take_when_free(&self.db, comment, progress, cancel)
+        } else {
+            take(&self.db, comment, progress, cancel)
+        };
         Outcome::of(result, |e| matches!(e, SnapshotError::Cancelled))
     }
 
@@ -168,9 +195,59 @@ pub fn take(
     progress: &Progress,
     cancel: &Cancel,
 ) -> Result<Report, SnapshotError> {
+    take_with(db, comment, progress, cancel, Busy::Sqlite)
+}
+
+/// Takes a snapshot as [`take`] does, but a database another connection holds — another
+/// revisor saving a snapshot of the profile or compacting it — is waited for by the one
+/// rule of the store, [`store::retry_while_busy`] (ADR-0012), with no limit of time: the
+/// database is opened, read and written without SQLite's own wait, which a cancel could
+/// not end, `progress` says while the snapshot waits, and cancelling `cancel` ends the
+/// wait. The command line takes its snapshots so (TASK-47 #10).
+pub fn take_when_free(
+    db: &Path,
+    comment: Option<&str>,
+    progress: &Progress,
+    cancel: &Cancel,
+) -> Result<Report, SnapshotError> {
+    take_with(db, comment, progress, cancel, Busy::Retry)
+}
+
+/// How a snapshot waits for a database another connection holds.
+#[derive(Clone, Copy)]
+enum Busy {
+    /// SQLite's own wait, a few seconds long, and then a failure.
+    Sqlite,
+    /// The rule of the store, [`store::retry_while_busy`].
+    Retry,
+}
+
+fn take_with(
+    db: &Path,
+    comment: Option<&str>,
+    progress: &Progress,
+    cancel: &Cancel,
+    busy: Busy,
+) -> Result<Report, SnapshotError> {
     let started = Instant::now();
-    let mut store = Store::open(db)?;
-    let scope = store.settings()?.scope;
+    let waiting = |waiting: bool| progress.waiting.store(waiting, Ordering::Relaxed);
+    let retry = |access: &mut dyn FnMut() -> Result<i64, StoreError>| match busy {
+        Busy::Sqlite => access(),
+        Busy::Retry => store::retry_while_busy(cancel, waiting, access),
+    };
+    let (mut store, settings) = match busy {
+        Busy::Sqlite => {
+            let store = Store::open(db)?;
+            let settings = store.settings()?;
+            (store, settings)
+        }
+        Busy::Retry => store::retry_while_busy(cancel, waiting, || {
+            let store = Store::open_with_timeout(db, Duration::ZERO)?;
+            let settings = store.settings()?;
+            Ok((store, settings))
+        })?,
+    };
+    let scope = settings.scope;
     let taken_at = store::now_millis();
     // The exclusions are expanded once: the scan applies them, and the snapshot records
     // them, exactly as expanded here.
@@ -214,7 +291,8 @@ pub fn take(
         exclusions,
     };
     progress.set_phase(Phase::Saving);
-    let saved = store.save(&snapshot, cancel);
+    // A save that finds the database busy rolls back, and the whole save is tried again.
+    let saved = retry(&mut || store.save(&snapshot, cancel));
     progress.set_phase(Phase::Saved);
     let id = saved?;
     Ok(Report {

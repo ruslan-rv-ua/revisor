@@ -16,25 +16,25 @@ use std::path::{Path, PathBuf};
 use std::ptr;
 use std::rc::Rc;
 use std::thread;
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
 use revisor_core::compare::{self, CompareError, Difference};
 use revisor_core::job::{Cancel, Lost, Outcome};
 use revisor_core::profiles::{self, ProfileError, ProfileFile, Unreadable};
 use revisor_core::settings::{
-    CsvDelimiter, DifferenceSort, DifferenceView, ExportFormat, FocusAfterComparison,
-    FocusAfterSnapshot, Language, Settings, Theme,
+    CsvDelimiter, DifferenceColumns, DifferenceSort, DifferenceView, ExportFormat,
+    FocusAfterComparison, FocusAfterSnapshot, Language, Settings, Theme,
 };
 use revisor_core::snapshot::{Phase, Report, SnapshotError};
-use revisor_core::store::{
-    Compacted, FolderState, ProfileSettings, SnapshotInfo, Store, StoreError, Unavailable,
-};
+use revisor_core::store::{Compacted, ProfileSettings, SnapshotInfo, Store, StoreError};
+use revisor_ui::data::{PROFILES_DIR, SETTINGS_FILE};
 use wxdragon::prelude::*;
 
 use crate::access::{Dispatcher, Name, Target, compose, field_label, plain};
 use crate::commands::{COMMANDS, CommandId, CommandKind, MenuId, Pane, Reason, command};
 use crate::compare_window;
-use crate::difference::{self, Column, List, Location, View};
+use crate::difference::{Column, List, Location, Selection, View};
+use crate::difference_arrival;
 use crate::difference_tree::{self, Entry, More, Open, TreeView};
 use crate::explorer::{self, Reveal};
 use crate::export::{self, Exported};
@@ -49,11 +49,13 @@ use crate::keys::Shortcut;
 use crate::menus::{
     context_label, context_menu, menu_label, submenu_label, top_menu_label, window_title,
 };
-use crate::message_box::{ask_text, choose, confirm, tell};
+use crate::message_box::{ask_text, choose, confirm, confirm_with_check_box, tell};
 use crate::profile_window::{self, Purpose};
 use crate::settings_window::{self, Values};
 use crate::snapshot_list::{Native, SnapshotList};
+use crate::snapshot_text;
 use crate::snapshots::{Arrival, arrival, arrival_after_comparison};
+use crate::sound::{self, SoundSetting};
 use crate::state::{AppState, ChangeType, ShownTypes, SortColumn, Sources};
 use crate::status::Announcer;
 use crate::text_window;
@@ -87,12 +89,46 @@ const COMPARISON_BAR_AFTER: Duration = Duration::from_secs(5);
 /// database it is about to write or delete (TASK-11 #17).
 const HOLD_RETRY: Duration = Duration::from_millis(50);
 
-/// The file of the application's settings in the data folder (ADR-0007).
-pub const SETTINGS_FILE: &str = "settings.db";
+/// The columns the difference lists show (TASK-49): as the settings chose them, with the
+/// shown ones in their order, which the lists' columns follow by index.
+struct ListColumns {
+    chosen: DifferenceColumns,
+    shown: Vec<Column>,
+}
 
-/// The widths of the difference list's columns, in the order of [`Column::ALL`]: the
-/// folder, the longest, comes last (TASK-13 #12).
-const COLUMN_WIDTHS: [i32; 6] = [220, 140, 200, 90, 160, 420];
+impl ListColumns {
+    fn new(chosen: DifferenceColumns) -> Self {
+        Self {
+            shown: chosen.shown(),
+            chosen,
+        }
+    }
+
+    /// The column at `index` of the list.
+    fn at(&self, index: impl TryInto<usize>) -> Option<Column> {
+        let index = index.try_into().ok()?;
+        self.shown.get(index).copied()
+    }
+}
+
+/// Gives the difference list `list`, which has no rows, the columns shown, in their
+/// order and widths (TASK-49 #2). Hidden columns are not there at all, rather than
+/// narrowed to nothing: NVDA's table commands would still stop on a column without
+/// width, and its divider could be dragged open.
+fn insert_columns(list: &ListCtrl, s: &dyn Strings, columns: &ListColumns) {
+    for (i, &column) in columns.shown.iter().enumerate() {
+        let format = match column {
+            Column::Size => ListColumnFormat::Right,
+            _ => ListColumnFormat::Left,
+        };
+        list.insert_column(
+            i as i64,
+            s.column(column),
+            format,
+            columns.chosen.width(column),
+        );
+    }
+}
 
 /// The height of the field «Порівняння»: the line of the pair, the summary and a warning
 /// show at once; more warnings scroll (TASK-13 #1).
@@ -203,6 +239,15 @@ pub struct MainWindow {
     status: StatusBar,
     /// Joins the messages of one event into one (TASK-21).
     announcer: Announcer,
+    /// «Передавати скрінрідеру повідомлення рядка стану» (TASK-46 #10), kept here, as
+    /// every message asks it; renewed when the settings are saved.
+    speak_status: Cell<bool>,
+    /// When the snapshot being taken started, plain or of «Знімок + порівняння»: its end
+    /// sounds after how long it ran (TASK-46 #5).
+    snapshot_started: Cell<Option<Instant>>,
+    /// When the latest «Знімок + порівняння» started: its comparison's end sounds after how
+    /// long the whole command ran, from the start of its snapshot (TASK-46 #5).
+    snapshot_and_compare_started: Cell<Option<Instant>>,
     panel: Panel,
     profile: Choice,
     /// The progress of the job the progress row shows — a snapshot being taken, a
@@ -234,6 +279,8 @@ pub struct MainWindow {
     /// seconds with a large difference (TASK-13 #29), so the other list is disabled — no
     /// stop for Tab — and has no size instead.
     differences: [ListCtrl; 2],
+    /// The columns both difference lists show (TASK-49).
+    columns: Rc<RefCell<ListColumns>>,
     /// Which of `differences` is shown, while the difference shows as a list.
     shown_difference: Cell<usize>,
     /// The difference trees (TASK-33): two tree controls over `difference_list`, which
@@ -350,6 +397,14 @@ impl MainWindow {
                 .unwrap_or_default(),
         );
         let difference_list = Rc::new(RefCell::new(list));
+        // Which columns the difference list shows, as kept (TASK-49).
+        let columns = Rc::new(RefCell::new(ListColumns::new(
+            settings
+                .as_ref()
+                .ok()
+                .and_then(|settings| settings.difference_columns().ok())
+                .unwrap_or_default(),
+        )));
 
         let panel = Panel::builder(&frame).build();
         // Made in tab order. Each label comes right before its control, so screen readers
@@ -383,29 +438,21 @@ impl MainWindow {
         comparison_field.set_min_size(Size::new(-1, COMPARISON_HEIGHT));
         // Virtual lists: a difference may have a million rows (TASK-11 #6), and a list
         // asks for the text of the ones it shows. Two of them in a panel of their own, the
-        // second disabled and without a size at first.
+        // second disabled and without a size at first. Several changes can be selected,
+        // to copy their paths (TASK-50 #1).
         let difference_holder = Panel::builder(&panel).build();
         let differences = [(); 2].map(|()| {
             let list = ListCtrl::builder(&difference_holder)
-                .with_style(
-                    ListCtrlStyle::Report | ListCtrlStyle::Virtual | ListCtrlStyle::SingleSel,
-                )
+                .with_style(ListCtrlStyle::Report | ListCtrlStyle::Virtual)
                 .build();
-            for (i, column) in Column::ALL.into_iter().enumerate() {
-                let format = match column {
-                    Column::Size => ListColumnFormat::Right,
-                    _ => ListColumnFormat::Left,
-                };
-                list.insert_column(i as i64, s.column(column), format, COLUMN_WIDTHS[i]);
-            }
+            insert_columns(&list, s, &columns.borrow());
             // The headers sort the list (TASK-13 #21).
             win32::lists::full_row_select(list.get_handle());
             let model = Rc::clone(&difference_list);
+            let shown = Rc::clone(&columns);
             list.set_virtual_text_callback(move |row, column| {
                 let row = usize::try_from(row).unwrap_or(usize::MAX);
-                let column = usize::try_from(column)
-                    .ok()
-                    .and_then(|i| Column::ALL.get(i).copied());
+                let column = shown.borrow().at(column);
                 column.map_or_else(String::new, |column| model.borrow().cell(row, column))
             });
             list
@@ -506,6 +553,15 @@ impl MainWindow {
             menu_bar,
             status,
             announcer: Announcer::default(),
+            speak_status: Cell::new(
+                settings
+                    .as_ref()
+                    .ok()
+                    .and_then(|settings| settings.speak_status().ok())
+                    .unwrap_or(true),
+            ),
+            snapshot_started: Cell::new(None),
+            snapshot_and_compare_started: Cell::new(None),
             panel,
             profile,
             progress_label,
@@ -517,6 +573,7 @@ impl MainWindow {
             difference_holder,
             difference_empty_texts,
             differences,
+            columns,
             shown_difference: Cell::new(0),
             trees,
             shown_tree: Cell::new(0),
@@ -530,7 +587,7 @@ impl MainWindow {
             access_keys: Dispatcher::default(),
             said_waiting: Cell::new(None),
             comparison_focus: Cell::new(ptr::null_mut()),
-            profiles_dir: data_dir.join("profiles"),
+            profiles_dir: data_dir.join(PROFILES_DIR),
             settings,
             profiles: RefCell::new(Vec::new()),
             open_index: Cell::new(None),
@@ -714,8 +771,8 @@ impl MainWindow {
             }
         });
 
-        // The difference list (TASK-13): its headers sort it, the focus picks the one row
-        // selected, and its filter's field and check boxes change what it shows.
+        // The difference list (TASK-13): its headers sort it, the model follows the row with
+        // the focus, and its filter's field and check boxes change what it shows.
         for (i, list) in self.differences.iter().enumerate() {
             self.bind(
                 Source::Navigation,
@@ -731,6 +788,11 @@ impl MainWindow {
                 |f| list.on_item_focused(f),
                 move |w, event| w.difference_focused(i, event.get_item_index()),
             );
+            // A column the user resized keeps its width (TASK-49 #7).
+            let w = Rc::clone(self);
+            win32::lists::on_column_resized(list.get_handle(), move |column, width| {
+                w.column_resized(i, column, width);
+            });
         }
         // The difference trees (TASK-33): a node gets its children as it first expands
         // (#2), the focus picks the node selected, a right click selects the node under
@@ -1040,7 +1102,11 @@ impl MainWindow {
 
     fn show(&self, text: &str) {
         self.status.set_status_text(text, 0);
-        win32::accessibility::announce_status(self.status.get_handle());
+        // Turned off, the text is still there for NVDA+End, but no screen reader is told
+        // of it (TASK-46 #10).
+        if self.speak_status.get() {
+            win32::accessibility::announce_status(self.status.get_handle());
+        }
     }
 
     /// Runs a command, the source of its event (ADR-0013): a job that ended meanwhile,
@@ -1398,6 +1464,16 @@ impl MainWindow {
             .unwrap_or(true)
     }
 
+    /// Whether a snapshot that rights closed in part offers a restart as administrator
+    /// (TASK-48 #1); on by default.
+    fn offer_restart_setting(&self) -> bool {
+        self.settings
+            .as_ref()
+            .ok()
+            .and_then(|settings| settings.offer_restart().ok())
+            .unwrap_or(true)
+    }
+
     fn language(&self) -> Language {
         self.settings
             .as_ref()
@@ -1433,6 +1509,44 @@ impl MainWindow {
             .ok()
             .and_then(|settings| settings.show_copied_path().ok())
             .unwrap_or(false)
+    }
+
+    /// The sound settings of a snapshot, or of «Знімок + порівняння» with
+    /// `snapshot_and_compare`; all on by default (TASK-46 #1).
+    fn sound_setting(&self, snapshot_and_compare: bool) -> SoundSetting {
+        let Ok(settings) = &self.settings else {
+            return SoundSetting {
+                on: true,
+                only_after_long: true,
+            };
+        };
+        let on = if snapshot_and_compare {
+            settings.sound_after_snapshot_and_compare()
+        } else {
+            settings.sound_after_snapshot()
+        };
+        SoundSetting {
+            on: on.unwrap_or(true),
+            only_after_long: settings.sound_only_after_long().unwrap_or(true),
+        }
+    }
+
+    /// Ends a snapshot or «Знімок + порівняння» with its sound, if the settings of its
+    /// operation want one (TASK-46 #3, #5–#7): `done` when it succeeded, timed from the
+    /// start of its snapshot, or of the whole command.
+    fn chime(&self, end: sound::End, done: bool) {
+        let Some(operation) = sound::operation(end) else {
+            return;
+        };
+        let (snapshot_and_compare, started) = match (operation, end) {
+            (sound::Operation::Snapshot, _) => (false, self.snapshot_started.get()),
+            (_, sound::End::Comparison) => (true, self.snapshot_and_compare_started.get()),
+            _ => (true, self.snapshot_started.get()),
+        };
+        let lasted = started.map_or(Duration::ZERO, |at| at.elapsed());
+        if let Some(chime) = sound::chime(self.sound_setting(snapshot_and_compare), lasted, done) {
+            win32::sound::play(chime);
+        }
     }
 
     /// Whether the exported file opens in the program Windows assigns to it (TASK-39 #9);
@@ -1484,6 +1598,12 @@ impl MainWindow {
             other_users_folders: self.other_users_folders(),
             open_after_export: self.open_after_export(),
             csv_delimiter: self.csv_delimiter(),
+            sound_after_snapshot: self.sound_setting(false).on,
+            sound_after_snapshot_and_compare: self.sound_setting(true).on,
+            sound_only_after_long: self.sound_setting(false).only_after_long,
+            speak_status: self.speak_status.get(),
+            offer_restart: self.offer_restart_setting(),
+            difference_columns: self.columns.borrow().chosen,
         };
         let Some(values) = settings_window::show(&self.frame, s, initial) else {
             return;
@@ -1505,11 +1625,25 @@ impl MainWindow {
                 .and_then(|()| settings.set_other_users_folders(values.other_users_folders))
                 .and_then(|()| settings.set_open_after_export(values.open_after_export))
                 .and_then(|()| settings.set_csv_delimiter(values.csv_delimiter))
+                .and_then(|()| settings.set_sound_after_snapshot(values.sound_after_snapshot))
+                .and_then(|()| {
+                    settings.set_sound_after_snapshot_and_compare(
+                        values.sound_after_snapshot_and_compare,
+                    )
+                })
+                .and_then(|()| settings.set_sound_only_after_long(values.sound_only_after_long))
+                .and_then(|()| settings.set_speak_status(values.speak_status))
+                .and_then(|()| settings.set_offer_restart(values.offer_restart))
+                .and_then(|()| settings.set_difference_columns(&values.difference_columns))
                 .map_err(|e| reason(s, &e)),
             Err(message) => Err(message.clone()),
         };
         match saved {
-            Ok(()) => self.say(s.settings_saved()),
+            Ok(()) => {
+                // At once, so that even «Налаштування збережено.» keeps to it (TASK-46 #1).
+                self.speak_status.set(values.speak_status);
+                self.say(s.settings_saved());
+            }
             Err(reason) => {
                 self.fail(&s.settings_not_saved(&reason));
                 return;
@@ -1528,6 +1662,7 @@ impl MainWindow {
             list.set_node_text(values.tree_node_text);
         }
         self.restyle_difference();
+        self.set_columns(values.difference_columns);
         // «Same as Windows» is read now, not at the start: the language of Windows may
         // have changed meanwhile, and the next start would take the new one.
         let next = crate::language_of(values.language, win32::language::ui_language);
@@ -1809,8 +1944,8 @@ impl MainWindow {
         let Ended { profile, outcome } = ended;
         match outcome {
             Ok(Outcome::Done(difference)) => {
-                let arrival = difference::arrival(self.focus_after_comparison(), focus);
-                let to_difference = arrival == difference::Arrival::Focus;
+                let arrival = difference_arrival::arrival(self.focus_after_comparison(), focus);
+                let to_difference = arrival == difference_arrival::Arrival::Focus;
                 self.show_difference(difference, profile, to_difference);
                 if to_difference {
                     // The focus says it: the status bar only stops showing the
@@ -2079,8 +2214,8 @@ impl MainWindow {
     // --- The difference list (TASK-13) --------------------------------------------------
 
     /// The focus of the difference list `list` has moved to the row at `index`: the model
-    /// keeps it, and it is the one row selected, as the list selects only the change with
-    /// the focus (#19).
+    /// keeps it. The selection is the list's own: Ctrl with the arrows moves the focus
+    /// without selecting (TASK-50 #1).
     fn difference_focused(&self, list: usize, index: i32) {
         let Ok(index) = usize::try_from(index) else {
             return;
@@ -2089,10 +2224,20 @@ impl MainWindow {
             return;
         }
         self.difference_list.borrow_mut().focus(index);
-        let hwnd = self.differences[list].get_handle();
-        if !win32::lists::is_selected(hwnd, index) {
-            win32::lists::select_only(hwnd, index);
+    }
+
+    /// The rows selected in the difference list shown, top to bottom; none in the tree.
+    fn selected_places(&self) -> Vec<usize> {
+        if self.layout() != DifferenceView::List {
+            return Vec::new();
         }
+        let list = self.difference().get_handle();
+        let count = self.difference_list.borrow().len();
+        // Every row, after Ctrl+A, without asking the list for each of a million.
+        if count > 0 && win32::lists::selected_count(list) == count {
+            return (0..count).collect();
+        }
+        win32::lists::selected_rows(list)
     }
 
     /// Brings the difference list in line with the model once the view or the difference
@@ -2100,6 +2245,13 @@ impl MainWindow {
     /// said about the difference. The tree, when it is shown, changes its items in place,
     /// its focus where the model says (TASK-33 #4).
     fn refresh_difference(&self, current: Option<usize>) {
+        self.refresh_difference_keeping(current, None);
+    }
+
+    /// As [`Self::refresh_difference`], with the rows of `kept` selected again in the list
+    /// where they are now, and the focus on its row whether selected or not (TASK-50 #6);
+    /// without `kept`, the row with the focus is the one selected.
+    fn refresh_difference_keeping(&self, current: Option<usize>, kept: Option<&Selection>) {
         if self.layout() == DifferenceView::Tree {
             let model = self.difference_list.borrow();
             self.tree().refresh(&*model, model.tree_current());
@@ -2107,8 +2259,16 @@ impl MainWindow {
             let list = self.difference();
             let count = self.difference_list.borrow().len();
             list.set_item_count(count as i64);
-            if let Some(row) = current {
-                win32::lists::select_only(list.get_handle(), row);
+            match kept {
+                Some(kept) => {
+                    let places = self.difference_list.borrow().places(kept);
+                    win32::lists::select_rows(list.get_handle(), &places, count, current);
+                }
+                None => {
+                    if let Some(row) = current {
+                        win32::lists::select_only(list.get_handle(), row);
+                    }
+                }
             }
             if count > 0 {
                 list.refresh_items(0, count as i64 - 1);
@@ -2173,7 +2333,11 @@ impl MainWindow {
             check_box.enable(has_difference);
         }
         self.filter_field.enable(has_difference);
-        let arrow = Column::ALL
+        // On a column shown; sorted by a hidden one, the headers show no arrow (TASK-49 #8).
+        let arrow = self
+            .columns
+            .borrow()
+            .shown
             .iter()
             .position(|column| column.sort() == view.sort.column)
             .map(|i| (i, view.sort.descending));
@@ -2247,10 +2411,16 @@ impl MainWindow {
     }
 
     /// Puts the list in the order `sort` (#21), kept for the next differences and starts
-    /// (#28); the focus stays on its change.
+    /// (#28); the focus stays on its change, and the changes selected stay selected
+    /// (TASK-50 #6).
     fn set_sort(&self, sort: DifferenceSort) {
+        let kept = {
+            let places = self.selected_places();
+            self.difference_list.borrow().selection(&places)
+        };
         let current = self.difference_list.borrow_mut().set_sort(sort);
-        self.refresh_difference(current);
+        let kept = (self.layout() == DifferenceView::List).then_some(&kept);
+        self.refresh_difference_keeping(current, kept);
         if let Ok(settings) = &self.settings {
             let _ = settings.set_difference_sort(sort);
         }
@@ -2273,10 +2443,7 @@ impl MainWindow {
     /// list is sorted by it already, the other way (#21). Without a difference there is
     /// nothing to sort, as the commands say.
     fn sort_by_column(&self, column: i32) {
-        let Some(column) = usize::try_from(column)
-            .ok()
-            .and_then(|i| Column::ALL.get(i))
-        else {
+        let Some(column) = self.columns.borrow().at(column) else {
             return;
         };
         let (sort, has_difference) = {
@@ -2289,6 +2456,85 @@ impl MainWindow {
         let column = column.sort();
         let descending = sort.column == column && !sort.descending;
         self.set_sort(DifferenceSort { column, descending });
+    }
+
+    /// The user resized the column at `index` of the difference list `list` to `width`:
+    /// the other list takes the width too, and it is kept for the next starts (TASK-49 #7).
+    fn column_resized(&self, list: usize, index: usize, width: i32) {
+        let column = {
+            let mut columns = self.columns.borrow_mut();
+            let Some(column) = columns.at(index) else {
+                return;
+            };
+            columns.chosen.set_width(column, width);
+            column
+        };
+        self.differences[1 - list].set_column_width(index as i64, width);
+        if let Ok(settings) = &self.settings {
+            let _ = settings.set_difference_column_width(column, width);
+        }
+    }
+
+    /// The difference lists show the columns `chosen` in the settings (TASK-49 #6). Only
+    /// new widths change in place. Other columns are built anew in the list not shown,
+    /// which has no rows; it takes the rows, the row selected and the focus, and the shown
+    /// one's place, as for a new difference, so a screen reader names the list and reads
+    /// the row in its new columns. The view, its order among them, stays, and so do the
+    /// rows selected (TASK-50 #6).
+    fn set_columns(&self, chosen: DifferenceColumns) {
+        let (same, same_layout) = {
+            let columns = self.columns.borrow();
+            (
+                columns.chosen == chosen,
+                columns.chosen.same_layout(&chosen),
+            )
+        };
+        if same {
+            return;
+        }
+        *self.columns.borrow_mut() = ListColumns::new(chosen);
+        if same_layout {
+            for list in &self.differences {
+                for (i, column) in chosen.shown().into_iter().enumerate() {
+                    list.set_column_width(i as i64, chosen.width(column));
+                }
+            }
+            return;
+        }
+        let rebuild = |list: &ListCtrl| {
+            list.clear_all();
+            insert_columns(list, self.s, &self.columns.borrow());
+        };
+        let old = self.difference();
+        let next = 1 - self.shown_difference.get();
+        let new = &self.differences[next];
+        rebuild(new);
+        if self.layout() == DifferenceView::Tree {
+            // Both lists are disabled and keep no rows the tree needs; going back to the
+            // list counts and selects them again.
+            rebuild(old);
+            self.describe_difference();
+            return;
+        }
+        let had_focus = win32::focus::focused_window() == old.get_handle();
+        let selected = self.selected_places();
+        let (count, current) = {
+            let model = self.difference_list.borrow();
+            (model.len(), model.current())
+        };
+        new.set_item_count(count as i64);
+        win32::lists::select_rows(new.get_handle(), &selected, count, current);
+        new.enable(true);
+        self.shown_difference.set(next);
+        self.place_difference_lists();
+        self.describe_difference();
+        if had_focus {
+            new.set_focus();
+        }
+        // Disabled once the focus has left it, so that the focus does not go elsewhere.
+        old.enable(false);
+        old.set_item_count(0);
+        rebuild(old);
     }
 
     /// The text of the field «Фільтр:» changed as the user typed: the list follows at
@@ -2398,24 +2644,44 @@ impl MainWindow {
     /// «Копіювати шлях»: puts the whole path of the entry with the focus on the clipboard,
     /// with no quotes — or that of a folder of the tree that is no change itself — and the
     /// status bar says so, with the path when the setting asks for it (#2, #3, #8); the
-    /// focus stays. The clipboard is flushed, so the path stays on it after revisor
+    /// focus stays. In the list it copies the changes selected, a path a line, and with
+    /// several the status bar says how many; with none selected, the one with the focus
+    /// (TASK-50 #3, #4). The clipboard is flushed, so the path stays on it after revisor
     /// closes. When the clipboard stays busy, wxWidgets says why in a window of its own,
     /// which wxDragon cannot turn off, and the status bar says the path was not copied
     /// (#9).
     fn copy_path(&self) {
         let s = self.s;
-        let Some(path) = self.difference_list.borrow().current_path() else {
-            return;
+        let selected = self.selected_places();
+        let (text, several) = {
+            let model = self.difference_list.borrow();
+            if selected.len() > 1 {
+                let said = model.paths_copied(selected.len());
+                (model.paths_text(&selected), Some(said))
+            } else {
+                let path = match selected.first() {
+                    Some(&one) => model.entry_path(one),
+                    None => model.current_path(),
+                };
+                let Some(path) = path else {
+                    return;
+                };
+                (path.to_string_lossy().into_owned(), None)
+            }
         };
-        let text = path.to_string_lossy();
         let clipboard = Clipboard::get();
         if !clipboard.set_text(&text) {
             self.say(s.path_not_copied());
             return;
         }
         clipboard.flush();
-        let shown = self.show_copied_path().then_some(&*text);
-        self.say(&s.path_copied(shown));
+        match several {
+            Some(said) => self.say(&said),
+            None => {
+                let shown = self.show_copied_path().then_some(&*text);
+                self.say(&s.path_copied(shown));
+            }
+        }
     }
 
     // --- Export (TASK-39) ---------------------------------------------------------------
@@ -2518,7 +2784,7 @@ impl MainWindow {
             Ok(Outcome::Done(written)) => {
                 self.say(&s.exported(&name));
                 if self.open_after_export()
-                    && let Err(e) = export::open(&written)
+                    && let Err(e) = win32::shell::open_file(&written)
                 {
                     self.fail(&s.open_failed(&reason(s, &e)));
                 }
@@ -2598,6 +2864,9 @@ impl MainWindow {
             .jobs
             .borrow_mut()
             .start_snapshot_and_compare(open, with);
+        let now = Some(Instant::now());
+        self.snapshot_started.set(now);
+        self.snapshot_and_compare_started.set(now);
         self.refresh_progress_row();
         if let Some(superseded) = superseded {
             self.report_superseded(superseded);
@@ -2634,6 +2903,8 @@ impl MainWindow {
                 s.nothing_to_compare()
             );
             self.say(&text);
+            // The snapshot is saved and nothing failed: «готово» (TASK-46 #6).
+            self.chime(sound::End::NothingToCompare, true);
             self.offer_restart(&profile, &report, CommandId::SnapshotAndCompare);
             return;
         };
@@ -2664,17 +2935,18 @@ impl MainWindow {
         let s = self.s;
         let focus = self.focus();
         let profile = ended.profile;
+        let done = matches!(ended.outcome, Ok(Outcome::Done(_)));
         let (to_difference, text) = match ended.outcome {
             Ok(Outcome::Done(difference)) => {
-                let arrival = difference::arrival_after_snapshot(
+                let arrival = difference_arrival::arrival_after_snapshot(
                     self.focus_after_comparison(),
                     focus,
                     self.is_open(&profile),
                 );
-                if arrival == difference::Arrival::OpenProfileAndFocus {
+                if arrival == difference_arrival::Arrival::OpenProfileAndFocus {
                     self.open_profile_at(&profile.path);
                 }
-                let to_difference = arrival != difference::Arrival::Replace;
+                let to_difference = arrival != difference_arrival::Arrival::Replace;
                 self.show_difference(difference, profile.clone(), to_difference);
                 let mut text = self.snapshot_report(&report);
                 // The focus on the difference says the comparison is over.
@@ -2704,6 +2976,9 @@ impl MainWindow {
         );
         self.refresh_progress_row();
         self.say(&text);
+        // After the whole command, from the start of its snapshot (TASK-46 #3, #5); before
+        // the restart offer, whose window would hold it up.
+        self.chime(sound::End::Comparison, done);
         self.offer_restart(&profile, &report, CommandId::SnapshotAndCompare);
     }
 
@@ -2723,6 +2998,8 @@ impl MainWindow {
     /// TASK-8 (#8). Its row is in the list already.
     fn report_superseded(&self, superseded: Superseded) {
         let Superseded { profile, report } = superseded;
+        // Silent: the user has just replaced the comparison (TASK-46 #7).
+        self.chime(sound::End::Superseded, true);
         self.say(&self.snapshot_report(&report));
         self.offer_restart(&profile, &report, CommandId::SnapshotAndCompare);
     }
@@ -2736,6 +3013,7 @@ impl MainWindow {
             return;
         };
         self.jobs.borrow_mut().start_snapshot(open);
+        self.snapshot_started.set(Some(Instant::now()));
         self.refresh_progress_row();
         self.say(s.snapshot_started());
     }
@@ -2836,6 +3114,15 @@ impl MainWindow {
             (outcome, _) => outcome,
         };
         self.refresh_progress_row();
+        // The sound first, before any window a failure or the restart offer brings; a
+        // snapshot stopped on closing or restarting ends silent. One that a comparison took
+        // from «Знімок + порівняння» comes with no `then` and sounds as a regular one
+        // (TASK-46 #3, #7).
+        let end = sound::End::Snapshot {
+            of_snapshot_and_compare: then.is_some(),
+            stopped,
+        };
+        self.chime(end, matches!(outcome, Ok(Outcome::Done(_))));
         match outcome {
             Ok(Outcome::Done(report)) => {
                 self.report_snapshot(&ended.profile, &report, !stopped, focus);
@@ -2947,69 +3234,60 @@ impl MainWindow {
     /// What a saved snapshot says (TASK-8): how many entries it holds, how many of them
     /// are inaccessible, and which folders it did not find.
     fn snapshot_report(&self, report: &Report) -> String {
-        let entries = win32::format::format_count(Locale::USER, report.entries);
-        self.snapshot_report_after(self.s.snapshot_saved(report.entries, &entries), report)
+        snapshot_text::report(self.s, report)
     }
 
-    /// `first`, then what a saved snapshot says after how many entries it holds: how many
-    /// of them are inaccessible, and which folders it did not find.
+    /// `first`, then what a saved snapshot says after how many entries it holds.
     fn snapshot_report_after(&self, first: String, report: &Report) -> String {
-        let s = self.s;
-        let mut text = first;
-        if report.inaccessible > 0 {
-            text.push(' ');
-            text.push_str(&s.entries_inaccessible(&win32::format::format_count(
-                Locale::USER,
-                report.inaccessible,
-            )));
-        }
-        let not_found: Vec<(String, String)> = report
-            .not_found()
-            .map(|f| {
-                (
-                    f.path.to_string_lossy().into_owned(),
-                    self.folder_state_reason(&f.state),
-                )
-            })
-            .collect();
-        if !not_found.is_empty() {
-            text.push(' ');
-            text.push_str(&s.folders_not_found(&not_found));
-        }
-        text
+        snapshot_text::report_after(self.s, first, report)
     }
 
     /// Offers a restart as administrator after the snapshot of `report` when rights
-    /// closed some of its entries and revisor runs as a standard user (TASK-8 #7, #16,
-    /// #18); the question is titled after `command`, which took the snapshot. The restart
-    /// the user agrees to is the command «Перезапустити як адміністратор» (ADR-0013).
+    /// closed some of its entries, revisor runs as a standard user (TASK-8 #7, #16, #18)
+    /// and the setting does not forbid it (TASK-48 #2, #3); the question is titled after
+    /// `command`, which took the snapshot. The restart the user agrees to is the command
+    /// «Перезапустити як адміністратор» (ADR-0013). «Більше не пропонувати», ticked,
+    /// turns the setting off however the question is closed, without a word of its own
+    /// (TASK-48 #4, #5).
     fn offer_restart(&self, profile: &ProfileFile, report: &Report, command: CommandId) {
         let s = self.s;
-        if report.denied > 0 && !self.elevated {
-            let question =
-                s.restart_question(&win32::format::format_count(Locale::USER, report.denied));
-            let title = plain(s.command(command));
-            if confirm(&self.frame, s, &title, &question, |s| s.restart(), true) {
-                // On the snapshotted profile, whichever is open by now.
-                self.event(Source::Command(CommandId::RestartAsAdmin), || {
-                    self.restart_now(Some(profile));
-                });
+        if !restart_offered(
+            report.denied > 0,
+            self.elevated,
+            self.offer_restart_setting(),
+        ) {
+            return;
+        }
+        let question =
+            s.restart_question(&win32::format::format_count(Locale::USER, report.denied));
+        let title = plain(s.command(command));
+        let (restart, never_again) = confirm_with_check_box(
+            &self.frame,
+            s,
+            &title,
+            &question,
+            |s| s.restart(),
+            |s| s.dont_offer_again(),
+            true,
+        );
+        if never_again {
+            // Before the restart, which the new revisor would otherwise not know of.
+            let saved = match &self.settings {
+                Ok(settings) => settings.set_offer_restart(false).map_err(|e| reason(s, &e)),
+                Err(message) => Err(message.clone()),
+            };
+            // In the status bar and in a window, whatever the question came after.
+            if let Err(reason) = saved {
+                let text = s.settings_not_saved(&reason);
+                self.say(&text);
+                tell(&self.frame, s, &title, &text);
             }
         }
-    }
-
-    /// Why the snapshot did not scan a folder, in the interface's words: the reason of an
-    /// unavailable folder is the comparison's (TASK-25), and a Windows error says the folder
-    /// could not be read before it.
-    fn folder_state_reason(&self, state: &FolderState) -> String {
-        let s = self.s;
-        match state {
-            FolderState::Scanned { .. } => String::new(),
-            FolderState::Missing => s.folder_missing().into(),
-            FolderState::Unavailable(reason @ Unavailable::Error(_)) => {
-                s.folder_unreachable(&difference::unavailable_reason(s, reason))
-            }
-            FolderState::Unavailable(reason) => difference::unavailable_reason(s, reason),
+        if restart {
+            // On the snapshotted profile, whichever is open by now.
+            self.event(Source::Command(CommandId::RestartAsAdmin), || {
+                self.restart_now(Some(profile));
+            });
         }
     }
 
@@ -3230,6 +3508,13 @@ fn file_name(path: &Path) -> String {
         .into_owned()
 }
 
+/// Whether a snapshot offers a restart as administrator (TASK-8 #7; TASK-48 #2, #3): only
+/// when rights closed some of its entries (`denied`), revisor runs as a standard user, and
+/// the setting «Пропонувати перезапуск від імені адміністратора після знімка» is on.
+fn restart_offered(denied: bool, elevated: bool, setting: bool) -> bool {
+    denied && !elevated && setting
+}
+
 /// Gives the window the same icon Explorer shows for the exe. wxMSW does not adopt the
 /// exe's icon resource for a frame, so the frame takes it from the SVG that app.ico is
 /// generated from. A failure leaves the generic window icon, which is not worth failing over.
@@ -3246,6 +3531,23 @@ fn set_frame_icon(frame: &Frame) {
 mod tests {
     use super::*;
     use crate::i18n::En;
+
+    #[test]
+    fn a_restart_is_offered_only_as_a_standard_user_after_denied_entries_while_the_setting_allows()
+    {
+        // TASK-48 #2, #3, #9: of every combination, only one asks.
+        let mut asking = Vec::new();
+        for denied in [false, true] {
+            for elevated in [false, true] {
+                for setting in [false, true] {
+                    if restart_offered(denied, elevated, setting) {
+                        asking.push((denied, elevated, setting));
+                    }
+                }
+            }
+        }
+        assert_eq!(asking, [(true, false, true)]);
+    }
 
     #[test]
     fn the_cancel_button_keeps_its_label_from_a_snapshot_to_its_comparison() {
