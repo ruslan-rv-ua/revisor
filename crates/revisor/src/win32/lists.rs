@@ -362,7 +362,13 @@ unsafe extern "system" fn column_width_proc(
                     &*(data as *const Resized),
                 )
             };
-            resized(wparam, i32::try_from(width).unwrap_or(0));
+            // A width that is not positive is no width: the message failed, or the column
+            // is gone, as when the columns were rebuilt before the posted message arrived.
+            if let Ok(width) = i32::try_from(width)
+                && width > 0
+            {
+                resized(wparam, width);
+            }
             return 0;
         }
         WM_NCDESTROY => {
