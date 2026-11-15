@@ -529,6 +529,9 @@ pub trait Strings {
     /// The status bar once the path is on the clipboard: «Шлях скопійовано.», or with the
     /// path, when the setting asks for it: «Шлях скопійовано: C:\Data\app.exe.».
     fn path_copied(&self, path: Option<&str>) -> String;
+    /// The status bar once the paths of several changes are on the clipboard (TASK-50 #4):
+    /// «Скопійовано шляхів: 3.», whatever the setting that shows a single path says.
+    fn paths_copied(&self, n: &str) -> String;
     /// The status bar when the path could not be put on the clipboard.
     fn path_not_copied(&self) -> &'static str;
 

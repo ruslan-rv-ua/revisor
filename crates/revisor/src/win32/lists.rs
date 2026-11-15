@@ -53,13 +53,6 @@ pub fn selected_rows(list: *mut c_void) -> Vec<usize> {
     }
 }
 
-/// Whether the row `row` of a list is selected.
-pub fn is_selected(list: *mut c_void, row: usize) -> bool {
-    // SAFETY: a plain list-view message to a live list-view window.
-    let state = unsafe { SendMessageW(list, LVM_GETITEMSTATE, row, LVIS_SELECTED as LPARAM) };
-    state as u32 & LVIS_SELECTED != 0
-}
-
 /// How many rows of a list are selected.
 pub fn selected_count(list: *mut c_void) -> usize {
     // SAFETY: a plain list-view message to a live list-view window.
@@ -80,6 +73,25 @@ pub fn select_only(list: *mut c_void, row: usize) {
     );
     // SAFETY: a plain list-view message to a live list-view window.
     unsafe { SendMessageW(list, LVM_ENSUREVISIBLE, row, 0) };
+}
+
+/// Makes `rows` the selected rows of a list of `count` rows — every row at once, when
+/// they are all —, gives `focus` the focus rectangle, selected or not, and scrolls it into
+/// view (TASK-50 #6); it does not move the keyboard focus to the list.
+pub fn select_rows(list: *mut c_void, rows: &[usize], count: usize, focus: Option<usize>) {
+    if count > 0 && rows.len() == count {
+        set_row_state(list, -1, LVIS_SELECTED, LVIS_SELECTED);
+    } else {
+        set_row_state(list, -1, 0, LVIS_SELECTED);
+        for &row in rows {
+            set_row_state(list, row as isize, LVIS_SELECTED, LVIS_SELECTED);
+        }
+    }
+    if let Some(row) = focus {
+        set_row_state(list, row as isize, LVIS_FOCUSED, LVIS_FOCUSED);
+        // SAFETY: a plain list-view message to a live list-view window.
+        unsafe { SendMessageW(list, LVM_ENSUREVISIBLE, row, 0) };
+    }
 }
 
 /// LVM_SETITEMSTATE on `row`, or on every row with -1.

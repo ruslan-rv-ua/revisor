@@ -1414,6 +1414,10 @@ impl Strings for Uk {
         }
     }
 
+    fn paths_copied(&self, n: &str) -> String {
+        format!("Скопійовано шляхів: {n}.")
+    }
+
     fn path_not_copied(&self) -> &'static str {
         "Шлях не скопійовано."
     }

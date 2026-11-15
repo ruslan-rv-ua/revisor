@@ -1008,6 +1008,7 @@ fn entries_in(en: &dyn Strings, uk: &dyn Strings) -> Vec<Entry> {
     c.add("explorer_failed", |s| s.explorer_failed("{reason}"));
     c.add("path_copied", |s| s.path_copied(None));
     c.add("path_copied.with_path", |s| s.path_copied(Some("{path}")));
+    c.add("paths_copied", |s| s.paths_copied("{n}"));
     c.add("path_not_copied", |s| s.path_not_copied().into());
     c.add("export_text_type", |s| s.export_text_type().into());
     c.add("export_csv_type", |s| s.export_csv_type().into());

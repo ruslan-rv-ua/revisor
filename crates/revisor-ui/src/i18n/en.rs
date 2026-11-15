@@ -1419,6 +1419,10 @@ impl Strings for En {
         }
     }
 
+    fn paths_copied(&self, n: &str) -> String {
+        format!("{n} paths copied.")
+    }
+
     fn path_not_copied(&self) -> &'static str {
         "The path was not copied."
     }

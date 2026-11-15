@@ -5,7 +5,7 @@
 use crate::access::{self, Act, Target};
 use crate::commands::{COMMANDS, Command, CommandId, Pane, Reason};
 use crate::keys::{Key, Shortcut};
-use crate::state::{AppState, ChangeType};
+use crate::state::{AppState, ChangeType, DifferenceView};
 
 /// The kind of control that has the focus.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -100,8 +100,8 @@ pub enum Route {
     FocusPane(Pane),
     /// Shift+F10 or the context menu key in a list: open that list's context menu.
     ContextMenu(Pane),
-    /// Ctrl+A in the snapshot list: select all its rows, which the list control does not
-    /// do by itself (TASK-9 #9). The difference list selects one row only (TASK-13 #19).
+    /// Ctrl+A in a list: select all its rows, which the list control does not do by
+    /// itself (TASK-9 #9, TASK-50 #1). The difference tree selects one node only.
     SelectAll(Pane),
     /// Esc in the field «Фільтр:»: clear it, so the filter lets every row through
     /// (TASK-13 #24).
@@ -140,9 +140,10 @@ pub fn route(key: Shortcut, focus: Focus, state: &AppState, labels: &[Target<Lab
     }
     if key == Shortcut::new(Key::Letter(b'A')).ctrl()
         && focus.control == Control::MainList
-        && focus.part == Some(Pane::Snapshots)
+        && let Some(pane) = focus.part
+        && (pane == Pane::Snapshots || state.layout == DifferenceView::List)
     {
-        return Route::SelectAll(Pane::Snapshots);
+        return Route::SelectAll(pane);
     }
     if key == Shortcut::new(Key::Esc) && focus.control == Control::FilterField {
         return Route::ClearFilter;
@@ -446,15 +447,24 @@ mod tests {
     }
 
     #[test]
-    fn ctrl_a_selects_all_snapshots_and_stays_the_controls_elsewhere() {
+    fn ctrl_a_selects_all_rows_of_a_list_and_stays_the_controls_elsewhere() {
         let ctrl_a = key(Key::Letter(b'A')).ctrl();
         let state = AppState::new();
         assert_eq!(
             route(ctrl_a, SNAPSHOT_LIST, &state, &[]),
             Route::SelectAll(Pane::Snapshots)
         );
-        // The difference list selects one change only (TASK-13 #19).
-        assert_eq!(route(ctrl_a, DIFFERENCE_LIST, &state, &[]), Route::Pass);
+        // Every change the difference list shows (TASK-50 #1), but in the tree, which
+        // selects one node only (TASK-50 #7), the key does nothing.
+        assert_eq!(
+            route(ctrl_a, DIFFERENCE_LIST, &state, &[]),
+            Route::SelectAll(Pane::Difference)
+        );
+        let tree = AppState {
+            layout: DifferenceView::Tree,
+            ..AppState::new()
+        };
+        assert_eq!(route(ctrl_a, DIFFERENCE_LIST, &tree, &[]), Route::Pass);
         // Text fields select their text with it; the profile box has no use for it.
         assert_eq!(route(ctrl_a, FILTER_FIELD, &state, &[]), Route::Pass);
         assert_eq!(route(ctrl_a, PROFILE_BOX, &state, &[]), Route::Pass);
