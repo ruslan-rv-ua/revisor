@@ -41,6 +41,14 @@ release that section becomes the version's own, and the release page publishes i
   hidden column from the menu. A column resized with the mouse keeps its width after a
   restart, and Defaults brings the widths back too. The tree, the exports and `revisor-cli`
   do not change.
+- **Several changes can be selected and their paths copied.** The difference list selects
+  several changes with the usual Windows keys — `Shift` or `Ctrl` with the arrows,
+  `Ctrl+Space`, `Ctrl+A` — and the mouse with `Ctrl` or `Shift`, and NVDA says which rows are
+  selected. Copy path (`Ctrl+Shift+C`) then copies the full paths of all of them, a line each,
+  in the order of the list, without quotes, and the status bar says «N paths copied.». Sorting
+  and new columns keep the selection; a new filter, the tree and a new difference leave only
+  the change in focus selected. Details and Show in File Explorer act on the change in focus,
+  the tree selects one node as before, and the export takes every change shown.
 
 ## [0.4.0] - 2026-11-14
 

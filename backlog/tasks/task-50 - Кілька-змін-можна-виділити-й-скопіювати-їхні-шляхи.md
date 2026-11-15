@@ -1,10 +1,10 @@
 ---
 id: TASK-50
 title: Кілька змін у списку різниці можна виділити й скопіювати їхні шляхи
-status: To Do
+status: In Progress
 assignee: []
 created_date: '2026-11-13T15:36:00Z'
-updated_date: '2026-11-15T13:59:00Z'
+updated_date: '2026-11-15T14:03:00Z'
 labels: []
 milestone: m-6
 dependencies:
